@@ -168,7 +168,10 @@ class SessionPreferences private constructor(
                     preferredAudioLang = existing.preferredAudioLang,
                     preferredSubtitleLang = existing.preferredSubtitleLang,
                     subtitleFontScale = existing.subtitleFontScale,
-                    subtitleBackgroundAlpha = existing.subtitleBackgroundAlpha
+                    subtitleBackgroundAlpha = existing.subtitleBackgroundAlpha,
+                    autoSkipIntro = existing.autoSkipIntro,
+                    autoSkipRecap = existing.autoSkipRecap,
+                    frameRateMatchMode = existing.frameRateMatchMode
                 )
             } else profile
             val updated = current.filterNot { it.id == profile.id } + merged
@@ -202,6 +205,29 @@ class SessionPreferences private constructor(
                     it.copy(
                         subtitleFontScale = fontScale,
                         subtitleBackgroundAlpha = backgroundAlpha
+                    )
+                } else it
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+        }
+    }
+
+    suspend fun updatePlaybackPreferences(
+        autoSkipIntro: Boolean? = null,
+        autoSkipRecap: Boolean? = null,
+        frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null
+    ) {
+        dataStore.edit { prefs ->
+            val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val updated = current.map {
+                if (it.id == activeId) {
+                    it.copy(
+                        autoSkipIntro = autoSkipIntro ?: it.autoSkipIntro,
+                        autoSkipRecap = autoSkipRecap ?: it.autoSkipRecap,
+                        frameRateMatchMode = frameRateMatchMode ?: it.frameRateMatchMode
                     )
                 } else it
             }

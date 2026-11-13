@@ -97,7 +97,9 @@ fun DetailsScreen(
         onToggleMyList = viewModel::toggleMyList,
         onToggleReminder = viewModel::toggleReminder,
         onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
-        onSearchActor = onSearchActor
+        onSearchActor = onSearchActor,
+        onRequestCollectionItem = { part -> viewModel.requestCollectionItem(part) },
+        onRequestAllMissingInCollection = { viewModel.requestAllMissingInCollection() }
     )
 }
 
@@ -117,7 +119,9 @@ fun DetailsContent(
     onToggleMyList: () -> Unit = {},
     onToggleReminder: () -> Unit = {},
     onRemoveFromContinueWatching: () -> Unit = {},
-    onSearchActor: (name: String, personId: Int?) -> Unit = { _, _ -> }
+    onSearchActor: (name: String, personId: Int?) -> Unit = { _, _ -> },
+    onRequestCollectionItem: (UnifiedMediaItem) -> Unit = {},
+    onRequestAllMissingInCollection: () -> Unit = {}
 ) {
     Box(
         modifier = Modifier
@@ -314,6 +318,75 @@ fun DetailsContent(
                                                 )
                                             }
                                         }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Collection / Saga Completion Row
+                    state.collectionSaga?.takeIf { it.items.size > 1 }?.let { saga ->
+                        item(key = "collection_saga") {
+                            val missingCount = remember(saga.items) {
+                                saga.items.count { !it.isPlayable && it.canRequestHd }
+                            }
+                            Column(modifier = Modifier.padding(top = 28.dp)) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 48.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Text(
+                                            text = "Part of ${saga.name}",
+                                            color = NetflixColors.White,
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFF242428))
+                                                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(4.dp))
+                                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                text = saga.completionLabel,
+                                                color = NetflixColors.MatchGreen,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+
+                                    if (missingCount > 0) {
+                                        HeroPillButton(
+                                            text = "Request Missing ($missingCount)",
+                                            icon = Icons.Filled.Add,
+                                            isPrimary = false,
+                                            onClick = onRequestAllMissingInCollection
+                                        )
+                                    }
+                                }
+
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 48.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    items(saga.items, key = { "saga_${it.id}" }) { part ->
+                                        NetflixPosterCard(
+                                            item = part,
+                                            onFocus = {},
+                                            onClick = { onOpenDetails(part) },
+                                            onOptionsMenu = if (!part.isPlayable && part.canRequestHd) {
+                                                { onRequestCollectionItem(part) }
+                                            } else null
+                                        )
                                     }
                                 }
                             }

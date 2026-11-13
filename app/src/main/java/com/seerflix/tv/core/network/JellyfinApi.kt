@@ -169,6 +169,47 @@ interface JellyfinApi {
         @Path("itemId") itemId: String
     ): JellyfinMediaSegmentsResponse
 
+    @GET("Users/{userId}/Items")
+    suspend fun getCollections(
+        @Path("userId") userId: String,
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("IncludeItemTypes") includeItemTypes: String = "BoxSet",
+        @Query("Fields") fields: String = "Overview,ChildCount,ProviderIds,ProductionYear",
+        @Query("SortBy") sortBy: String = "SortName",
+        @Query("SortOrder") sortOrder: String = "Ascending",
+        @Query("Limit") limit: Int = 100
+    ): JellyfinItemsResponse
+
+    @GET("Users/{userId}/Items")
+    suspend fun getCollectionItems(
+        @Path("userId") userId: String,
+        @Query("ParentId") parentId: String,
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating,MediaStreams,PremiereDate",
+        @Query("SortBy") sortBy: String = "PremiereDate,ProductionYear,SortName",
+        @Query("SortOrder") sortOrder: String = "Ascending",
+        @Query("Limit") limit: Int = 100
+    ): JellyfinItemsResponse
+
+    @GET("Shows/Upcoming")
+    suspend fun getUpcomingEpisodes(
+        @Query("UserId") userId: String,
+        @Query("Limit") limit: Int = 24,
+        @Query("Fields") fields: String = "Overview,AirTime,SeriesStudio,ProviderIds,UserData,PremiereDate"
+    ): JellyfinItemsResponse
+
+    @GET("Items/{itemId}/RemoteSearch/Subtitles/{language}")
+    suspend fun searchRemoteSubtitles(
+        @Path("itemId") itemId: String,
+        @Path("language") language: String = "eng"
+    ): List<JellyfinRemoteSubtitleDto>
+
+    @POST("Items/{itemId}/RemoteSearch/Subtitles/{subtitleId}")
+    suspend fun downloadRemoteSubtitle(
+        @Path("itemId") itemId: String,
+        @Path("subtitleId") subtitleId: String
+    )
+
     @POST("Sessions/Playing")
     suspend fun reportPlaybackStart(
         @Body body: JellyfinPlaybackProgressRequest

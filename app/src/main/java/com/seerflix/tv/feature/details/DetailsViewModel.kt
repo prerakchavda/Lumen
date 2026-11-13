@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.AvailabilityTier
+import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -26,6 +27,7 @@ import javax.inject.Inject
 data class DetailsUiState(
     val item: UnifiedMediaItem? = null,
     val recommendations: List<UnifiedMediaItem> = emptyList(),
+    val collectionSaga: CollectionSummary? = null,
     val selectedSeasonNumber: Int = 1,
     val episodes: List<EpisodeSummary> = emptyList(),
     val episodesLoading: Boolean = false,
@@ -101,6 +103,12 @@ class DetailsViewModel @Inject constructor(
                         mediaType = item.mediaType
                     )
                     _uiState.update { it.copy(recommendations = recs) }
+                }
+                item.collectionId?.let { colId ->
+                    launch {
+                        val saga = catalogRepository.loadCollectionSaga(activeUserId, colId)
+                        _uiState.update { it.copy(collectionSaga = saga) }
+                    }
                 }
                 launch {
                     val preview = trailerResolver.resolvePreview(
@@ -188,6 +196,72 @@ class DetailsViewModel @Inject constructor(
                 .onFailure { err ->
                     _uiState.update { it.copy(feedbackBanner = "Cancel failed: ${err.message}") }
                 }
+        }
+    }
+
+    fun requestCollectionItem(part: UnifiedMediaItem, is4k: Boolean = false) {
+        val tmdbId = part.tmdbId ?: return
+        viewModelScope.launch {
+            catalogRepository.submitRequest(tmdbId = tmdbId, mediaType = part.mediaType, is4k = is4k)
+                .onSuccess {
+                    _uiState.update { state ->
+                        val updatedSaga = state.collectionSaga?.let { saga ->
+                            saga.copy(
+                                items = saga.items.map { p ->
+                                    if (p.tmdbId == tmdbId) {
+                                        if (is4k) p.copy(uhdStatus = AvailabilityTier.PENDING)
+                                        else p.copy(hdStatus = AvailabilityTier.PENDING)
+                                    } else p
+                                }
+                            )
+                        }
+                        state.copy(
+                            collectionSaga = updatedSaga,
+                            feedbackBanner = "Requested \"${part.title}\""
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(feedbackBanner = "Request failed: ${err.message ?: "Unknown error"}")
+                    }
+                }
+        }
+    }
+
+    fun requestAllMissingInCollection(is4k: Boolean = false) {
+        val saga = _uiState.value.collectionSaga ?: return
+        val missing = saga.items.filter { !it.isPlayable && it.canRequestHd && it.tmdbId != null }
+        if (missing.isEmpty()) return
+        viewModelScope.launch {
+            var count = 0
+            val requestedIds = mutableSetOf<Int>()
+            missing.forEach { part ->
+                val tmdb = part.tmdbId ?: return@forEach
+                catalogRepository.submitRequest(tmdbId = tmdb, mediaType = part.mediaType, is4k = is4k)
+                    .onSuccess {
+                        count++
+                        requestedIds += tmdb
+                    }
+            }
+            _uiState.update { state ->
+                val updatedSaga = if (requestedIds.isNotEmpty()) {
+                    state.collectionSaga?.let { cur ->
+                        cur.copy(
+                            items = cur.items.map { p ->
+                                if (p.tmdbId in requestedIds) {
+                                    if (is4k) p.copy(uhdStatus = AvailabilityTier.PENDING)
+                                    else p.copy(hdStatus = AvailabilityTier.PENDING)
+                                } else p
+                            }
+                        )
+                    }
+                } else state.collectionSaga
+                state.copy(
+                    collectionSaga = updatedSaga,
+                    feedbackBanner = if (count > 0) "Requested $count missing title${if (count == 1) "" else "s"}" else "Unable to submit requests"
+                )
+            }
         }
     }
 

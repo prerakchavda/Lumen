@@ -17,10 +17,13 @@ import com.seerflix.tv.core.network.JellyfinPlaybackProgressRequest
 import com.seerflix.tv.core.network.JellyfinPublicSystemInfo
 import com.seerflix.tv.core.network.JellyfinQuickConnectAuthRequest
 import com.seerflix.tv.core.network.JellyfinQuickConnectState
+import com.seerflix.tv.core.network.JellyfinRemoteSubtitleDto
 import com.seerflix.tv.core.network.JellyfinUpdateUserDataRequest
 import com.seerflix.tv.core.network.JellyfinUserDto
 import com.seerflix.tv.core.network.SeerrApi
 import com.seerflix.tv.core.network.SeerrArrServerDto
+import com.seerflix.tv.core.network.SeerrBelongsToCollectionDto
+import com.seerflix.tv.core.network.SeerrCollectionDetailsDto
 import com.seerflix.tv.core.network.SeerrCreateRequestBody
 import com.seerflix.tv.core.network.SeerrDiscoverPageDto
 import com.seerflix.tv.core.network.SeerrJellyfinLoginRequest
@@ -301,6 +304,83 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         assertEquals(listOf(1, 2), captured.seasons)
     }
 
+    @Test
+    fun `loadBoxSetDetails merges Jellyfin BoxSet with missing Seerr saga entries in chronological order`() = runTest {
+        jellyfinApi.libraryItems = listOf(
+            JellyfinItemDto(id = "jf_jw1", name = "John Wick", type = "Movie", providerIds = mapOf("Tmdb" to "245891"), productionYear = 2014),
+            JellyfinItemDto(id = "jf_jw2", name = "John Wick: Chapter 2", type = "Movie", providerIds = mapOf("Tmdb" to "324552"), productionYear = 2017)
+        )
+        jellyfinApi.collectionItemsMap["box_jw"] = jellyfinApi.libraryItems
+        seerrApi.movieDetailsHandler = { movieId ->
+            SeerrMovieDetailsDto(
+                id = movieId,
+                title = "Movie $movieId",
+                collection = SeerrBelongsToCollectionDto(id = 404609, name = "John Wick Collection")
+            )
+        }
+        seerrApi.collectionDetailsHandler = { colId ->
+            SeerrCollectionDetailsDto(
+                id = colId,
+                name = "John Wick Collection",
+                parts = listOf(
+                    movieResult(458156, "John Wick: Chapter 3 - Parabellum", "2019-05-15"),
+                    movieResult(245891, "John Wick", "2014-10-22"),
+                    movieResult(603692, "John Wick: Chapter 4", "2023-03-22"),
+                    movieResult(324552, "John Wick: Chapter 2", "2017-02-08")
+                )
+            )
+        }
+
+        val summary = repository.loadBoxSetDetails("u1", "box_jw", "John Wick Collection")
+        assertNotNull(summary)
+        assertEquals(2, summary!!.ownedCount)
+        assertEquals(4, summary.totalCount)
+        assertEquals("2 of 4 in Library", summary.completionLabel)
+        assertEquals(
+            listOf("John Wick", "John Wick: Chapter 2", "John Wick: Chapter 3 - Parabellum", "John Wick: Chapter 4"),
+            summary.items.map { it.title }
+        )
+        assertTrue(summary.items[0].isPlayable)
+        assertTrue(summary.items[1].isPlayable)
+        assertFalse(summary.items[2].isPlayable)
+        assertTrue(summary.items[2].canRequestHd)
+    }
+
+    @Test
+    fun `home rows include Ready to Watch reminder alert and New Episodes Coming This Week`() = runTest {
+        prefs.toggleReminder("u1", tmdbId = 555, mediaType = MediaType.MOVIE)
+        jellyfinApi.libraryItems = listOf(
+            JellyfinItemDto(id = "jf_reminded", name = "Reminded Movie", type = "Movie", providerIds = mapOf("Tmdb" to "555"))
+        )
+        jellyfinApi.upcomingEpisodes = listOf(
+            JellyfinItemDto(
+                id = "ep_next",
+                name = "The Finale",
+                type = "Episode",
+                seriesId = "jf_series_1",
+                seriesName = "Severance",
+                parentIndexNumber = 2,
+                indexNumber = 10,
+                premiereDate = "2026-04-02T20:00:00Z"
+            )
+        )
+
+        val rows = repository.loadHomeRows(
+            userId = "u1",
+            filterType = null,
+            availabilityFilter = AvailabilityFilter.ALL,
+            today = fixedToday
+        )
+
+        assertEquals("ready_to_watch", rows.first().id)
+        assertEquals(listOf("Reminded Movie"), rows.first().items.map { it.title })
+        assertEquals("Now in Library", rows.first().items.first().upcomingBadgeLabel)
+
+        val airingRow = rows.first { it.id == "airing_this_week" }
+        assertEquals("New Episodes Coming This Week", airingRow.title)
+        assertEquals("S2 E10 • Tomorrow", airingRow.items.first().upcomingBadgeLabel)
+    }
+
     private fun movieResult(
         id: Int,
         title: String,
@@ -333,6 +413,10 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         var latestItems: List<JellyfinItemDto> = emptyList()
         var favoriteItems: List<JellyfinItemDto> = emptyList()
         var playedItems: List<JellyfinItemDto> = emptyList()
+        var collections: List<JellyfinItemDto> = emptyList()
+        val collectionItemsMap: MutableMap<String, List<JellyfinItemDto>> = mutableMapOf()
+        var upcomingEpisodes: List<JellyfinItemDto> = emptyList()
+        var remoteSubtitles: List<JellyfinRemoteSubtitleDto> = emptyList()
 
         override suspend fun getPublicSystemInfo() = JellyfinPublicSystemInfo()
         override suspend fun getPublicUsers(): List<JellyfinUserDto> = emptyList()
@@ -403,6 +487,28 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun getPlaybackInfo(itemId: String, userId: String, body: JellyfinPlaybackInfoRequest) =
             JellyfinPlaybackInfoResponse()
         override suspend fun getMediaSegments(itemId: String) = JellyfinMediaSegmentsResponse()
+        override suspend fun getCollections(
+            userId: String,
+            recursive: Boolean,
+            includeItemTypes: String,
+            fields: String,
+            sortBy: String,
+            sortOrder: String,
+            limit: Int
+        ) = JellyfinItemsResponse(collections, collections.size)
+        override suspend fun getCollectionItems(
+            userId: String,
+            parentId: String,
+            recursive: Boolean,
+            fields: String,
+            sortBy: String,
+            sortOrder: String,
+            limit: Int
+        ) = JellyfinItemsResponse(collectionItemsMap[parentId].orEmpty(), collectionItemsMap[parentId]?.size ?: 0)
+        override suspend fun getUpcomingEpisodes(userId: String, limit: Int, fields: String) =
+            JellyfinItemsResponse(upcomingEpisodes, upcomingEpisodes.size)
+        override suspend fun searchRemoteSubtitles(itemId: String, language: String) = remoteSubtitles
+        override suspend fun downloadRemoteSubtitle(itemId: String, subtitleId: String) = Unit
         override suspend fun reportPlaybackStart(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackProgress(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackStopped(body: JellyfinPlaybackProgressRequest) = Unit
@@ -416,7 +522,9 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         var upcomingTvHandler: (Int) -> SeerrDiscoverPageDto = { SeerrDiscoverPageDto() }
         var moviesByGenreHandler: (Int, Int) -> SeerrDiscoverPageDto = { _, _ -> SeerrDiscoverPageDto() }
         var tvByGenreHandler: (Int, Int) -> SeerrDiscoverPageDto = { _, _ -> SeerrDiscoverPageDto() }
+        var movieDetailsHandler: (Int) -> SeerrMovieDetailsDto = { id -> SeerrMovieDetailsDto(id = id, title = "Movie $id") }
         var tvDetailsHandler: (Int) -> SeerrTvDetailsDto = { id -> SeerrTvDetailsDto(id = id, name = "Show $id") }
+        var collectionDetailsHandler: (Int) -> SeerrCollectionDetailsDto = { id -> SeerrCollectionDetailsDto(id = id, name = "Collection $id") }
         val createdRequests = mutableListOf<SeerrCreateRequestBody>()
 
         override suspend fun getStatus() = SeerrStatusDto()
@@ -453,11 +561,12 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             moviesByGenreHandler(genreId, page)
         override suspend fun getTvByGenre(genreId: Int, page: Int, language: String) =
             tvByGenreHandler(genreId, page)
-        override suspend fun getMovieDetails(movieId: Int, language: String) =
-            SeerrMovieDetailsDto(id = movieId, title = "Movie $movieId")
+        override suspend fun getMovieDetails(movieId: Int, language: String) = movieDetailsHandler(movieId)
         override suspend fun getTvDetails(tvId: Int, language: String) = tvDetailsHandler(tvId)
         override suspend fun getTvSeasonDetails(tvId: Int, seasonNumber: Int, language: String) =
             SeerrSeasonDetailDto(seasonNumber = seasonNumber)
+        override suspend fun getCollectionDetails(collectionId: Int, language: String) =
+            collectionDetailsHandler(collectionId)
         override suspend fun getMovieRecommendations(movieId: Int, page: Int) = SeerrDiscoverPageDto()
         override suspend fun getTvRecommendations(tvId: Int, page: Int) = SeerrDiscoverPageDto()
         override suspend fun search(query: String, page: Int, language: String) = SeerrDiscoverPageDto()

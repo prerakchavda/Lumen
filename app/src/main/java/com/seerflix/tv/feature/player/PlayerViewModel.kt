@@ -6,9 +6,11 @@ import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.EpisodeSummary
+import com.seerflix.tv.core.model.FrameRateMatchMode
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.QualityPreset
+import com.seerflix.tv.core.model.RemoteSubtitleOption
 import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
@@ -27,11 +29,20 @@ data class PlayerUiState(
     val selectedQuality: QualityPreset = QualityPreset.AUTO,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
+    val subtitleOffsetMs: Long = 0L,
+    val autoSkipIntro: Boolean = false,
+    val autoSkipRecap: Boolean = false,
+    val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF,
     val showStreamInfo: Boolean = false,
     val autoplayNextEpisode: Boolean = true,
     val autoplayCancelled: Boolean = false,
     val preferredAudioLang: String? = null,
     val preferredSubtitleLang: String? = null,
+    val remoteSubtitles: List<RemoteSubtitleOption> = emptyList(),
+    val remoteSubtitlesLoading: Boolean = false,
+    val remoteSubtitleLanguage: String = "eng",
+    val downloadingSubtitleId: String? = null,
+    val subtitleSearchMessage: String? = null,
     val drawerSeasons: List<SeasonSummary> = emptyList(),
     val drawerSelectedSeason: Int = 1,
     val drawerEpisodes: List<EpisodeSummary> = emptyList(),
@@ -70,7 +81,7 @@ class PlayerViewModel @Inject constructor(
 
     fun loadTrailer(title: String, localTrailerId: String?, youtubeKey: String?) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, subtitleOffsetMs = 0L) }
             val resolved = trailerResolver.resolvePreview(
                 localTrailerId = localTrailerId,
                 youtubeKey = youtubeKey
@@ -111,8 +122,18 @@ class PlayerViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = false, errorMessage = "Invalid media item ID") }
             return
         }
+        val isSameItem = _uiState.value.session?.itemId == itemId
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null, autoplayCancelled = false) }
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    errorMessage = null,
+                    autoplayCancelled = false,
+                    subtitleOffsetMs = if (isSameItem) it.subtitleOffsetMs else 0L,
+                    remoteSubtitles = if (isSameItem) it.remoteSubtitles else emptyList(),
+                    subtitleSearchMessage = if (isSameItem) it.subtitleSearchMessage else null
+                )
+            }
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null || profile.jellyfinUserId.isBlank()) {
                 _uiState.update { it.copy(isLoading = false, errorMessage = "No active Jellyfin profile") }
@@ -124,6 +145,9 @@ class PlayerViewModel @Inject constructor(
                     autoplayNextEpisode = profile.autoplayNextEpisode,
                     subtitleFontScale = profile.subtitleFontScale,
                     subtitleBackgroundAlpha = profile.subtitleBackgroundAlpha,
+                    autoSkipIntro = profile.autoSkipIntro,
+                    autoSkipRecap = profile.autoSkipRecap,
+                    frameRateMatchMode = profile.frameRateMatchMode,
                     preferredAudioLang = profile.preferredAudioLang,
                     preferredSubtitleLang = profile.preferredSubtitleLang
                 )
@@ -204,6 +228,101 @@ class PlayerViewModel @Inject constructor(
 
     fun setPlaybackSpeed(speed: Float) {
         _uiState.update { it.copy(selectedSpeed = speed) }
+    }
+
+    fun adjustSubtitleOffset(deltaMs: Long) {
+        _uiState.update {
+            val next = (it.subtitleOffsetMs + deltaMs).coerceIn(-60_000L, 60_000L)
+            it.copy(subtitleOffsetMs = next)
+        }
+    }
+
+    fun resetSubtitleOffset() {
+        _uiState.update { it.copy(subtitleOffsetMs = 0L) }
+    }
+
+    fun toggleAutoSkipIntro() {
+        val next = !_uiState.value.autoSkipIntro
+        _uiState.update { it.copy(autoSkipIntro = next) }
+        viewModelScope.launch {
+            authRepository.updatePlaybackPreferences(autoSkipIntro = next)
+        }
+    }
+
+    fun toggleAutoSkipRecap() {
+        val next = !_uiState.value.autoSkipRecap
+        _uiState.update { it.copy(autoSkipRecap = next) }
+        viewModelScope.launch {
+            authRepository.updatePlaybackPreferences(autoSkipRecap = next)
+        }
+    }
+
+    fun setFrameRateMatchMode(mode: FrameRateMatchMode) {
+        _uiState.update { it.copy(frameRateMatchMode = mode) }
+        viewModelScope.launch {
+            authRepository.updatePlaybackPreferences(frameRateMatchMode = mode)
+        }
+    }
+
+    fun searchRemoteSubtitles(language: String = _uiState.value.remoteSubtitleLanguage) {
+        val session = _uiState.value.session ?: return
+        if (session.isTrailer) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    remoteSubtitleLanguage = language,
+                    remoteSubtitlesLoading = true,
+                    subtitleSearchMessage = null
+                )
+            }
+            playbackManager.searchRemoteSubtitles(session.itemId, language)
+                .onSuccess { results ->
+                    _uiState.update {
+                        it.copy(
+                            remoteSubtitles = results,
+                            remoteSubtitlesLoading = false,
+                            subtitleSearchMessage = if (results.isEmpty()) "No remote subtitles found for $language" else null
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            remoteSubtitlesLoading = false,
+                            subtitleSearchMessage = "Subtitle search failed: ${err.message ?: "Unknown error"}"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun downloadRemoteSubtitle(subtitleId: String, currentPosMs: Long) {
+        val session = _uiState.value.session ?: return
+        if (session.isTrailer) return
+        val searchLang = _uiState.value.remoteSubtitleLanguage
+        viewModelScope.launch {
+            _uiState.update { it.copy(downloadingSubtitleId = subtitleId, subtitleSearchMessage = null) }
+            playbackManager.downloadRemoteSubtitle(session.itemId, subtitleId)
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            downloadingSubtitleId = null,
+                            preferredSubtitleLang = searchLang,
+                            subtitleSearchMessage = "Subtitle downloaded — reloading track…"
+                        )
+                    }
+                    reportStopped(currentPosMs)
+                    loadItem(session.itemId, resumeOverrideMs = currentPosMs)
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            downloadingSubtitleId = null,
+                            subtitleSearchMessage = "Download failed: ${err.message ?: "Unknown error"}"
+                        )
+                    }
+                }
+        }
     }
 
     fun setSubtitleAppearance(fontScale: Float, bgAlpha: Float) {

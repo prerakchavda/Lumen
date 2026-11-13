@@ -195,6 +195,24 @@ data class SeerrEpisodeDto(
 )
 
 @Serializable
+data class SeerrBelongsToCollectionDto(
+    val id: Int,
+    val name: String,
+    val posterPath: String? = null,
+    val backdropPath: String? = null
+)
+
+@Serializable
+data class SeerrCollectionDetailsDto(
+    val id: Int,
+    val name: String,
+    val overview: String? = null,
+    val posterPath: String? = null,
+    val backdropPath: String? = null,
+    val parts: List<SeerrMediaResultDto> = emptyList()
+)
+
+@Serializable
 data class SeerrMovieDetailsDto(
     val id: Int,
     val title: String,
@@ -209,8 +227,13 @@ data class SeerrMovieDetailsDto(
     val credits: SeerrCreditsDto? = null,
     val relatedVideos: List<SeerrRelatedVideoDto> = emptyList(),
     val externalIds: SeerrExternalIdsDto? = null,
-    val mediaInfo: SeerrMediaInfoDto? = null
-)
+    val mediaInfo: SeerrMediaInfoDto? = null,
+    val collection: SeerrBelongsToCollectionDto? = null,
+    val belongsToCollection: SeerrBelongsToCollectionDto? = null
+) {
+    val resolvedCollection: SeerrBelongsToCollectionDto?
+        get() = collection ?: belongsToCollection
+}
 
 @Serializable
 data class SeerrTvDetailsDto(

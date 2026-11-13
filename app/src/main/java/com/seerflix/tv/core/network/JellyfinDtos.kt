@@ -117,7 +117,23 @@ data class JellyfinItemDto(
     @SerialName("RemoteTrailers") val remoteTrailers: List<JellyfinMediaUrlDto> = emptyList(),
     @SerialName("LocalTrailerCount") val localTrailerCount: Int? = null,
     @SerialName("MediaStreams") val mediaStreams: List<JellyfinMediaStreamDto> = emptyList(),
-    @SerialName("Trickplay") val trickplay: Map<String, Map<String, JellyfinTrickplayInfoDto>> = emptyMap()
+    @SerialName("Trickplay") val trickplay: Map<String, Map<String, JellyfinTrickplayInfoDto>> = emptyMap(),
+    @SerialName("PremiereDate") val premiereDate: String? = null,
+    @SerialName("ChildCount") val childCount: Int? = null
+)
+
+@Serializable
+data class JellyfinRemoteSubtitleDto(
+    @SerialName("Id") val id: String,
+    @SerialName("Name") val name: String? = null,
+    @SerialName("ProviderName") val providerName: String? = null,
+    @SerialName("Format") val format: String? = null,
+    @SerialName("Author") val author: String? = null,
+    @SerialName("Comment") val comment: String? = null,
+    @SerialName("CommunityRating") val communityRating: Float? = null,
+    @SerialName("DownloadCount") val downloadCount: Int? = null,
+    @SerialName("IsHashMatch") val isHashMatch: Boolean? = null,
+    @SerialName("ThreeLetterISOLanguageName") val threeLetterIsoLanguageName: String? = null
 )
 
 @Serializable

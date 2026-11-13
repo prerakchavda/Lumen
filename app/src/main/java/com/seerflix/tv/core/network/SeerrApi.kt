@@ -105,6 +105,12 @@ interface SeerrApi {
         @Query("language") language: String = "en"
     ): SeerrSeasonDetailDto
 
+    @GET("api/v1/collection/{collectionId}")
+    suspend fun getCollectionDetails(
+        @Path("collectionId") collectionId: Int,
+        @Query("language") language: String = "en"
+    ): SeerrCollectionDetailsDto
+
     @GET("api/v1/movie/{movieId}/recommendations")
     suspend fun getMovieRecommendations(
         @Path("movieId") movieId: Int,

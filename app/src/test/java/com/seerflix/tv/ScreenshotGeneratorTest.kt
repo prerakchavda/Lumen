@@ -30,6 +30,7 @@ import com.android.resources.UiMode
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CastMember
 import com.seerflix.tv.core.model.CatalogRow
+import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaRequestSummary
@@ -674,6 +675,82 @@ class ScreenshotGeneratorTest {
         )
 
         snapshotScreen("home_top10") {
+            HomeContent(
+                state = state,
+                onOpenDetails = {},
+                onPlayDirect = {},
+                onOpenSearch = {},
+                onOpenRequests = {},
+                onSwitchProfile = {},
+                onOpenSettings = {},
+                onSelectTab = {},
+                onRefresh = {},
+                onTogglePreviewMute = {},
+                onItemFocused = {}
+            )
+        }
+    }
+
+    @Test
+    fun collections() {
+        val state = HomeUiState(
+            activeTab = HomeTab.COLLECTIONS,
+            profile = UserProfile("1", "Prerak", "1", "token", avatarColorHex = 0xFFE50914),
+            activeDownloadCount = 2,
+            isLoading = false,
+            collections = listOf(
+                CollectionSummary(
+                    id = "box_dune",
+                    tmdbCollectionId = 726871,
+                    name = "Dune Collection",
+                    backdropUrl = "art://backdrop/dune/DUNE COLLECTION/0xFF5D2906/0xFFFF9800",
+                    ownedCount = 2,
+                    totalCount = 3
+                ),
+                CollectionSummary(
+                    id = "box_lotr",
+                    tmdbCollectionId = 119,
+                    name = "The Lord of the Rings",
+                    backdropUrl = "art://backdrop/lotr/MIDDLE EARTH/0xFF1D3524/0xFFD4AF37",
+                    ownedCount = 3,
+                    totalCount = 3
+                ),
+                CollectionSummary(
+                    id = "box_sv",
+                    tmdbCollectionId = 573436,
+                    name = "Spider-Verse Collection",
+                    backdropUrl = "art://backdrop/spiderverse/SPIDER-VERSE/0xFF2B0A2B/0xFFE50914",
+                    ownedCount = 2,
+                    totalCount = 3
+                ),
+                CollectionSummary(
+                    id = "box_jw",
+                    tmdbCollectionId = 404609,
+                    name = "John Wick Collection",
+                    backdropUrl = "art://backdrop/johnwick/JOHN WICK/0xFF14182B/0xFF00E5FF",
+                    ownedCount = 4,
+                    totalCount = 4
+                ),
+                CollectionSummary(
+                    id = "box_br",
+                    tmdbCollectionId = 422837,
+                    name = "Blade Runner Collection",
+                    backdropUrl = "art://backdrop/bladerunner/BLADE RUNNER/0xFF3E1810/0xFFFF9800",
+                    ownedCount = 2,
+                    totalCount = 2
+                ),
+                CollectionSummary(
+                    id = "box_alien",
+                    tmdbCollectionId = 8091,
+                    name = "Alien Anthology",
+                    backdropUrl = "art://backdrop/alien/ALIEN/0xFF0D2329/0xFF66BB6A",
+                    ownedCount = 5,
+                    totalCount = 7
+                )
+            )
+        )
+
+        snapshotScreen("collections") {
             HomeContent(
                 state = state,
                 onOpenDetails = {},

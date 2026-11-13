@@ -4,6 +4,7 @@ import com.seerflix.tv.core.model.AvailabilityFilter
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CastMember
 import com.seerflix.tv.core.model.CatalogRow
+import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.MediaRequestSummary
@@ -228,6 +229,20 @@ class UnifiedCatalogRepository @Inject constructor(
                 fetchTop10TvByGenre(80, availabilityFilter)
             } else emptyList()
         }
+        val readyToWatchDeferred = async {
+            if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
+            else loadReadyToWatchAlerts(userId)
+        }
+        val collectionsDeferred = async {
+            if ((filterType == null || filterType == MediaType.MOVIE) && availabilityFilter != AvailabilityFilter.REQUESTABLE) {
+                loadBoxSetCollections(userId)
+            } else emptyList()
+        }
+        val airingThisWeekDeferred = async {
+            if (filterType != MediaType.MOVIE && availabilityFilter != AvailabilityFilter.REQUESTABLE) {
+                loadAiringThisWeek(userId, today)
+            } else emptyList()
+        }
         val upcomingMoviesDeferred = async {
             if (filterType != MediaType.SERIES) {
                 runCatching { seerrApi.getUpcomingMovies().results }.getOrDefault(emptyList())
@@ -240,6 +255,20 @@ class UnifiedCatalogRepository @Inject constructor(
         }
 
         val rows = mutableListOf<CatalogRow>()
+
+        val readyToWatch = readyToWatchDeferred.await()
+            .filter {
+                (filterType == null || it.mediaType == filterType) &&
+                    availabilityFilter.matches(it)
+            }
+        if (readyToWatch.isNotEmpty()) {
+            rows += CatalogRow(
+                id = "ready_to_watch",
+                title = "Ready to Watch • Your Reminders",
+                style = RowStyle.POSTER,
+                items = readyToWatch
+            )
+        }
 
         val resumeItems = resumeDeferred.await()
             .map { mapJellyfinItem(it) }
@@ -460,12 +489,33 @@ class UnifiedCatalogRepository @Inject constructor(
             )
         }
 
+        val collections = collectionsDeferred.await()
+        if (collections.isNotEmpty()) {
+            rows += CatalogRow(
+                id = "collections",
+                title = "Collections",
+                style = RowStyle.POSTER,
+                items = collections.map { col -> col.toPosterCardItem() }
+            )
+        }
+
+        val airingThisWeek = airingThisWeekDeferred.await()
+            .filter(availabilityFilter::matches)
+        if (airingThisWeek.isNotEmpty()) {
+            rows += CatalogRow(
+                id = "airing_this_week",
+                title = "New Episodes Coming This Week",
+                style = RowStyle.POSTER,
+                items = airingThisWeek
+            )
+        }
+
         val upcoming = buildList {
             if (filterType == null || filterType == MediaType.MOVIE) {
-                addAll(upcomingMoviesDeferred.await().map { mapSeerrResult(it, MediaType.MOVIE) })
+                addAll(upcomingMoviesDeferred.await().map { mapSeerrResult(it, MediaType.MOVIE, today) })
             }
             if (filterType == null || filterType == MediaType.SERIES) {
-                addAll(upcomingTvDeferred.await().map { mapSeerrResult(it, MediaType.SERIES) })
+                addAll(upcomingTvDeferred.await().map { mapSeerrResult(it, MediaType.SERIES, today) })
             }
         }
             .distinctBy { "${it.mediaType}_${it.tmdbId}" }
@@ -595,6 +645,10 @@ class UnifiedCatalogRepository @Inject constructor(
         val trendingDeferred = async {
             runCatching { seerrApi.getTrending().results }.getOrDefault(emptyList())
         }
+        val airingThisWeekDeferred = async {
+            if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
+            else loadAiringThisWeek(userId, today)
+        }
         val upcomingMoviesDeferred = async {
             runCatching { seerrApi.getUpcomingMovies().results }.getOrDefault(emptyList())
         }
@@ -621,19 +675,24 @@ class UnifiedCatalogRepository @Inject constructor(
                     "tv" -> MediaType.SERIES
                     else -> null
                 } ?: return@mapNotNull null
-                mapSeerrResult(res, type)
+                mapSeerrResult(res, type, today)
             }.filter(availabilityFilter::matches)
             if (trending.isNotEmpty()) {
                 add(CatalogRow("np_trending", "Worth the Wait & Trending", RowStyle.TOP_10, trending.take(10)))
             }
+            val airingThisWeek = airingThisWeekDeferred.await()
+                .filter(availabilityFilter::matches)
+            if (airingThisWeek.isNotEmpty()) {
+                add(CatalogRow("np_airing_this_week", "New Episodes Coming This Week", RowStyle.POSTER, airingThisWeek))
+            }
             val upcomingMovies = upcomingMoviesDeferred.await()
-                .map { mapSeerrResult(it, MediaType.MOVIE) }
+                .map { mapSeerrResult(it, MediaType.MOVIE, today) }
                 .filter(availabilityFilter::matches)
             if (upcomingMovies.isNotEmpty()) {
                 add(CatalogRow("np_coming_movies", "Coming Soon • Movies", RowStyle.POSTER, upcomingMovies))
             }
             val upcomingTv = upcomingTvDeferred.await()
-                .map { mapSeerrResult(it, MediaType.SERIES) }
+                .map { mapSeerrResult(it, MediaType.SERIES, today) }
                 .filter(availabilityFilter::matches)
             if (upcomingTv.isNotEmpty()) {
                 add(CatalogRow("np_coming_tv", "Coming Soon • TV Shows", RowStyle.POSTER, upcomingTv))
@@ -1229,6 +1288,7 @@ class UnifiedCatalogRepository @Inject constructor(
             mediaBadges = badges,
             episodeLabel = epLabel,
             seriesName = dto.seriesName,
+            releaseDate = dto.premiereDate,
             youtubeTrailerKey = ytKey,
             relatedVideos = related,
             cast = dto.people.take(12).map { p ->
@@ -1241,7 +1301,200 @@ class UnifiedCatalogRepository @Inject constructor(
         )
     }
 
-    private fun mapSeerrResult(res: SeerrMediaResultDto, type: MediaType): UnifiedMediaItem {
+    suspend fun loadReadyToWatchAlerts(userId: String): List<UnifiedMediaItem> {
+        if (tmdbToJellyfinMovie.isEmpty() && tmdbToJellyfinSeries.isEmpty()) {
+            refreshLibraryIndex(userId)
+        }
+        val reminderKeys = prefs.getReminders(userId)
+        if (reminderKeys.isEmpty()) return emptyList()
+        return reminderKeys.mapNotNull { key ->
+            val sep = key.lastIndexOf('_')
+            if (sep <= 0) return@mapNotNull null
+            val type = runCatching { MediaType.valueOf(key.substring(0, sep)) }.getOrNull() ?: return@mapNotNull null
+            val tmdbId = key.substring(sep + 1).toIntOrNull() ?: return@mapNotNull null
+            val matchedDto = when (type) {
+                MediaType.MOVIE -> tmdbToJellyfinMovie[tmdbId]
+                MediaType.SERIES, MediaType.EPISODE -> tmdbToJellyfinSeries[tmdbId]
+            } ?: return@mapNotNull null
+            mapJellyfinItem(matchedDto).copy(
+                isReminderSet = true,
+                upcomingBadgeLabel = "Now in Library"
+            )
+        }
+    }
+
+    suspend fun loadAiringThisWeek(
+        userId: String,
+        today: LocalDate = LocalDate.now()
+    ): List<UnifiedMediaItem> {
+        val base = prefs.cachedJellyfinUrl
+        val upcomingDtos = runCatching {
+            jellyfinApi.getUpcomingEpisodes(userId = userId).items
+        }.getOrDefault(emptyList())
+        return upcomingDtos.map { dto ->
+            val epCode = if (dto.parentIndexNumber != null && dto.indexNumber != null) {
+                "S${dto.parentIndexNumber} E${dto.indexNumber}"
+            } else null
+            val badge = UpcomingDateFormatter.formatComingSoonBadge(
+                releaseDateIso = dto.premiereDate,
+                episodeLabel = epCode,
+                today = today
+            )
+            val seriesItemId = dto.seriesId ?: dto.id
+            val tmdbId = dto.providerIds["Tmdb"]?.toIntOrNull()
+                ?: dto.providerIds["tmdb"]?.toIntOrNull()
+            UnifiedMediaItem(
+                id = "jf_upcoming_${dto.id}",
+                tmdbId = tmdbId,
+                jellyfinId = dto.seriesId,
+                mediaType = MediaType.SERIES,
+                title = dto.seriesName ?: dto.name,
+                overview = buildString {
+                    if (!dto.seriesName.isNullOrBlank() && dto.name.isNotBlank()) {
+                        append(dto.name)
+                        if (!dto.overview.isNullOrBlank()) append("\n")
+                    }
+                    append(dto.overview.orEmpty())
+                }.trim(),
+                posterUrl = MediaImageUrls.jellyfinPrimary(base, seriesItemId),
+                backdropUrl = MediaImageUrls.jellyfinBackdrop(base, seriesItemId),
+                hdStatus = if (dto.seriesId != null) AvailabilityTier.AVAILABLE else AvailabilityTier.UNKNOWN,
+                episodeLabel = epCode,
+                seriesName = dto.seriesName,
+                releaseDate = dto.premiereDate,
+                nextAirDate = dto.premiereDate,
+                upcomingBadgeLabel = badge
+            )
+        }
+    }
+
+    suspend fun loadBoxSetCollections(userId: String): List<CollectionSummary> {
+        val base = prefs.cachedJellyfinUrl
+        val boxSets = runCatching {
+            jellyfinApi.getCollections(userId = userId).items
+        }.getOrDefault(emptyList())
+        return boxSets.map { dto ->
+            val tmdbColId = dto.providerIds["TmdbCollection"]?.toIntOrNull()
+                ?: dto.providerIds["Tmdb"]?.toIntOrNull()
+                ?: dto.providerIds["tmdb"]?.toIntOrNull()
+            val backdrop = if (dto.backdropImageTags.isNotEmpty()) {
+                MediaImageUrls.jellyfinBackdrop(base, dto.id)
+            } else {
+                MediaImageUrls.jellyfinPrimary(base, dto.id, 1280)
+            }
+            CollectionSummary(
+                id = dto.id,
+                tmdbCollectionId = tmdbColId,
+                name = dto.name,
+                overview = dto.overview.orEmpty(),
+                posterUrl = MediaImageUrls.jellyfinPrimary(base, dto.id),
+                backdropUrl = backdrop,
+                ownedCount = dto.childCount ?: 0,
+                totalCount = null
+            )
+        }
+    }
+
+    suspend fun loadBoxSetDetails(
+        userId: String,
+        boxSetId: String,
+        fallbackTitle: String = "Collection",
+        tmdbCollectionIdHint: Int? = null
+    ): CollectionSummary? {
+        if (tmdbToJellyfinMovie.isEmpty() && tmdbToJellyfinSeries.isEmpty()) {
+            refreshLibraryIndex(userId)
+        }
+        val ownedDtos = runCatching {
+            jellyfinApi.getCollectionItems(userId = userId, parentId = boxSetId).items
+        }.getOrDefault(emptyList())
+        val ownedItems = ownedDtos
+            .map { mapJellyfinItem(it) }
+            .sortedBy { it.releaseDate?.takeIf { d -> d.isNotBlank() } ?: it.releaseYear ?: "9999" }
+
+        val resolvedColId = tmdbCollectionIdHint ?: ownedItems
+            .firstOrNull { it.mediaType == MediaType.MOVIE && it.tmdbId != null }
+            ?.tmdbId
+            ?.let { movieTmdb ->
+                runCatching { seerrApi.getMovieDetails(movieTmdb).resolvedCollection?.id }.getOrNull()
+            }
+
+        if (resolvedColId != null) {
+            val saga = loadCollectionSaga(userId, resolvedColId)
+            if (saga != null && saga.items.isNotEmpty()) {
+                val ownedByTmdb = ownedItems.filter { it.tmdbId != null }.associateBy { it.tmdbId!! }
+                val sagaTmdbIds = saga.items.mapNotNull { it.tmdbId }.toSet()
+                val mergedSaga = saga.items.map { part ->
+                    val owned = part.tmdbId?.let { ownedByTmdb[it] }
+                    owned ?: part
+                }
+                val extras = ownedItems.filter { it.tmdbId == null || it.tmdbId !in sagaTmdbIds }
+                val combined = (mergedSaga + extras)
+                    .sortedBy { it.releaseDate?.takeIf { d -> d.isNotBlank() } ?: it.releaseYear ?: "9999" }
+                return saga.copy(
+                    id = boxSetId,
+                    name = fallbackTitle.ifBlank { saga.name },
+                    ownedCount = combined.count { it.isPlayable },
+                    totalCount = combined.size,
+                    items = combined
+                )
+            }
+        }
+
+        if (ownedItems.isEmpty()) return null
+        return CollectionSummary(
+            id = boxSetId,
+            tmdbCollectionId = resolvedColId,
+            name = fallbackTitle,
+            overview = ownedItems.firstOrNull()?.overview.orEmpty(),
+            posterUrl = ownedItems.firstOrNull()?.posterUrl,
+            backdropUrl = ownedItems.firstOrNull()?.backdropUrl,
+            ownedCount = ownedItems.size,
+            totalCount = null,
+            items = ownedItems
+        )
+    }
+
+    suspend fun loadCollectionSaga(userId: String, collectionId: Int): CollectionSummary? {
+        if (tmdbToJellyfinMovie.isEmpty() && tmdbToJellyfinSeries.isEmpty()) {
+            refreshLibraryIndex(userId)
+        }
+        val dto = runCatching { seerrApi.getCollectionDetails(collectionId) }.getOrNull() ?: return null
+        val items = dto.parts
+            .map { mapSeerrResult(it, MediaType.MOVIE) }
+            .sortedBy { it.releaseDate?.takeIf { d -> d.isNotBlank() } ?: it.releaseYear ?: "9999" }
+        val ownedCount = items.count { it.isPlayable }
+        return CollectionSummary(
+            id = "tmdb_col_${dto.id}",
+            tmdbCollectionId = dto.id,
+            name = dto.name,
+            overview = dto.overview.orEmpty(),
+            posterUrl = MediaImageUrls.tmdbPoster(dto.posterPath) ?: items.firstOrNull()?.posterUrl,
+            backdropUrl = MediaImageUrls.tmdbBackdrop(dto.backdropPath) ?: items.firstOrNull()?.backdropUrl,
+            ownedCount = ownedCount,
+            totalCount = items.size,
+            items = items
+        )
+    }
+
+    fun CollectionSummary.toPosterCardItem(): UnifiedMediaItem = UnifiedMediaItem(
+        id = "boxset_$id",
+        mediaType = MediaType.MOVIE,
+        title = name,
+        overview = overview,
+        posterUrl = posterUrl,
+        backdropUrl = backdropUrl,
+        hdStatus = AvailabilityTier.AVAILABLE,
+        upcomingBadgeLabel = completionLabel,
+        collectionId = tmdbCollectionId,
+        collectionName = name,
+        boxSetId = id
+    )
+
+    private fun mapSeerrResult(
+        res: SeerrMediaResultDto,
+        type: MediaType,
+        today: LocalDate = LocalDate.now()
+    ): UnifiedMediaItem {
         val jfBase = prefs.cachedJellyfinUrl
         val matchedJf = if (type == MediaType.MOVIE) tmdbToJellyfinMovie[res.id] else tmdbToJellyfinSeries[res.id]
         val mediaInfo = res.mediaInfo
@@ -1251,6 +1504,8 @@ class UnifiedCatalogRepository @Inject constructor(
             AvailabilityTier.fromSeerrCode(mediaInfo?.status)
         }
         val uhdStatus = AvailabilityTier.fromSeerrCode(mediaInfo?.status4k)
+        val rawReleaseDate = (res.releaseDate ?: res.firstAirDate)?.takeIf { it.isNotBlank() }
+        val upcomingBadge = UpcomingDateFormatter.formatComingSoonBadge(rawReleaseDate, today = today)
 
         return UnifiedMediaItem(
             id = "tmdb_${type.name}_${res.id}",
@@ -1259,7 +1514,9 @@ class UnifiedCatalogRepository @Inject constructor(
             mediaType = type,
             title = res.title ?: res.name ?: res.originalTitle ?: res.originalName ?: "Untitled",
             overview = res.overview.orEmpty(),
-            releaseYear = (res.releaseDate ?: res.firstAirDate)?.take(4),
+            releaseYear = rawReleaseDate?.take(4),
+            releaseDate = rawReleaseDate,
+            upcomingBadgeLabel = upcomingBadge,
             voteAverage = res.voteAverage,
             posterUrl = MediaImageUrls.tmdbPoster(res.posterPath)
                 ?: matchedJf?.let { MediaImageUrls.jellyfinPrimary(jfBase, it.id) },
@@ -1289,6 +1546,7 @@ class UnifiedCatalogRepository @Inject constructor(
         val uhdStatus = AvailabilityTier.fromSeerrCode(info?.status4k)
         val backdropUrl = MediaImageUrls.tmdbBackdrop(seerr.backdropPath)
             ?: jf?.let { MediaImageUrls.jellyfinBackdrop(jfBase, it.id) }
+        val collection = seerr.resolvedCollection
 
         return UnifiedMediaItem(
             id = "tmdb_MOVIE_${seerr.id}",
@@ -1300,6 +1558,9 @@ class UnifiedCatalogRepository @Inject constructor(
             overview = seerr.overview.orEmpty(),
             tagline = seerr.tagline,
             releaseYear = seerr.releaseDate?.take(4),
+            releaseDate = seerr.releaseDate,
+            collectionId = collection?.id,
+            collectionName = collection?.name,
             runtimeMinutes = seerr.runtime ?: jf?.runTimeTicks?.let { (it / 600_000_000L).toInt() },
             maturityRating = jf?.officialRating,
             voteAverage = seerr.voteAverage,

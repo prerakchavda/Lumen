@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Hd
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tv
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -56,13 +59,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import coil3.compose.AsyncImage
 import com.seerflix.tv.core.model.AvailabilityFilter
+import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CatalogRow
+import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.RowStyle
@@ -105,7 +113,11 @@ fun HomeScreen(
         onOpenPosterOptions = viewModel::openPosterOptions,
         onDismissPosterOptions = viewModel::dismissPosterOptions,
         onQuickRequest = viewModel::quickRequestItem,
-        onTogglePosterMyList = viewModel::togglePosterMyList
+        onTogglePosterMyList = viewModel::togglePosterMyList,
+        onOpenCollection = viewModel::openCollection,
+        onDismissCollectionDetails = viewModel::dismissCollectionDetails,
+        onRequestCollectionItem = { item -> viewModel.requestCollectionItem(item) },
+        onRequestAllMissingInCollection = { viewModel.requestAllMissingInCollection() }
     )
 }
 
@@ -131,7 +143,11 @@ fun HomeContent(
     onOpenPosterOptions: (UnifiedMediaItem) -> Unit = {},
     onDismissPosterOptions: () -> Unit = {},
     onQuickRequest: (UnifiedMediaItem, Boolean) -> Unit = { _, _ -> },
-    onTogglePosterMyList: (UnifiedMediaItem) -> Unit = {}
+    onTogglePosterMyList: (UnifiedMediaItem) -> Unit = {},
+    onOpenCollection: (boxSetId: String, title: String, tmdbCollectionId: Int?) -> Unit = { _, _, _ -> },
+    onDismissCollectionDetails: () -> Unit = {},
+    onRequestCollectionItem: (UnifiedMediaItem) -> Unit = {},
+    onRequestAllMissingInCollection: () -> Unit = {}
 ) {
     var railExpanded by remember { mutableStateOf(false) }
 
@@ -163,7 +179,7 @@ fun HomeContent(
                 .background(NetflixColors.Background)
         ) {
             when {
-                state.isLoading && state.rows.isEmpty() -> {
+                state.isLoading && state.rows.isEmpty() && state.collections.isEmpty() -> {
                     Column(
                         modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -173,7 +189,7 @@ fun HomeContent(
                         Text("Loading your Netflix-style hub…", color = NetflixColors.TextSecondary, fontSize = 14.sp)
                     }
                 }
-                state.errorMessage != null && state.rows.isEmpty() -> {
+                state.errorMessage != null && state.rows.isEmpty() && state.collections.isEmpty() -> {
                     Column(
                         modifier = Modifier.align(Alignment.Center),
                         horizontalAlignment = Alignment.CenterHorizontally
@@ -188,6 +204,14 @@ fun HomeContent(
                             onClick = onRefresh
                         )
                     }
+                }
+                state.activeTab == HomeTab.COLLECTIONS -> {
+                    CollectionsHubContent(
+                        collections = state.collections,
+                        onOpenCollection = { col ->
+                            onOpenCollection(col.id, col.name, col.tmdbCollectionId)
+                        }
+                    )
                 }
                 state.activeTab == HomeTab.MY_LIST && state.rows.isEmpty() -> {
                     Column(
@@ -223,13 +247,21 @@ fun HomeContent(
                                     isMuted = state.isPreviewMuted,
                                     onToggleMute = onTogglePreviewMute,
                                     onPrimaryAction = {
-                                        if (hero.isPlayable && hero.jellyfinId != null) {
+                                        if (hero.boxSetId != null) {
+                                            onOpenCollection(hero.boxSetId, hero.title, hero.collectionId)
+                                        } else if (hero.isPlayable && hero.jellyfinId != null) {
                                             onPlayDirect(hero.jellyfinId)
                                         } else {
                                             onOpenDetails(hero)
                                         }
                                     },
-                                    onMoreInfo = { onOpenDetails(hero) },
+                                    onMoreInfo = {
+                                        if (hero.boxSetId != null) {
+                                            onOpenCollection(hero.boxSetId, hero.title, hero.collectionId)
+                                        } else {
+                                            onOpenDetails(hero)
+                                        }
+                                    },
                                     onToggleMyList = onToggleFeaturedMyList
                                 )
                             }
@@ -282,7 +314,9 @@ fun HomeContent(
                                 row = row,
                                 onItemFocus = onItemFocused,
                                 onItemClick = { item ->
-                                    if (row.style == RowStyle.CONTINUE_WATCHING && item.jellyfinId != null) {
+                                    if (item.boxSetId != null) {
+                                        onOpenCollection(item.boxSetId, item.title, item.collectionId)
+                                    } else if (row.style == RowStyle.CONTINUE_WATCHING && item.jellyfinId != null) {
                                         onPlayDirect(item.jellyfinId)
                                     } else {
                                         onOpenDetails(item)
@@ -334,22 +368,42 @@ fun HomeContent(
     }
 
     state.posterMenuTarget?.let { target ->
-        val has4k = if (target.mediaType == MediaType.MOVIE) state.has4kMovieServer else state.has4kTvServer
-        PosterOptionsDialog(
-            item = target,
-            has4kServer = has4k,
-            onPlay = {
-                onDismissPosterOptions()
-                target.jellyfinId?.let(onPlayDirect)
+        if (target.boxSetId == null) {
+            val has4k = if (target.mediaType == MediaType.MOVIE) state.has4kMovieServer else state.has4kTvServer
+            PosterOptionsDialog(
+                item = target,
+                has4kServer = has4k,
+                onPlay = {
+                    onDismissPosterOptions()
+                    target.jellyfinId?.let(onPlayDirect)
+                },
+                onRequestHd = { onQuickRequest(target, false) },
+                onRequest4k = { onQuickRequest(target, true) },
+                onToggleMyList = { onTogglePosterMyList(target) },
+                onViewDetails = {
+                    onDismissPosterOptions()
+                    onOpenDetails(target)
+                },
+                onDismiss = onDismissPosterOptions
+            )
+        }
+    }
+
+    state.activeCollectionDetails?.let { collection ->
+        CollectionDetailsDialog(
+            collection = collection,
+            isLoading = state.collectionDetailsLoading,
+            onPlayItem = { item ->
+                onDismissCollectionDetails()
+                item.jellyfinId?.let(onPlayDirect)
             },
-            onRequestHd = { onQuickRequest(target, false) },
-            onRequest4k = { onQuickRequest(target, true) },
-            onToggleMyList = { onTogglePosterMyList(target) },
-            onViewDetails = {
-                onDismissPosterOptions()
-                onOpenDetails(target)
+            onOpenItemDetails = { item ->
+                onDismissCollectionDetails()
+                onOpenDetails(item)
             },
-            onDismiss = onDismissPosterOptions
+            onRequestItem = onRequestCollectionItem,
+            onRequestAllMissing = onRequestAllMissingInCollection,
+            onDismiss = onDismissCollectionDetails
         )
     }
 }
@@ -705,6 +759,13 @@ private fun NetflixNavRail(
                 onClick = { onSelectTab(HomeTab.MOVIES) }
             )
             NavRailItem(
+                icon = Icons.Filled.VideoLibrary,
+                label = "Collections",
+                expanded = expanded,
+                selected = activeTab == HomeTab.COLLECTIONS,
+                onClick = { onSelectTab(HomeTab.COLLECTIONS) }
+            )
+            NavRailItem(
                 icon = Icons.Filled.Bookmark,
                 label = "My List",
                 expanded = expanded,
@@ -824,4 +885,318 @@ private fun NavRailItem(
         }
     }
 }
+
+@Composable
+private fun CollectionsHubContent(
+    collections: List<CollectionSummary>,
+    onOpenCollection: (CollectionSummary) -> Unit
+) {
+    if (collections.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = Icons.Filled.VideoLibrary,
+                    contentDescription = null,
+                    tint = NetflixColors.TextMuted,
+                    modifier = Modifier.size(48.dp)
+                )
+                Spacer(Modifier.height(14.dp))
+                Text("No Jellyfin Collections found", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = "Create BoxSets in Jellyfin to browse sagas and complete missing sequels here.",
+                    color = NetflixColors.TextSecondary,
+                    fontSize = 14.sp
+                )
+            }
+        }
+        return
+    }
+
+    val rows = remember(collections) { collections.chunked(4) }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 36.dp, vertical = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(20.dp)
+    ) {
+        item(key = "collections_header") {
+            Column {
+                Text(
+                    text = "Collections",
+                    color = NetflixColors.White,
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Black
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Browse your Jellyfin BoxSets and discover missing entries to complete every saga.",
+                    color = NetflixColors.TextSecondary,
+                    fontSize = 13.sp
+                )
+            }
+        }
+
+        items(rows) { chunk ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                chunk.forEach { col ->
+                    var focused by remember { mutableStateOf(false) }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (focused) Color(0xFF282828) else Color(0xFF1A1A1D))
+                            .then(
+                                if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
+                                else Modifier.border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(8.dp))
+                            )
+                            .onFocusChanged { focused = it.isFocused }
+                            .focusable()
+                            .clickable { onOpenCollection(col) }
+                            .padding(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(16f / 9f)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(NetflixColors.SurfaceElevated)
+                        ) {
+                            AsyncImage(
+                                model = col.backdropUrl ?: col.posterUrl,
+                                contentDescription = col.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(6.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(Color(0xDD0A0A0A))
+                                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = col.completionLabel,
+                                    color = NetflixColors.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = col.name,
+                            color = NetflixColors.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                repeat(4 - chunk.size) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CollectionDetailsDialog(
+    collection: CollectionSummary,
+    isLoading: Boolean,
+    onPlayItem: (UnifiedMediaItem) -> Unit,
+    onOpenItemDetails: (UnifiedMediaItem) -> Unit,
+    onRequestItem: (UnifiedMediaItem) -> Unit,
+    onRequestAllMissing: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val missingCount = remember(collection.items) {
+        collection.items.count { !it.isPlayable && it.canRequestHd }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(680.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF161618))
+                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(12.dp))
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = collection.name,
+                        color = NetflixColors.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = collection.completionLabel,
+                        color = NetflixColors.MatchGreen,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (missingCount > 0) {
+                        var reqAllFocused by remember { mutableStateOf(false) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(if (reqAllFocused) Color(0xFFFF1F2B) else NetflixColors.NetflixRed)
+                                .then(if (reqAllFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+                                .onFocusChanged { reqAllFocused = it.isFocused }
+                                .focusable()
+                                .clickable(onClick = onRequestAllMissing)
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Filled.CloudDownload, contentDescription = null, tint = NetflixColors.White, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Request Missing ($missingCount)", color = NetflixColors.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    var closeFocused by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(if (closeFocused) Color(0xFF3E3E3E) else Color(0xFF262629))
+                            .then(if (closeFocused) Modifier.border(2.dp, NetflixColors.White, CircleShape) else Modifier)
+                            .onFocusChanged { closeFocused = it.isFocused }
+                            .focusable()
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = "Close", tint = NetflixColors.White, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            if (collection.overview.isNotBlank()) {
+                Text(
+                    text = collection.overview,
+                    color = NetflixColors.TextSecondary,
+                    fontSize = 13.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (isLoading && collection.items.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = NetflixColors.NetflixRed)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(340.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(collection.items, key = { it.id }) { part ->
+                        var rowFocused by remember { mutableStateOf(false) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (rowFocused) Color(0xFF2C2C30) else Color(0xFF1F1F22))
+                                .then(if (rowFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp)) else Modifier)
+                                .onFocusChanged { rowFocused = it.isFocused }
+                                .focusable()
+                                .clickable {
+                                    when {
+                                        part.isPlayable -> onPlayItem(part)
+                                        part.canRequestHd -> onRequestItem(part)
+                                        else -> onOpenItemDetails(part)
+                                    }
+                                }
+                                .padding(10.dp)
+                        ) {
+                            AsyncImage(
+                                model = part.posterUrl ?: part.backdropUrl,
+                                contentDescription = part.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .width(56.dp)
+                                    .aspectRatio(2f / 3f)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(NetflixColors.SurfaceElevated)
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = part.title,
+                                    color = NetflixColors.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = listOfNotNull(
+                                        part.releaseYear,
+                                        when {
+                                            part.isPlayable -> "In Library"
+                                            part.overallAvailability == AvailabilityTier.PROCESSING -> "Downloading"
+                                            part.overallAvailability == AvailabilityTier.PENDING -> "Requested"
+                                            part.canRequestHd -> "Missing from Library"
+                                            else -> null
+                                        }
+                                    ).joinToString(" • "),
+                                    color = if (part.isPlayable) NetflixColors.MatchGreen else NetflixColors.TextSecondary,
+                                    fontSize = 12.sp
+                                )
+                            }
+                            val actionLabel = when {
+                                part.isPlayable -> "Play"
+                                part.overallAvailability.isRequestedOrDownloading -> "Requested"
+                                part.canRequestHd -> "+ Request"
+                                else -> "Details"
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(
+                                        when {
+                                            part.isPlayable -> NetflixColors.White
+                                            part.canRequestHd -> NetflixColors.NetflixRed
+                                            else -> Color(0xFF333338)
+                                        }
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = actionLabel,
+                                    color = if (part.isPlayable) NetflixColors.DeepBlack else NetflixColors.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 

@@ -133,6 +133,14 @@ class AuthRepository @Inject constructor(
         prefs.updateSubtitleAppearance(fontScale, backgroundAlpha)
     }
 
+    suspend fun updatePlaybackPreferences(
+        autoSkipIntro: Boolean? = null,
+        autoSkipRecap: Boolean? = null,
+        frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null
+    ) {
+        prefs.updatePlaybackPreferences(autoSkipIntro, autoSkipRecap, frameRateMatchMode)
+    }
+
     fun verifyProfilePin(profile: UserProfile, enteredPin: String): Boolean {
         return SessionPreferences.verifyPin(profile.pinHash, enteredPin)
     }

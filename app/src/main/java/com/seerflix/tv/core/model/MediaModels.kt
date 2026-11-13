@@ -255,6 +255,12 @@ data class UnifiedMediaItem(
     val mediaBadges: List<String> = emptyList(),
     val episodeLabel: String? = null,
     val seriesName: String? = null,
+    val releaseDate: String? = null,
+    val nextAirDate: String? = null,
+    val upcomingBadgeLabel: String? = null,
+    val collectionId: Int? = null,
+    val collectionName: String? = null,
+    val boxSetId: String? = null,
     val youtubeTrailerKey: String? = null,
     val localTrailerItemId: String? = null,
     val relatedVideos: List<RelatedVideoItem> = emptyList(),
@@ -308,6 +314,36 @@ data class UnifiedMediaItem(
             if (h > 0) "${h}h ${m}m" else "${m}m"
         }
 }
+
+data class CollectionSummary(
+    val id: String,
+    val tmdbCollectionId: Int? = null,
+    val name: String,
+    val overview: String = "",
+    val posterUrl: String? = null,
+    val backdropUrl: String? = null,
+    val ownedCount: Int = 0,
+    val totalCount: Int? = null,
+    val items: List<UnifiedMediaItem> = emptyList()
+) {
+    val completionLabel: String
+        get() = if (totalCount != null && totalCount > 0) {
+            "$ownedCount of $totalCount in Library"
+        } else {
+            "$ownedCount in Library"
+        }
+}
+
+data class RemoteSubtitleOption(
+    val id: String,
+    val name: String,
+    val language: String,
+    val format: String? = null,
+    val providerName: String? = null,
+    val downloadCount: Int? = null,
+    val communityRating: Float? = null,
+    val isHashMatch: Boolean = false
+)
 
 enum class RowStyle {
     CONTINUE_WATCHING,

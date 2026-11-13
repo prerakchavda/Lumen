@@ -185,28 +185,84 @@ fun NetflixPosterCard(
                 )
         )
 
-        // Top-right availability badge
-        AvailabilityBadge(
-            item = item,
-            compact = true,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(6.dp)
-        )
+        // Top-left availability or collection badge
+        if (item.boxSetId != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xDD1F1F1F))
+                    .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(4.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = "COLLECTION",
+                    color = NetflixColors.White,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        } else {
+            AvailabilityBadge(
+                item = item,
+                compact = true,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+            )
+        }
 
-        // Fallback title if poster missing or focused
-        if (item.posterUrl == null || focused) {
-            Text(
-                text = item.title,
-                color = NetflixColors.White,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+        // Bottom metadata (title when missing/focused + upcoming countdown / completion pill)
+        val hasBottomTitle = item.posterUrl == null || focused
+        val hasBottomBadge = !item.upcomingBadgeLabel.isNullOrBlank()
+        if (hasBottomTitle || hasBottomBadge) {
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(horizontal = 8.dp, vertical = 8.dp)
-            )
+                    .padding(horizontal = 6.dp, vertical = if (item.watchProgressFraction > 0f) 8.dp else 6.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (hasBottomTitle) {
+                    Text(
+                        text = item.title,
+                        color = NetflixColors.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 2.dp)
+                    )
+                }
+                if (hasBottomBadge) {
+                    val isHighlight = item.upcomingBadgeLabel.equals("Now in Library", ignoreCase = true) ||
+                        item.upcomingBadgeLabel?.contains("Tonight", ignoreCase = true) == true ||
+                        item.upcomingBadgeLabel?.equals("Today", ignoreCase = true) == true
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                if (isHighlight) NetflixColors.NetflixRed.copy(alpha = 0.92f)
+                                else Color(0xDD111114)
+                            )
+                            .border(
+                                1.dp,
+                                if (isHighlight) Color.Transparent else Color(0x44FFFFFF),
+                                RoundedCornerShape(4.dp)
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = item.upcomingBadgeLabel!!,
+                            color = NetflixColors.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
         }
 
         if (item.watchProgressFraction > 0f) {

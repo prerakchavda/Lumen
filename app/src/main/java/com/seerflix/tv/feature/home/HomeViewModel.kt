@@ -7,6 +7,7 @@ import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.AvailabilityFilter
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CatalogRow
+import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.RowStyle
@@ -32,6 +33,7 @@ enum class HomeTab(val label: String, val filter: MediaType?) {
     HOME("Home", null),
     SHOWS("TV Shows", MediaType.SERIES),
     MOVIES("Movies", MediaType.MOVIE),
+    COLLECTIONS("Collections", null),
     NEW_AND_POPULAR("New & Popular", null),
     MY_LIST("My List", null)
 }
@@ -42,6 +44,9 @@ data class HomeUiState(
     val availabilityFilter: AvailabilityFilter = AvailabilityFilter.ALL,
     val profile: UserProfile? = null,
     val rows: List<CatalogRow> = emptyList(),
+    val collections: List<CollectionSummary> = emptyList(),
+    val activeCollectionDetails: CollectionSummary? = null,
+    val collectionDetailsLoading: Boolean = false,
     val featuredItem: UnifiedMediaItem? = null,
     val previewStream: ResolvedPreviewStream? = null,
     val isPreviewMuted: Boolean = true,
@@ -74,7 +79,9 @@ class HomeViewModel @Inject constructor(
     }
 
     fun selectTab(tab: HomeTab) {
-        if (_uiState.value.activeTab == tab && _uiState.value.rows.isNotEmpty()) return
+        if (_uiState.value.activeTab == tab &&
+            (_uiState.value.rows.isNotEmpty() || _uiState.value.collections.isNotEmpty())
+        ) return
         loadCatalog(tab, GenreFilterOption.ALL_GENRES.first(), _uiState.value.availabilityFilter)
     }
 
@@ -229,6 +236,108 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    fun openCollection(boxSetId: String, title: String, tmdbCollectionId: Int? = null) {
+        val profile = _uiState.value.profile ?: return
+        _uiState.update {
+            it.copy(
+                activeCollectionDetails = CollectionSummary(
+                    id = boxSetId,
+                    tmdbCollectionId = tmdbCollectionId,
+                    name = title
+                ),
+                collectionDetailsLoading = true
+            )
+        }
+        viewModelScope.launch {
+            val details = catalogRepository.loadBoxSetDetails(
+                userId = profile.jellyfinUserId,
+                boxSetId = boxSetId,
+                fallbackTitle = title,
+                tmdbCollectionIdHint = tmdbCollectionId
+            )
+            _uiState.update { state ->
+                if (state.activeCollectionDetails?.id != boxSetId) state
+                else state.copy(
+                    activeCollectionDetails = details ?: state.activeCollectionDetails,
+                    collectionDetailsLoading = false
+                )
+            }
+        }
+    }
+
+    fun dismissCollectionDetails() {
+        _uiState.update { it.copy(activeCollectionDetails = null, collectionDetailsLoading = false) }
+    }
+
+    fun requestCollectionItem(item: UnifiedMediaItem, is4k: Boolean = false) {
+        val tmdbId = item.tmdbId ?: return
+        viewModelScope.launch {
+            catalogRepository.submitRequest(tmdbId = tmdbId, mediaType = item.mediaType, is4k = is4k)
+                .onSuccess {
+                    _uiState.update { state ->
+                        val updatedCol = state.activeCollectionDetails?.let { col ->
+                            col.copy(
+                                items = col.items.map { part ->
+                                    if (part.tmdbId == tmdbId) {
+                                        if (is4k) part.copy(uhdStatus = AvailabilityTier.PENDING)
+                                        else part.copy(hdStatus = AvailabilityTier.PENDING)
+                                    } else part
+                                }
+                            )
+                        }
+                        state.copy(
+                            activeCollectionDetails = updatedCol,
+                            activeDownloadCount = state.activeDownloadCount + 1
+                        )
+                    }
+                    showActionFeedback("Requested \"${item.title}\"")
+                }
+                .onFailure { err ->
+                    showActionFeedback("Request failed: ${err.message ?: "Unknown error"}")
+                }
+        }
+    }
+
+    fun requestAllMissingInCollection(is4k: Boolean = false) {
+        val col = _uiState.value.activeCollectionDetails ?: return
+        val missing = col.items.filter { !it.isPlayable && it.canRequestHd && it.tmdbId != null }
+        if (missing.isEmpty()) return
+        viewModelScope.launch {
+            var count = 0
+            val requestedTmdbIds = mutableSetOf<Int>()
+            missing.forEach { part ->
+                val tmdb = part.tmdbId ?: return@forEach
+                catalogRepository.submitRequest(tmdbId = tmdb, mediaType = part.mediaType, is4k = is4k)
+                    .onSuccess {
+                        count++
+                        requestedTmdbIds += tmdb
+                    }
+            }
+            if (requestedTmdbIds.isNotEmpty()) {
+                _uiState.update { state ->
+                    val updatedCol = state.activeCollectionDetails?.let { cur ->
+                        cur.copy(
+                            items = cur.items.map { part ->
+                                if (part.tmdbId in requestedTmdbIds) {
+                                    if (is4k) part.copy(uhdStatus = AvailabilityTier.PENDING)
+                                    else part.copy(hdStatus = AvailabilityTier.PENDING)
+                                } else part
+                            }
+                        )
+                    }
+                    state.copy(
+                        activeCollectionDetails = updatedCol,
+                        activeDownloadCount = state.activeDownloadCount + count
+                    )
+                }
+            }
+            showActionFeedback(
+                if (count > 0) "Requested $count missing title${if (count == 1) "" else "s"} in ${col.name}"
+                else "Unable to submit collection requests"
+            )
+        }
+    }
+
     fun onItemFocused(item: UnifiedMediaItem) {
         if (_uiState.value.featuredItem?.id == item.id) return
         focusPreviewJob?.cancel()
@@ -236,6 +345,7 @@ class HomeViewModel @Inject constructor(
             delay(380L)
             _uiState.update { it.copy(featuredItem = item, previewStream = null) }
 
+            if (item.boxSetId != null) return@launch
             val profile = _uiState.value.profile ?: return@launch
             // Enrich focused item with trailer key / local trailer / live download status / My List state
             val enriched = catalogRepository.loadFullDetails(
@@ -297,8 +407,14 @@ class HomeViewModel @Inject constructor(
 
             runCatching {
                 coroutineScope {
+                    val collectionsDeferred = async {
+                        if (tab == HomeTab.COLLECTIONS) {
+                            catalogRepository.loadBoxSetCollections(profile.jellyfinUserId)
+                        } else emptyList()
+                    }
                     val rowsDeferred = async {
                         when (tab) {
+                            HomeTab.COLLECTIONS -> emptyList()
                             HomeTab.NEW_AND_POPULAR -> catalogRepository.loadNewAndPopular(
                                 userId = profile.jellyfinUserId,
                                 availabilityFilter = availabilityFilter
@@ -348,6 +464,7 @@ class HomeViewModel @Inject constructor(
                     }
 
                     val rows = rowsDeferred.await()
+                    val collections = collectionsDeferred.await()
                     val requests = requestsDeferred.await()
                     val activeDownloads = requests.count {
                         it.downloadProgress != null || it.mediaStatus.isRequestedOrDownloading
@@ -356,6 +473,7 @@ class HomeViewModel @Inject constructor(
                         ?: rows.firstOrNull()?.items?.firstOrNull()
                     CatalogLoadBundle(
                         rows = rows,
+                        collections = collections,
                         featured = initialFeatured,
                         activeDownloads = activeDownloads,
                         has4kMovie = has4kMovieDeferred.await(),
@@ -366,6 +484,7 @@ class HomeViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         rows = bundle.rows,
+                        collections = bundle.collections,
                         featuredItem = bundle.featured,
                         activeDownloadCount = bundle.activeDownloads,
                         has4kMovieServer = bundle.has4kMovie,
@@ -397,6 +516,7 @@ class HomeViewModel @Inject constructor(
 
     private data class CatalogLoadBundle(
         val rows: List<CatalogRow>,
+        val collections: List<CollectionSummary>,
         val featured: UnifiedMediaItem?,
         val activeDownloads: Int,
         val has4kMovie: Boolean,

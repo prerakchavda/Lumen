@@ -181,6 +181,37 @@ class JellyfinPlaybackManager @Inject constructor(
         }
     }
 
+    suspend fun searchRemoteSubtitles(
+        itemId: String,
+        language: String = "eng"
+    ): Result<List<com.seerflix.tv.core.model.RemoteSubtitleOption>> = runCatching {
+        jellyfinApi.searchRemoteSubtitles(itemId = itemId, language = language)
+            .map { dto ->
+                com.seerflix.tv.core.model.RemoteSubtitleOption(
+                    id = dto.id,
+                    name = dto.name ?: dto.comment ?: "Subtitle ${dto.id}",
+                    language = dto.threeLetterIsoLanguageName ?: language,
+                    format = dto.format,
+                    providerName = dto.providerName,
+                    downloadCount = dto.downloadCount,
+                    communityRating = dto.communityRating,
+                    isHashMatch = dto.isHashMatch == true
+                )
+            }
+            .sortedWith(
+                compareByDescending<com.seerflix.tv.core.model.RemoteSubtitleOption> { it.isHashMatch }
+                    .thenByDescending { it.downloadCount ?: 0 }
+                    .thenByDescending { it.communityRating ?: 0f }
+            )
+    }
+
+    suspend fun downloadRemoteSubtitle(
+        itemId: String,
+        subtitleId: String
+    ): Result<Unit> = runCatching {
+        jellyfinApi.downloadRemoteSubtitle(itemId = itemId, subtitleId = subtitleId)
+    }
+
     suspend fun reportStart(session: PlaybackSessionData, positionTicks: Long) {
         runCatching {
             jellyfinApi.reportPlaybackStart(

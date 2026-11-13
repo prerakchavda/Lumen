@@ -459,6 +459,9 @@ private fun ProfileSettingsDialog(
 ) {
     var autoplayNext by remember(profile.id) { mutableStateOf(profile.autoplayNextEpisode) }
     var autoplayPreviews by remember(profile.id) { mutableStateOf(profile.autoplayPreviews) }
+    var autoSkipIntro by remember(profile.id) { mutableStateOf(profile.autoSkipIntro) }
+    var autoSkipRecap by remember(profile.id) { mutableStateOf(profile.autoSkipRecap) }
+    var frameRateMatchMode by remember(profile.id) { mutableStateOf(profile.frameRateMatchMode) }
     var audioLang by remember(profile.id) { mutableStateOf(profile.preferredAudioLang) }
     var subLang by remember(profile.id) { mutableStateOf(profile.preferredSubtitleLang) }
     var pinCode by remember(profile.id) { mutableStateOf("") }
@@ -487,6 +490,28 @@ private fun ProfileSettingsDialog(
                 checked = autoplayPreviews,
                 onToggle = { autoplayPreviews = !autoplayPreviews }
             )
+            PreferenceSwitchRow(
+                label = "Auto-Skip Intro",
+                checked = autoSkipIntro,
+                onToggle = { autoSkipIntro = !autoSkipIntro }
+            )
+            PreferenceSwitchRow(
+                label = "Auto-Skip Recap",
+                checked = autoSkipRecap,
+                onToggle = { autoSkipRecap = !autoSkipRecap }
+            )
+
+            Text("24fps Frame-Rate Matching", color = NetflixColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                com.seerflix.tv.core.model.FrameRateMatchMode.entries.forEach { mode ->
+                    PrefChip(
+                        label = mode.label,
+                        selected = frameRateMatchMode == mode,
+                        onClick = { frameRateMatchMode = mode },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
 
             Text("Preferred Audio Language", color = NetflixColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -559,6 +584,9 @@ private fun ProfileSettingsDialog(
                         val updated = profile.copy(
                             autoplayNextEpisode = autoplayNext,
                             autoplayPreviews = autoplayPreviews,
+                            autoSkipIntro = autoSkipIntro,
+                            autoSkipRecap = autoSkipRecap,
+                            frameRateMatchMode = frameRateMatchMode,
                             preferredAudioLang = audioLang,
                             preferredSubtitleLang = subLang
                         )

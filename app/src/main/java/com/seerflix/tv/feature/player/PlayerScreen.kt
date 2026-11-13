@@ -1,6 +1,7 @@
 package com.seerflix.tv.feature.player
 
 import android.graphics.Bitmap
+import android.os.Build
 import android.view.KeyEvent
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -34,11 +35,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Subtitles
@@ -52,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -78,10 +82,14 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.CaptionStyleCompat
@@ -94,13 +102,21 @@ import coil3.request.SuccessResult
 import coil3.request.allowHardware
 import coil3.toBitmap
 import com.seerflix.tv.core.model.EpisodeSummary
+import com.seerflix.tv.core.model.FrameRateMatchMode
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.QualityPreset
+import com.seerflix.tv.core.model.RemoteSubtitleOption
 import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.TrickplayCrop
+import com.seerflix.tv.core.player.AutoSkipHelper
+import com.seerflix.tv.core.player.FrameRateMatcher
+import com.seerflix.tv.core.player.OffsetSubtitleParserFactory
+import com.seerflix.tv.core.player.SkipSegmentType
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.NetflixColors
 import kotlinx.coroutines.delay
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -110,11 +126,20 @@ fun PlayerScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val activity = remember(context) { FrameRateMatcher.findActivity(context) }
 
+    val subtitleOffsetUsRef = remember { AtomicLong(0L) }
     val player = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            playWhenReady = true
-        }
+        val subtitleParserFactory = OffsetSubtitleParserFactory { subtitleOffsetUsRef.get() }
+        val mediaSourceFactory = DefaultMediaSourceFactory(context)
+            .setSubtitleParserFactory(subtitleParserFactory)
+            .experimentalParseSubtitlesDuringExtraction(true)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(mediaSourceFactory)
+            .build()
+            .apply {
+                playWhenReady = true
+            }
     }
 
     var isPlaying by remember { mutableStateOf(true) }
@@ -124,16 +149,108 @@ fun PlayerScreen(
     var showTracksDialog by remember { mutableStateOf(false) }
     var showEpisodesDrawer by remember { mutableStateOf(false) }
     var scrubPreviewMs by remember { mutableStateOf<Long?>(null) }
+    var detectedVideoFrameRate by remember { mutableFloatStateOf(0f) }
+    var skippedIntroItemId by remember { mutableStateOf<String?>(null) }
+    var skippedRecapItemId by remember { mutableStateOf<String?>(null) }
+    var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
+    var subtitleOffsetHudText by remember { mutableStateOf<String?>(null) }
+    var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onTracksChanged(tracks: Tracks) {
+                val videoRate = tracks.groups
+                    .filter { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
+                    .firstNotNullOfOrNull { group ->
+                        (0 until group.length)
+                            .firstOrNull { group.isTrackSelected(it) }
+                            ?.let { idx -> group.getTrackFormat(idx).frameRate }
+                    } ?: 0f
+                if (videoRate > 1f) {
+                    detectedVideoFrameRate = videoRate
+                }
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                val videoRate = player.videoFormat?.frameRate ?: 0f
+                if (videoRate > 1f) {
+                    detectedVideoFrameRate = videoRate
+                }
+            }
+        }
+        player.addListener(listener)
         onDispose {
+            player.removeListener(listener)
+            activity?.window?.let { win ->
+                val params = win.attributes
+                if (params.preferredDisplayModeId != 0) {
+                    params.preferredDisplayModeId = 0
+                    win.attributes = params
+                }
+            }
             viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L))
             player.release()
         }
     }
 
+    // Apply live subtitle sync offset & re-parse buffered cues when user adjusts offset
+    LaunchedEffect(state.subtitleOffsetMs) {
+        subtitleOffsetUsRef.set(state.subtitleOffsetMs * 1000L)
+        if (!hasInitializedOffsetEffect) {
+            hasInitializedOffsetEffect = true
+            return@LaunchedEffect
+        }
+        if (state.session != null && state.session?.isTrailer != true) {
+            player.seekTo(player.currentPosition.coerceAtLeast(0L))
+        }
+        val sec = state.subtitleOffsetMs / 1000.0
+        subtitleOffsetHudText = "Subtitle Sync: ${String.format(Locale.US, "%+.2fs", sec)}"
+        delay(2500L)
+        subtitleOffsetHudText = null
+    }
+
+    // Apply 24fps / frame-rate matching strategy & optional Display.Mode on TV
+    LaunchedEffect(state.frameRateMatchMode, state.session?.isTrailer, detectedVideoFrameRate) {
+        val isTrailer = state.session?.isTrailer == true
+        val mode = state.frameRateMatchMode
+        player.videoChangeFrameRateStrategy = if (isTrailer || mode == FrameRateMatchMode.OFF) {
+            C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
+        } else {
+            C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_ONLY_IF_SEAMLESS
+        }
+
+        val win = activity?.window ?: return@LaunchedEffect
+        if (isTrailer || mode != FrameRateMatchMode.ALWAYS) {
+            val params = win.attributes
+            if (params.preferredDisplayModeId != 0) {
+                params.preferredDisplayModeId = 0
+                win.attributes = params
+            }
+            return@LaunchedEffect
+        }
+
+        if (detectedVideoFrameRate > 1f) {
+            @Suppress("DEPRECATION")
+            val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                activity.display
+            } else {
+                activity.windowManager.defaultDisplay
+            }
+            if (display != null) {
+                val bestMode = FrameRateMatcher.findBestAndroidDisplayMode(display, detectedVideoFrameRate, mode)
+                if (bestMode != null && win.attributes.preferredDisplayModeId != bestMode.modeId) {
+                    val params = win.attributes
+                    params.preferredDisplayModeId = bestMode.modeId
+                    win.attributes = params
+                }
+            }
+        }
+    }
+
     LaunchedEffect(state.session?.itemId, state.session?.streamUrl) {
         val session = state.session ?: return@LaunchedEffect
+        detectedVideoFrameRate = 0f
+        autoSkipUndoPrompt = null
         if (session.trailerAudioUrl != null) {
             val dsFactory = DefaultHttpDataSource.Factory()
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -203,6 +320,52 @@ fun PlayerScreen(
 
     val session = state.session
     val currentTicks = currentPosMs * 10_000L
+
+    // Loop-safe Auto-Skip Recap & Intro
+    LaunchedEffect(currentTicks, session?.itemId, state.autoSkipIntro, state.autoSkipRecap) {
+        val activeSession = session ?: return@LaunchedEffect
+        if (AutoSkipHelper.shouldAutoSkip(
+                enabled = state.autoSkipRecap,
+                isTrailer = activeSession.isTrailer,
+                itemId = activeSession.itemId,
+                currentTicks = currentTicks,
+                startTicks = activeSession.recapStartTicks,
+                endTicks = activeSession.recapEndTicks,
+                alreadySkippedItemId = skippedRecapItemId
+            )
+        ) {
+            skippedRecapItemId = activeSession.itemId
+            val startMs = (activeSession.recapStartTicks ?: 0L) / 10_000L
+            val targetMs = (activeSession.recapEndTicks ?: 0L) / 10_000L
+            player.seekTo(targetMs)
+            currentPosMs = targetMs
+            autoSkipUndoPrompt = SkipSegmentType.RECAP to startMs
+        } else if (AutoSkipHelper.shouldAutoSkip(
+                enabled = state.autoSkipIntro,
+                isTrailer = activeSession.isTrailer,
+                itemId = activeSession.itemId,
+                currentTicks = currentTicks,
+                startTicks = activeSession.introStartTicks,
+                endTicks = activeSession.introEndTicks,
+                alreadySkippedItemId = skippedIntroItemId
+            )
+        ) {
+            skippedIntroItemId = activeSession.itemId
+            val startMs = (activeSession.introStartTicks ?: 0L) / 10_000L
+            val targetMs = (activeSession.introEndTicks ?: 0L) / 10_000L
+            player.seekTo(targetMs)
+            currentPosMs = targetMs
+            autoSkipUndoPrompt = SkipSegmentType.INTRO to startMs
+        }
+    }
+
+    LaunchedEffect(autoSkipUndoPrompt) {
+        if (autoSkipUndoPrompt != null) {
+            delay(4000L)
+            autoSkipUndoPrompt = null
+        }
+    }
+
     val showSkipRecap = session?.recapStartTicks != null &&
         session.recapEndTicks != null &&
         currentTicks in session.recapStartTicks..session.recapEndTicks
@@ -343,13 +506,45 @@ fun PlayerScreen(
                     )
                 }
 
-                // Skip Recap / Skip Intro Floating Pills
+                // Subtitle Offset Quick HUD Badge (top-center)
+                subtitleOffsetHudText?.let { hudText ->
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 28.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xD9161616))
+                            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = hudText,
+                            color = NetflixColors.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                // Skip Recap / Skip Intro / Auto-Skip Undo Floating Pills
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(end = 48.dp, bottom = if (osdVisible) 136.dp else 48.dp)
                 ) {
+                    autoSkipUndoPrompt?.let { (segmentType, seekBackMs) ->
+                        HeroPillButton(
+                            text = "Skipped ${segmentType.label} • Undo",
+                            icon = Icons.AutoMirrored.Filled.Undo,
+                            isPrimary = false,
+                            onClick = {
+                                player.seekTo(seekBackMs)
+                                currentPosMs = seekBackMs
+                                autoSkipUndoPrompt = null
+                            }
+                        )
+                    }
                     if (showSkipRecap && session?.recapEndTicks != null) {
                         HeroPillButton(
                             text = "Skip Recap",
@@ -575,6 +770,15 @@ fun PlayerScreen(
             selectedQuality = state.selectedQuality,
             subtitleFontScale = state.subtitleFontScale,
             subtitleBackgroundAlpha = state.subtitleBackgroundAlpha,
+            subtitleOffsetMs = state.subtitleOffsetMs,
+            autoSkipIntro = state.autoSkipIntro,
+            autoSkipRecap = state.autoSkipRecap,
+            frameRateMatchMode = state.frameRateMatchMode,
+            remoteSubtitles = state.remoteSubtitles,
+            remoteSubtitlesLoading = state.remoteSubtitlesLoading,
+            remoteSubtitleLanguage = state.remoteSubtitleLanguage,
+            downloadingSubtitleId = state.downloadingSubtitleId,
+            subtitleSearchMessage = state.subtitleSearchMessage,
             showStreamInfo = state.showStreamInfo,
             onSelectSpeed = viewModel::setPlaybackSpeed,
             onSelectQuality = { preset ->
@@ -582,6 +786,16 @@ fun PlayerScreen(
                 viewModel.selectQuality(preset, currentPosMs)
             },
             onSetSubtitleAppearance = viewModel::setSubtitleAppearance,
+            onAdjustSubtitleOffset = viewModel::adjustSubtitleOffset,
+            onResetSubtitleOffset = viewModel::resetSubtitleOffset,
+            onToggleAutoSkipIntro = viewModel::toggleAutoSkipIntro,
+            onToggleAutoSkipRecap = viewModel::toggleAutoSkipRecap,
+            onSelectFrameRateMatchMode = viewModel::setFrameRateMatchMode,
+            onSearchRemoteSubtitles = viewModel::searchRemoteSubtitles,
+            onDownloadRemoteSubtitle = { subId ->
+                showTracksDialog = false
+                viewModel.downloadRemoteSubtitle(subId, currentPosMs)
+            },
             onToggleStreamInfo = viewModel::toggleStreamInfo,
             onDismiss = { showTracksDialog = false }
         )
@@ -937,21 +1151,47 @@ private fun PlayerSettingsDialog(
     selectedQuality: QualityPreset,
     subtitleFontScale: Float,
     subtitleBackgroundAlpha: Float,
+    subtitleOffsetMs: Long,
+    autoSkipIntro: Boolean,
+    autoSkipRecap: Boolean,
+    frameRateMatchMode: FrameRateMatchMode,
+    remoteSubtitles: List<RemoteSubtitleOption>,
+    remoteSubtitlesLoading: Boolean,
+    remoteSubtitleLanguage: String,
+    downloadingSubtitleId: String?,
+    subtitleSearchMessage: String?,
     showStreamInfo: Boolean,
     onSelectSpeed: (Float) -> Unit,
     onSelectQuality: (QualityPreset) -> Unit,
     onSetSubtitleAppearance: (Float, Float) -> Unit,
+    onAdjustSubtitleOffset: (Long) -> Unit,
+    onResetSubtitleOffset: () -> Unit,
+    onToggleAutoSkipIntro: () -> Unit,
+    onToggleAutoSkipRecap: () -> Unit,
+    onSelectFrameRateMatchMode: (FrameRateMatchMode) -> Unit,
+    onSearchRemoteSubtitles: (String) -> Unit,
+    onDownloadRemoteSubtitle: (String) -> Unit,
     onToggleStreamInfo: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val groups = player.currentTracks.groups
     val audioGroups = groups.filter { it.type == C.TRACK_TYPE_AUDIO }
     val textGroups = groups.filter { it.type == C.TRACK_TYPE_TEXT }
+    val selectedTextMime = textGroups
+        .firstOrNull { it.isSelected }
+        ?.let { group ->
+            (0 until group.length)
+                .firstOrNull { group.isTrackSelected(it) }
+                ?.let { idx -> group.getTrackFormat(idx).sampleMimeType }
+        }
+    val isBitmapSubtitle = selectedTextMime == MimeTypes.APPLICATION_PGS ||
+        selectedTextMime == MimeTypes.APPLICATION_VOBSUB ||
+        selectedTextMime == MimeTypes.APPLICATION_DVBSUBS
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(520.dp)
+                .width(560.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF181818))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
@@ -1011,6 +1251,71 @@ private fun PlayerSettingsDialog(
                 }
             }
 
+            // Subtitle Timing Sync (±ms)
+            if (!isTrailer) {
+                val offsetSec = subtitleOffsetMs / 1000.0
+                val offsetLabel = String.format(Locale.US, "%+.2fs", offsetSec)
+                Text(
+                    text = "Subtitle Sync ($offsetLabel)",
+                    color = NetflixColors.TextSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (isBitmapSubtitle) {
+                    Text(
+                        text = "Text subtitles only — bitmap tracks (PGS/VobSub) cannot be shifted.",
+                        color = Color(0xFFFFB74D),
+                        fontSize = 11.sp
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SettingChip(label = "-0.5s", selected = false, onClick = { onAdjustSubtitleOffset(-500L) }, modifier = Modifier.weight(1f))
+                    SettingChip(label = "-0.25s", selected = false, onClick = { onAdjustSubtitleOffset(-250L) }, modifier = Modifier.weight(1f))
+                    SettingChip(label = "0.0s", selected = subtitleOffsetMs == 0L, onClick = onResetSubtitleOffset, modifier = Modifier.weight(1f))
+                    SettingChip(label = "+0.25s", selected = false, onClick = { onAdjustSubtitleOffset(250L) }, modifier = Modifier.weight(1f))
+                    SettingChip(label = "+0.5s", selected = false, onClick = { onAdjustSubtitleOffset(500L) }, modifier = Modifier.weight(1f))
+                }
+
+                // On-Demand Jellyfin Remote Subtitle Search / Download
+                Text("Search / Download Subtitles", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("eng" to "EN", "spa" to "ES", "fra" to "FR", "jpn" to "JP").forEach { (code, label) ->
+                        SettingChip(
+                            label = label,
+                            selected = remoteSubtitleLanguage == code,
+                            onClick = { onSearchRemoteSubtitles(code) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    SettingChip(
+                        label = if (remoteSubtitlesLoading) "Searching…" else "Search",
+                        selected = false,
+                        onClick = { onSearchRemoteSubtitles(remoteSubtitleLanguage) },
+                        modifier = Modifier.weight(1.3f)
+                    )
+                }
+                subtitleSearchMessage?.let { msg ->
+                    Text(msg, color = NetflixColors.TextSecondary, fontSize = 12.sp)
+                }
+                if (remoteSubtitles.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        remoteSubtitles.take(5).forEach { sub ->
+                            val details = listOfNotNull(
+                                sub.format?.uppercase(),
+                                sub.downloadCount?.let { "$it dl" },
+                                if (sub.communityRating != null) String.format(Locale.US, "★%.1f", sub.communityRating) else null
+                            ).joinToString(" • ")
+                            val label = if (details.isBlank()) sub.name else "${sub.name} ($details)"
+                            TrackChoiceRow(
+                                label = label,
+                                selected = downloadingSubtitleId == sub.id,
+                                onClick = { onDownloadRemoteSubtitle(sub.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
             // Playback Speed
             Text("Playback Speed", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1033,6 +1338,32 @@ private fun PlayerSettingsDialog(
                         selected = selectedQuality == preset,
                         onClick = { onSelectQuality(preset) }
                     )
+                }
+            }
+
+            // Auto-Skip & 24fps Frame-Rate Matching
+            if (!isTrailer) {
+                Text("Automation & Display", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                TrackChoiceRow(
+                    label = "Auto-Skip Intro",
+                    selected = autoSkipIntro,
+                    onClick = onToggleAutoSkipIntro
+                )
+                TrackChoiceRow(
+                    label = "Auto-Skip Recap",
+                    selected = autoSkipRecap,
+                    onClick = onToggleAutoSkipRecap
+                )
+                Text("24fps Frame-Rate Matching", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FrameRateMatchMode.entries.forEach { mode ->
+                        SettingChip(
+                            label = mode.label,
+                            selected = frameRateMatchMode == mode,
+                            onClick = { onSelectFrameRateMatchMode(mode) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
 

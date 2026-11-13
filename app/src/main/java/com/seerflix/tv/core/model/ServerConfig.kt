@@ -13,6 +13,13 @@ data class ServerConfig(
 }
 
 @Serializable
+enum class FrameRateMatchMode(val label: String) {
+    OFF("Off"),
+    SEAMLESS_ONLY("Seamless"),
+    ALWAYS("Always (HDMI)")
+}
+
+@Serializable
 data class UserProfile(
     val id: String,
     val name: String,
@@ -28,7 +35,10 @@ data class UserProfile(
     val preferredAudioLang: String? = null,
     val preferredSubtitleLang: String? = null,
     val subtitleFontScale: Float = 1.0f,
-    val subtitleBackgroundAlpha: Float = 0.6f
+    val subtitleBackgroundAlpha: Float = 0.6f,
+    val autoSkipIntro: Boolean = false,
+    val autoSkipRecap: Boolean = false,
+    val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF
 ) {
     val hasPin: Boolean
         get() = !pinHash.isNullOrBlank()
