@@ -1,10 +1,12 @@
 package com.seerflix.tv.feature.player
 
+import android.graphics.Bitmap
 import android.view.KeyEvent
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -12,8 +14,10 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,13 +25,21 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,6 +52,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,9 +63,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -61,11 +78,26 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
-import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
+import coil3.SingletonImageLoader
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import coil3.request.SuccessResult
+import coil3.request.allowHardware
+import coil3.toBitmap
+import com.seerflix.tv.core.model.EpisodeSummary
+import com.seerflix.tv.core.model.PlaybackSessionData
+import com.seerflix.tv.core.model.QualityPreset
+import com.seerflix.tv.core.model.SeasonSummary
+import com.seerflix.tv.core.model.TrickplayCrop
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.NetflixColors
 import kotlinx.coroutines.delay
@@ -90,6 +122,8 @@ fun PlayerScreen(
     var durationMs by remember { mutableLongStateOf(0L) }
     var osdVisible by remember { mutableStateOf(true) }
     var showTracksDialog by remember { mutableStateOf(false) }
+    var showEpisodesDrawer by remember { mutableStateOf(false) }
+    var scrubPreviewMs by remember { mutableStateOf<Long?>(null) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -98,13 +132,39 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(state.session?.itemId) {
+    LaunchedEffect(state.session?.itemId, state.session?.streamUrl) {
         val session = state.session ?: return@LaunchedEffect
-        val mediaItemBuilder = MediaItem.Builder().setUri(session.streamUrl)
-        if (session.isHls) {
-            mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        if (session.trailerAudioUrl != null) {
+            val dsFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+            val vSrc = ProgressiveMediaSource.Factory(dsFactory)
+                .createMediaSource(MediaItem.fromUri(session.streamUrl))
+            val aSrc = ProgressiveMediaSource.Factory(dsFactory)
+                .createMediaSource(MediaItem.fromUri(session.trailerAudioUrl))
+            player.setMediaSource(MergingMediaSource(vSrc, aSrc))
+        } else {
+            val mediaItemBuilder = MediaItem.Builder().setUri(session.streamUrl)
+            if (session.isHls) {
+                mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+            }
+            player.setMediaItem(mediaItemBuilder.build())
         }
-        player.setMediaItem(mediaItemBuilder.build())
+
+        // Apply profile preferred audio & subtitle defaults
+        val paramsBuilder = player.trackSelectionParameters.buildUpon()
+        state.preferredAudioLang?.takeIf { it.isNotBlank() }?.let { lang ->
+            paramsBuilder.setPreferredAudioLanguage(lang)
+        }
+        when (val subLang = state.preferredSubtitleLang) {
+            "off" -> paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            null, "" -> {}
+            else -> {
+                paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                paramsBuilder.setPreferredTextLanguage(subLang)
+            }
+        }
+        player.trackSelectionParameters = paramsBuilder.build()
+
         val resumeMs = (session.resumeTicks / 10_000L).coerceAtLeast(0L)
         if (resumeMs > 5_000L) {
             player.seekTo(resumeMs)
@@ -112,6 +172,10 @@ fun PlayerScreen(
         player.prepare()
         player.play()
         viewModel.reportStart(resumeMs)
+    }
+
+    LaunchedEffect(state.selectedSpeed) {
+        player.setPlaybackSpeed(state.selectedSpeed)
     }
 
     // Track position & report progress to Jellyfin every 10s
@@ -130,8 +194,8 @@ fun PlayerScreen(
     }
 
     // Auto-hide Netflix OSD after 4.5s
-    LaunchedEffect(osdVisible, showTracksDialog, isPlaying) {
-        if (osdVisible && !showTracksDialog && isPlaying) {
+    LaunchedEffect(osdVisible, showTracksDialog, showEpisodesDrawer, scrubPreviewMs, isPlaying) {
+        if (osdVisible && !showTracksDialog && !showEpisodesDrawer && scrubPreviewMs == null && isPlaying) {
             delay(4500L)
             osdVisible = false
         }
@@ -139,6 +203,10 @@ fun PlayerScreen(
 
     val session = state.session
     val currentTicks = currentPosMs * 10_000L
+    val showSkipRecap = session?.recapStartTicks != null &&
+        session.recapEndTicks != null &&
+        currentTicks in session.recapStartTicks..session.recapEndTicks
+
     val showSkipIntro = session?.introStartTicks != null &&
         session.introEndTicks != null &&
         currentTicks in session.introStartTicks..session.introEndTicks
@@ -148,6 +216,22 @@ fun PlayerScreen(
             (durationMs > 60_000L && currentPosMs >= durationMs - 25_000L)
         )
 
+    var nextEpisodeCountdown by remember(session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled) {
+        mutableIntStateOf(5)
+    }
+
+    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled) {
+        if (showNextEpisode && state.autoplayNextEpisode && !state.autoplayCancelled && session?.nextEpisodeId != null) {
+            nextEpisodeCountdown = 5
+            while (nextEpisodeCountdown > 0) {
+                delay(1000L)
+                nextEpisodeCountdown--
+            }
+            viewModel.reportStopped(currentPosMs)
+            viewModel.loadItem(session.nextEpisodeId)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -155,6 +239,13 @@ fun PlayerScreen(
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     when (keyEvent.nativeKeyEvent.keyCode) {
+                        KeyEvent.KEYCODE_BACK -> {
+                            when {
+                                showEpisodesDrawer -> { showEpisodesDrawer = false; true }
+                                showTracksDialog -> { showTracksDialog = false; true }
+                                else -> false
+                            }
+                        }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
@@ -172,14 +263,18 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (!osdVisible) {
-                                player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L))
+                                val target = (player.currentPosition - 10_000L).coerceAtLeast(0L)
+                                player.seekTo(target)
+                                currentPosMs = target
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (!osdVisible) {
-                                player.seekTo(player.currentPosition + 10_000L)
+                                val target = player.currentPosition + 10_000L
+                                player.seekTo(target)
+                                currentPosMs = target
                                 osdVisible = true
                                 true
                             } else false
@@ -216,54 +311,83 @@ fun PlayerScreen(
                     },
                     update = { view ->
                         if (view.player !== player) view.player = player
+                        view.subtitleView?.let { sv ->
+                            sv.setApplyEmbeddedStyles(false)
+                            sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * state.subtitleFontScale)
+                            val alphaInt = (state.subtitleBackgroundAlpha * 255f).toInt().coerceIn(0, 255)
+                            val bgArgb = android.graphics.Color.argb(alphaInt, 0, 0, 0)
+                            sv.setStyle(
+                                CaptionStyleCompat(
+                                    android.graphics.Color.WHITE,
+                                    bgArgb,
+                                    android.graphics.Color.TRANSPARENT,
+                                    CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                                    android.graphics.Color.BLACK,
+                                    null
+                                )
+                            )
+                        }
                     },
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // Skip Intro Floating Pill
-                if (showSkipIntro && session?.introEndTicks != null) {
-                    HeroPillButton(
-                        text = "Skip Intro",
-                        icon = Icons.Filled.SkipNext,
-                        isPrimary = true,
-                        onClick = {
-                            player.seekTo(session.introEndTicks / 10_000L)
-                        },
+                // Stream Info HUD Badge (top-right)
+                if (state.showStreamInfo && session != null) {
+                    StreamInfoOverlay(
+                        session = session,
+                        selectedQuality = state.selectedQuality,
+                        playbackSpeed = state.selectedSpeed,
                         modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 48.dp, bottom = if (osdVisible) 130.dp else 48.dp)
+                            .align(Alignment.TopEnd)
+                            .padding(top = 28.dp, end = 48.dp)
                     )
                 }
 
-                // Next Episode Overlay Card
-                if (showNextEpisode && session?.nextEpisodeId != null) {
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 48.dp, bottom = if (osdVisible) 130.dp else 48.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xE6181818))
-                            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(8.dp))
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Text("Up Next", color = NetflixColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(session.nextEpisodeTitle ?: "Next Episode", color = NetflixColors.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                // Skip Recap / Skip Intro Floating Pills
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 48.dp, bottom = if (osdVisible) 136.dp else 48.dp)
+                ) {
+                    if (showSkipRecap && session?.recapEndTicks != null) {
                         HeroPillButton(
-                            text = "Play Next Episode",
+                            text = "Skip Recap",
                             icon = Icons.Filled.SkipNext,
                             isPrimary = true,
-                            onClick = {
-                                viewModel.reportStopped(currentPosMs)
-                                viewModel.loadItem(session.nextEpisodeId)
-                            }
+                            onClick = { player.seekTo(session.recapEndTicks / 10_000L) }
+                        )
+                    }
+                    if (showSkipIntro && session?.introEndTicks != null) {
+                        HeroPillButton(
+                            text = "Skip Intro",
+                            icon = Icons.Filled.SkipNext,
+                            isPrimary = true,
+                            onClick = { player.seekTo(session.introEndTicks / 10_000L) }
                         )
                     }
                 }
 
+                // Next Episode Overlay Card with Auto-Play Countdown
+                if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer) {
+                    NextEpisodeOverlayCard(
+                        nextEpisodeTitle = session.nextEpisodeTitle ?: "Next Episode",
+                        autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled,
+                        countdownSeconds = nextEpisodeCountdown,
+                        onPlayNow = {
+                            viewModel.reportStopped(currentPosMs)
+                            viewModel.loadItem(session.nextEpisodeId)
+                        },
+                        onWatchCredits = viewModel::cancelAutoplayNext,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 48.dp, bottom = if (osdVisible) 136.dp else 48.dp)
+                    )
+                }
+
                 // Netflix OSD Overlay
                 AnimatedVisibility(
-                    visible = osdVisible,
+                    visible = osdVisible && !showEpisodesDrawer,
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
@@ -303,11 +427,37 @@ fun PlayerScreen(
                                 )
                                 .padding(horizontal = 48.dp, vertical = 28.dp)
                         ) {
+                            // Seekbar Trickplay Thumbnail Preview
+                            val previewTargetMs = scrubPreviewMs
+                            if (previewTargetMs != null && durationMs > 0L) {
+                                val crop = session?.trickplayInfo?.cropForPosition(previewTargetMs)
+                                val frac = (previewTargetMs.toFloat() / durationMs.toFloat()).coerceIn(0.05f, 0.95f)
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    if (frac > 0.06f) {
+                                        Spacer(Modifier.weight(frac))
+                                    }
+                                    TrickplayPreviewCard(
+                                        positionMs = previewTargetMs,
+                                        crop = crop
+                                    )
+                                    if (1f - frac > 0.06f) {
+                                        Spacer(Modifier.weight(1f - frac))
+                                    }
+                                }
+                                Spacer(Modifier.height(8.dp))
+                            }
+
                             val totalFloat = durationMs.coerceAtLeast(1L).toFloat()
+                            val sliderPosMs = scrubPreviewMs ?: currentPosMs
                             Slider(
-                                value = (currentPosMs.toFloat() / totalFloat).coerceIn(0f, 1f),
+                                value = (sliderPosMs.toFloat() / totalFloat).coerceIn(0f, 1f),
                                 onValueChange = { frac ->
-                                    player.seekTo((frac * totalFloat).toLong())
+                                    val targetMs = (frac * totalFloat).toLong()
+                                    scrubPreviewMs = targetMs
+                                    player.seekTo(targetMs)
+                                },
+                                onValueChangeFinished = {
+                                    scrubPreviewMs = null
                                 },
                                 colors = SliderDefaults.colors(
                                     thumbColor = NetflixColors.NetflixRed,
@@ -347,12 +497,34 @@ fun PlayerScreen(
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
+                                    if (state.selectedSpeed != 1.0f) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0xFF303030))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text("${state.selectedSpeed}x", color = NetflixColors.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
                                 }
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    if (state.drawerSeasons.isNotEmpty() || !session?.seriesId.isNullOrBlank()) {
+                                        PlayerControlIcon(
+                                            icon = Icons.AutoMirrored.Filled.List,
+                                            label = "Episodes",
+                                            onClick = { showEpisodesDrawer = true }
+                                        )
+                                    }
                                     PlayerControlIcon(
                                         icon = Icons.Filled.Subtitles,
                                         label = "Audio & Subtitles",
+                                        onClick = { showTracksDialog = true }
+                                    )
+                                    PlayerControlIcon(
+                                        icon = Icons.Filled.Settings,
+                                        label = "Playback Settings",
                                         onClick = { showTracksDialog = true }
                                     )
                                     session?.nextEpisodeId?.let { nextId ->
@@ -370,15 +542,363 @@ fun PlayerScreen(
                         }
                     }
                 }
+
+                // In-Player Episodes Drawer Overlay
+                if (showEpisodesDrawer) {
+                    EpisodesDrawerOverlay(
+                        seriesTitle = session?.title.orEmpty(),
+                        seasons = state.drawerSeasons,
+                        selectedSeason = state.drawerSelectedSeason,
+                        episodes = state.drawerEpisodes,
+                        isLoading = state.drawerEpisodesLoading,
+                        currentEpisodeId = session?.itemId,
+                        onSelectSeason = viewModel::selectDrawerSeason,
+                        onSelectEpisode = { ep ->
+                            if (ep.isAvailableInJellyfin) {
+                                showEpisodesDrawer = false
+                                viewModel.reportStopped(currentPosMs)
+                                viewModel.loadItem(ep.id)
+                            }
+                        },
+                        onClose = { showEpisodesDrawer = false }
+                    )
+                }
             }
         }
     }
 
     if (showTracksDialog) {
-        AudioSubtitleDialog(
+        PlayerSettingsDialog(
             player = player,
+            isTrailer = session?.isTrailer == true,
+            selectedSpeed = state.selectedSpeed,
+            selectedQuality = state.selectedQuality,
+            subtitleFontScale = state.subtitleFontScale,
+            subtitleBackgroundAlpha = state.subtitleBackgroundAlpha,
+            showStreamInfo = state.showStreamInfo,
+            onSelectSpeed = viewModel::setPlaybackSpeed,
+            onSelectQuality = { preset ->
+                showTracksDialog = false
+                viewModel.selectQuality(preset, currentPosMs)
+            },
+            onSetSubtitleAppearance = viewModel::setSubtitleAppearance,
+            onToggleStreamInfo = viewModel::toggleStreamInfo,
             onDismiss = { showTracksDialog = false }
         )
+    }
+}
+
+private fun Modifier.wrapAlignEnd(): Modifier = this
+
+@Composable
+fun StreamInfoOverlay(
+    session: PlaybackSessionData,
+    selectedQuality: QualityPreset,
+    playbackSpeed: Float,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xCC121212))
+            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(8.dp))
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        val videoParts = listOfNotNull(session.resolutionLabel, session.hdrFormat, session.videoCodec)
+        Text(
+            text = videoParts.joinToString(" • ").ifBlank { "Video Stream" },
+            color = NetflixColors.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        session.audioCodec?.let {
+            Text(text = "Audio: $it", color = NetflixColors.TextSecondary, fontSize = 11.sp)
+        }
+        Text(
+            text = "Quality: ${selectedQuality.label} • ${playbackSpeed}x",
+            color = NetflixColors.TextSecondary,
+            fontSize = 11.sp
+        )
+    }
+}
+
+@Composable
+fun NextEpisodeOverlayCard(
+    nextEpisodeTitle: String,
+    autoplayEnabled: Boolean,
+    countdownSeconds: Int,
+    onPlayNow: () -> Unit,
+    onWatchCredits: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .width(340.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xE6181818))
+            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(8.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = if (autoplayEnabled) "Next Episode in ${countdownSeconds}s" else "Up Next",
+            color = if (autoplayEnabled) NetflixColors.NetflixRed else NetflixColors.TextSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = nextEpisodeTitle,
+            color = NetflixColors.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            HeroPillButton(
+                text = "Play Now",
+                icon = Icons.Filled.SkipNext,
+                isPrimary = true,
+                onClick = onPlayNow
+            )
+            if (autoplayEnabled) {
+                HeroPillButton(
+                    text = "Watch Credits",
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = onWatchCredits
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrickplayPreviewCard(
+    positionMs: Long,
+    crop: TrickplayCrop?,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    var croppedBitmap by remember(crop?.tileUrl, crop?.x, crop?.y) { mutableStateOf<ImageBitmap?>(null) }
+
+    LaunchedEffect(crop?.tileUrl, crop?.x, crop?.y) {
+        if (crop == null) {
+            croppedBitmap = null
+            return@LaunchedEffect
+        }
+        runCatching {
+            val loader = SingletonImageLoader.get(context)
+            val request = ImageRequest.Builder(context)
+                .data(crop.tileUrl)
+                .allowHardware(false)
+                .build()
+            val result = loader.execute(request) as? SuccessResult ?: return@runCatching
+            val fullBmp = result.image.toBitmap()
+            val safeX = crop.x.coerceIn(0, (fullBmp.width - 1).coerceAtLeast(0))
+            val safeY = crop.y.coerceIn(0, (fullBmp.height - 1).coerceAtLeast(0))
+            val safeW = crop.width.coerceAtMost(fullBmp.width - safeX).coerceAtLeast(1)
+            val safeH = crop.height.coerceAtMost(fullBmp.height - safeY).coerceAtLeast(1)
+            croppedBitmap = Bitmap.createBitmap(fullBmp, safeX, safeY, safeW, safeH).asImageBitmap()
+        }
+    }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+    ) {
+        if (croppedBitmap != null) {
+            Box(
+                modifier = Modifier
+                    .width(176.dp)
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(6.dp))
+                    .border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp))
+                    .background(Color.Black)
+            ) {
+                Image(
+                    bitmap = croppedBitmap!!,
+                    contentDescription = "Seek preview",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+        }
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xCC141414))
+                .padding(horizontal = 8.dp, vertical = 3.dp)
+        ) {
+            Text(
+                text = formatMs(positionMs),
+                color = NetflixColors.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+fun EpisodesDrawerOverlay(
+    seriesTitle: String,
+    seasons: List<SeasonSummary>,
+    selectedSeason: Int,
+    episodes: List<EpisodeSummary>,
+    isLoading: Boolean,
+    currentEpisodeId: String?,
+    onSelectSeason: (Int) -> Unit,
+    onSelectEpisode: (EpisodeSummary) -> Unit,
+    onClose: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xAA000000))
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(520.dp)
+                .fillMaxHeight()
+                .background(Color(0xF5141414))
+                .border(1.dp, Color(0x28FFFFFF))
+                .padding(24.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = seriesTitle.ifBlank { "Episodes" },
+                        color = NetflixColors.White,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text("Select an episode to play", color = NetflixColors.TextSecondary, fontSize = 12.sp)
+                }
+                PlayerControlIcon(Icons.Filled.Close, "Close", onClick = onClose)
+            }
+
+            if (seasons.isNotEmpty()) {
+                Spacer(Modifier.height(14.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(seasons, key = { it.seasonNumber }) { season ->
+                        var focused by remember { mutableStateOf(false) }
+                        val selected = season.seasonNumber == selectedSeason
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    when {
+                                        selected -> NetflixColors.White
+                                        focused -> Color(0xFF3A3A3A)
+                                        else -> Color(0xFF232323)
+                                    }
+                                )
+                                .then(
+                                    if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp))
+                                    else Modifier
+                                )
+                                .onFocusChanged { focused = it.isFocused }
+                                .focusable()
+                                .clickable { onSelectSeason(season.seasonNumber) }
+                                .padding(horizontal = 14.dp, vertical = 7.dp)
+                        ) {
+                            Text(
+                                text = season.name,
+                                color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            if (isLoading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = NetflixColors.NetflixRed)
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(episodes, key = { it.id }) { ep ->
+                        var focused by remember { mutableStateOf(false) }
+                        val isCurrent = ep.id == currentEpisodeId
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    when {
+                                        focused -> Color(0xFF323232)
+                                        isCurrent -> Color(0xFF242424)
+                                        else -> Color(0xFF1A1A1A)
+                                    }
+                                )
+                                .then(
+                                    if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
+                                    else if (isCurrent) Modifier.border(1.dp, NetflixColors.NetflixRed, RoundedCornerShape(8.dp))
+                                    else Modifier
+                                )
+                                .onFocusChanged { focused = it.isFocused }
+                                .focusable()
+                                .clickable { onSelectEpisode(ep) }
+                                .padding(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(120.dp)
+                                    .aspectRatio(16f / 9f)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(NetflixColors.SurfaceElevated)
+                            ) {
+                                AsyncImage(
+                                    model = ep.stillUrl,
+                                    contentDescription = ep.name,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${ep.episodeNumber}. ${ep.name}",
+                                    color = NetflixColors.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    text = if (!ep.isAvailableInJellyfin) "Not available on Jellyfin"
+                                    else if (isCurrent) "Now Playing"
+                                    else ep.overview.ifBlank { "${ep.runtimeMinutes}m" },
+                                    color = if (isCurrent) NetflixColors.NetflixRed else NetflixColors.TextSecondary,
+                                    fontSize = 12.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -410,8 +930,18 @@ private fun PlayerControlIcon(
 }
 
 @Composable
-private fun AudioSubtitleDialog(
+private fun PlayerSettingsDialog(
     player: ExoPlayer,
+    isTrailer: Boolean,
+    selectedSpeed: Float,
+    selectedQuality: QualityPreset,
+    subtitleFontScale: Float,
+    subtitleBackgroundAlpha: Float,
+    showStreamInfo: Boolean,
+    onSelectSpeed: (Float) -> Unit,
+    onSelectQuality: (QualityPreset) -> Unit,
+    onSetSubtitleAppearance: (Float, Float) -> Unit,
+    onToggleStreamInfo: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val groups = player.currentTracks.groups
@@ -421,14 +951,15 @@ private fun AudioSubtitleDialog(
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(460.dp)
+                .width(520.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF181818))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Audio & Subtitles", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("Playback Settings", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
             if (audioGroups.isNotEmpty()) {
                 Text("Audio Tracks", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -480,10 +1011,100 @@ private fun AudioSubtitleDialog(
                 }
             }
 
-            if (audioGroups.isEmpty() && textGroups.isEmpty()) {
-                Text("No alternate tracks detected in this stream.", color = NetflixColors.TextSecondary, fontSize = 13.sp)
+            // Playback Speed
+            Text("Playback Speed", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEach { spd ->
+                    SettingChip(
+                        label = "${spd}x",
+                        selected = selectedSpeed == spd,
+                        onClick = { onSelectSpeed(spd) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
+
+            // Quality / Bitrate Cap
+            if (!isTrailer) {
+                Text("Video Quality", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                QualityPreset.entries.forEach { preset ->
+                    TrackChoiceRow(
+                        label = preset.label,
+                        selected = selectedQuality == preset,
+                        onClick = { onSelectQuality(preset) }
+                    )
+                }
+            }
+
+            // Subtitle Size & Background
+            Text("Subtitle Size", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Small" to 0.8f, "Medium" to 1.0f, "Large" to 1.3f).forEach { (label, scale) ->
+                    SettingChip(
+                        label = label,
+                        selected = kotlin.math.abs(subtitleFontScale - scale) < 0.05f,
+                        onClick = { onSetSubtitleAppearance(scale, subtitleBackgroundAlpha) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            Text("Subtitle Background", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("None" to 0f, "50%" to 0.5f, "80%" to 0.8f).forEach { (label, alpha) ->
+                    SettingChip(
+                        label = label,
+                        selected = kotlin.math.abs(subtitleBackgroundAlpha - alpha) < 0.05f,
+                        onClick = { onSetSubtitleAppearance(subtitleFontScale, alpha) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // Stream Info Overlay toggle
+            TrackChoiceRow(
+                label = "Stream Info Overlay",
+                selected = showStreamInfo,
+                onClick = onToggleStreamInfo
+            )
         }
+    }
+}
+
+@Composable
+private fun SettingChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                when {
+                    selected -> NetflixColors.White
+                    focused -> Color(0xFF3E3E3E)
+                    else -> Color(0xFF242424)
+                }
+            )
+            .then(
+                if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp))
+                else Modifier
+            )
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = label,
+            color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
     }
 }
 
@@ -526,3 +1147,4 @@ private fun formatMs(ms: Long): String {
     val s = totalSec % 60L
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
 }
+

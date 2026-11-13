@@ -6,19 +6,49 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.ServerConfig
+import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "seerflix_prefs")
+
+@Serializable
+data class LocalMyListEntry(
+    val id: String,
+    val tmdbId: Int,
+    val mediaType: MediaType,
+    val title: String,
+    val posterUrl: String? = null,
+    val backdropUrl: String? = null,
+    val releaseYear: String? = null,
+    val voteAverage: Double? = null,
+    val overview: String = ""
+) {
+    fun toUnifiedMediaItem(): UnifiedMediaItem = UnifiedMediaItem(
+        id = id,
+        tmdbId = tmdbId,
+        mediaType = mediaType,
+        title = title,
+        overview = overview,
+        releaseYear = releaseYear,
+        voteAverage = voteAverage,
+        posterUrl = posterUrl,
+        backdropUrl = backdropUrl,
+        isInMyList = true
+    )
+}
 
 @Singleton
 class SessionPreferences @Inject constructor(
@@ -31,6 +61,9 @@ class SessionPreferences @Inject constructor(
         val DEVICE_ID = stringPreferencesKey("device_id")
         val PROFILES_JSON = stringPreferencesKey("profiles_json")
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
+
+        fun localMyList(profileId: String) = stringPreferencesKey("local_my_list_$profileId")
+        fun reminders(profileId: String) = stringPreferencesKey("reminders_$profileId")
     }
 
     @Volatile
@@ -110,12 +143,54 @@ class SessionPreferences @Inject constructor(
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
-            val updated = current.filterNot { it.id == profile.id } + profile
+            val existing = current.firstOrNull { it.id == profile.id }
+            val merged = if (existing != null) {
+                profile.copy(
+                    pinHash = existing.pinHash,
+                    autoplayNextEpisode = existing.autoplayNextEpisode,
+                    autoplayPreviews = existing.autoplayPreviews,
+                    preferredAudioLang = existing.preferredAudioLang,
+                    preferredSubtitleLang = existing.preferredSubtitleLang,
+                    subtitleFontScale = existing.subtitleFontScale,
+                    subtitleBackgroundAlpha = existing.subtitleBackgroundAlpha
+                )
+            } else profile
+            val updated = current.filterNot { it.id == profile.id } + merged
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
             prefs[Keys.ACTIVE_PROFILE_ID] = profile.id
         }
         cachedToken = profile.jellyfinToken
         cachedSeerrCookie = profile.seerrCookie
+    }
+
+    suspend fun updateProfilePreferences(updatedProfile: UserProfile) {
+        context.dataStore.edit { prefs ->
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val updated = current.map {
+                if (it.id == updatedProfile.id) updatedProfile else it
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+        }
+    }
+
+    suspend fun updateSubtitleAppearance(fontScale: Float, backgroundAlpha: Float) {
+        context.dataStore.edit { prefs ->
+            val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val updated = current.map {
+                if (it.id == activeId) {
+                    it.copy(
+                        subtitleFontScale = fontScale,
+                        subtitleBackgroundAlpha = backgroundAlpha
+                    )
+                } else it
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+        }
     }
 
     suspend fun setActiveProfile(profileId: String?) {
@@ -157,6 +232,8 @@ class SessionPreferences @Inject constructor(
             } ?: emptyList()
             val updated = current.filterNot { it.id == profileId }
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+            prefs.remove(Keys.localMyList(profileId))
+            prefs.remove(Keys.reminders(profileId))
             if (prefs[Keys.ACTIVE_PROFILE_ID] == profileId) {
                 prefs.remove(Keys.ACTIVE_PROFILE_ID)
                 cachedToken = null
@@ -165,7 +242,99 @@ class SessionPreferences @Inject constructor(
         }
     }
 
+    suspend fun getLocalMyList(profileId: String): List<LocalMyListEntry> {
+        val raw = context.dataStore.data.first()[Keys.localMyList(profileId)] ?: return emptyList()
+        return runCatching { json.decodeFromString<List<LocalMyListEntry>>(raw) }.getOrDefault(emptyList())
+    }
+
+    suspend fun isInLocalMyList(profileId: String, tmdbId: Int, mediaType: MediaType): Boolean {
+        return getLocalMyList(profileId).any { it.tmdbId == tmdbId && it.mediaType == mediaType }
+    }
+
+    suspend fun toggleLocalMyList(profileId: String, item: UnifiedMediaItem): Boolean {
+        val tmdbId = item.tmdbId ?: return false
+        var added = false
+        context.dataStore.edit { prefs ->
+            val key = Keys.localMyList(profileId)
+            val current = prefs[key]?.let {
+                runCatching { json.decodeFromString<List<LocalMyListEntry>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val exists = current.any { it.tmdbId == tmdbId && it.mediaType == item.mediaType }
+            val updated = if (exists) {
+                added = false
+                current.filterNot { it.tmdbId == tmdbId && it.mediaType == item.mediaType }
+            } else {
+                added = true
+                current + LocalMyListEntry(
+                    id = item.id,
+                    tmdbId = tmdbId,
+                    mediaType = item.mediaType,
+                    title = item.title,
+                    posterUrl = item.posterUrl,
+                    backdropUrl = item.backdropUrl,
+                    releaseYear = item.releaseYear,
+                    voteAverage = item.voteAverage,
+                    overview = item.overview
+                )
+            }
+            prefs[key] = json.encodeToString(updated)
+        }
+        return added
+    }
+
+    suspend fun removeFromLocalMyList(profileId: String, tmdbId: Int, mediaType: MediaType) {
+        context.dataStore.edit { prefs ->
+            val key = Keys.localMyList(profileId)
+            val current = prefs[key]?.let {
+                runCatching { json.decodeFromString<List<LocalMyListEntry>>(it) }.getOrDefault(emptyList())
+            } ?: return@edit
+            val updated = current.filterNot { it.tmdbId == tmdbId && it.mediaType == mediaType }
+            prefs[key] = json.encodeToString(updated)
+        }
+    }
+
+    suspend fun getReminders(profileId: String): Set<String> {
+        val raw = context.dataStore.data.first()[Keys.reminders(profileId)] ?: return emptySet()
+        return runCatching { json.decodeFromString<Set<String>>(raw) }.getOrDefault(emptySet())
+    }
+
+    suspend fun isReminderSet(profileId: String, tmdbId: Int, mediaType: MediaType): Boolean {
+        return reminderKey(tmdbId, mediaType) in getReminders(profileId)
+    }
+
+    suspend fun toggleReminder(profileId: String, tmdbId: Int, mediaType: MediaType): Boolean {
+        val target = reminderKey(tmdbId, mediaType)
+        var enabled = false
+        context.dataStore.edit { prefs ->
+            val key = Keys.reminders(profileId)
+            val current = prefs[key]?.let {
+                runCatching { json.decodeFromString<Set<String>>(it) }.getOrDefault(emptySet())
+            } ?: emptySet()
+            val updated = if (target in current) {
+                enabled = false
+                current - target
+            } else {
+                enabled = true
+                current + target
+            }
+            prefs[key] = json.encodeToString(updated)
+        }
+        return enabled
+    }
+
     companion object {
+        fun reminderKey(tmdbId: Int, mediaType: MediaType): String = "${mediaType.name}_$tmdbId"
+
+        fun hashPin(pin: String): String {
+            val bytes = MessageDigest.getInstance("SHA-256").digest(pin.toByteArray(Charsets.UTF_8))
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
+
+        fun verifyPin(pinHash: String?, enteredPin: String): Boolean {
+            if (pinHash.isNullOrBlank()) return true
+            return pinHash == hashPin(enteredPin)
+        }
+
         fun normalizeUrl(raw: String): String {
             var trimmed = raw.trim().trimEnd('/')
             if (trimmed.isNotEmpty() && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {

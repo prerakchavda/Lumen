@@ -1,12 +1,16 @@
 package com.seerflix.tv.ui.components
 
+import android.view.KeyEvent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -290,11 +294,13 @@ fun Top10PosterCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ContinueWatchingCard(
     item: UnifiedMediaItem,
     onFocus: () -> Unit,
     onClick: () -> Unit,
+    onOptionsMenu: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -311,8 +317,20 @@ fun ContinueWatchingCard(
                 focused = it.isFocused
                 if (it.isFocused) onFocus()
             }
+            .onPreviewKeyEvent { keyEvent ->
+                if (onOptionsMenu != null &&
+                    keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                ) {
+                    onOptionsMenu()
+                    true
+                } else false
+            }
             .focusable()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onOptionsMenu
+            )
     ) {
         Box(
             modifier = Modifier
@@ -359,6 +377,24 @@ fun ContinueWatchingCard(
                         color = NetflixColors.White,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            if (focused && onOptionsMenu != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xBB0A0A0A))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "Hold OK",
+                        color = NetflixColors.TextSecondary,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }

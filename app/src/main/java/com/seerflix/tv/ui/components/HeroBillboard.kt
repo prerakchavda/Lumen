@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
@@ -82,6 +83,7 @@ fun HeroBillboard(
     onToggleMute: () -> Unit,
     onPrimaryAction: () -> Unit,
     onMoreInfo: () -> Unit,
+    onToggleMyList: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var isVideoReady by remember(item.id, previewStream?.videoUrl) { mutableStateOf(false) }
@@ -159,9 +161,9 @@ fun HeroBillboard(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 24.dp, bottom = 24.dp, end = 360.dp)
+                .padding(start = 24.dp, bottom = 24.dp, end = 340.dp)
         ) {
-            // Netflix-style "N SERIES" / "N FILM" micro-header
+            // Netflix-style "S SERIES" / "S FILM" micro-header
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -208,7 +210,7 @@ fun HeroBillboard(
 
             Spacer(Modifier.height(10.dp))
 
-            // Match score, Year, Rating, Runtime, Genres
+            // Match score, Year, Rating, Runtime, Media Badges
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -245,6 +247,20 @@ fun HeroBillboard(
                         Text(
                             text = "4K UHD",
                             color = NetflixColors.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                item.mediaBadges.filter { it != "4K" && it != "HD" }.take(2).forEach { badge ->
+                    Box(
+                        modifier = Modifier
+                            .border(1.dp, NetflixColors.TextMuted, RoundedCornerShape(2.dp))
+                            .padding(horizontal = 5.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = badge,
+                            color = NetflixColors.TextPrimary,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -291,6 +307,14 @@ fun HeroBillboard(
                     isPrimary = false,
                     onClick = onMoreInfo
                 )
+                if (onToggleMyList != null) {
+                    HeroPillButton(
+                        text = if (item.isInMyList) "My List" else "My List",
+                        icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                        isPrimary = false,
+                        onClick = onToggleMyList
+                    )
+                }
             }
         }
 

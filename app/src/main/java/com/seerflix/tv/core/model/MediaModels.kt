@@ -95,8 +95,92 @@ data class EpisodeSummary(
 data class CastMember(
     val name: String,
     val role: String,
-    val imageUrl: String?
+    val imageUrl: String?,
+    val personId: Int? = null
 )
+
+data class PersonSearchResult(
+    val id: Int,
+    val name: String,
+    val department: String? = null,
+    val imageUrl: String? = null
+)
+
+data class RelatedVideoItem(
+    val title: String,
+    val type: String,
+    val youtubeKey: String? = null,
+    val localTrailerItemId: String? = null,
+    val thumbnailUrl: String? = null
+)
+
+data class TrickplayCrop(
+    val tileIndex: Int,
+    val tileUrl: String,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int
+)
+
+data class TrickplayInfo(
+    val width: Int,
+    val height: Int,
+    val tileWidth: Int,
+    val tileHeight: Int,
+    val thumbnailCount: Int,
+    val intervalMs: Int,
+    val baseUrlTemplate: String
+) {
+    fun tileUrl(tileIndex: Int): String =
+        baseUrlTemplate.replace("{tileIndex}", tileIndex.toString())
+
+    fun cropForPosition(positionMs: Long): TrickplayCrop? {
+        if (intervalMs <= 0 || tileWidth <= 0 || tileHeight <= 0 || width <= 0 || height <= 0) return null
+        val maxIndex = (thumbnailCount - 1).coerceAtLeast(0)
+        val thumbIndex = (positionMs.coerceAtLeast(0L) / intervalMs.toLong()).toInt().coerceIn(0, maxIndex)
+        val thumbsPerTile = tileWidth * tileHeight
+        val tileIndex = thumbIndex / thumbsPerTile
+        val indexInTile = thumbIndex % thumbsPerTile
+        val col = indexInTile % tileWidth
+        val row = indexInTile / tileWidth
+        return TrickplayCrop(
+            tileIndex = tileIndex,
+            tileUrl = tileUrl(tileIndex),
+            x = col * width,
+            y = row * height,
+            width = width,
+            height = height
+        )
+    }
+}
+
+data class GenreFilterOption(
+    val id: String,
+    val label: String,
+    val movieGenreId: Int?,
+    val tvGenreId: Int?
+) {
+    companion object {
+        val ALL_GENRES = listOf(
+            GenreFilterOption("all", "All Genres", null, null),
+            GenreFilterOption("action", "Action", 28, 10759),
+            GenreFilterOption("comedy", "Comedy", 35, 35),
+            GenreFilterOption("scifi", "Sci-Fi", 878, 10765),
+            GenreFilterOption("horror", "Horror & Mystery", 27, 9648),
+            GenreFilterOption("drama", "Drama", 18, 18),
+            GenreFilterOption("documentary", "Documentary", 99, 99),
+            GenreFilterOption("animation", "Animation", 16, 16)
+        )
+    }
+}
+
+enum class QualityPreset(val label: String, val maxBitrateBps: Long?) {
+    AUTO("Auto (Direct Play)", null),
+    UHD_4K("4K (40 Mbps)", 40_000_000L),
+    HD_1080P("1080p (15 Mbps)", 15_000_000L),
+    HD_720P("720p (6 Mbps)", 6_000_000L)
+}
 
 data class MediaRequestSummary(
     val requestId: Int,
@@ -152,10 +236,14 @@ data class UnifiedMediaItem(
     val resumePositionTicks: Long = 0L,
     val runtimeTicks: Long = 0L,
     val isWatched: Boolean = false,
+    val isInMyList: Boolean = false,
+    val isReminderSet: Boolean = false,
+    val mediaBadges: List<String> = emptyList(),
     val episodeLabel: String? = null,
     val seriesName: String? = null,
     val youtubeTrailerKey: String? = null,
     val localTrailerItemId: String? = null,
+    val relatedVideos: List<RelatedVideoItem> = emptyList(),
     val seasons: List<SeasonSummary> = emptyList(),
     val cast: List<CastMember> = emptyList()
 ) {
@@ -240,9 +328,20 @@ data class PlaybackSessionData(
     val runtimeTicks: Long,
     val introStartTicks: Long? = null,
     val introEndTicks: Long? = null,
+    val recapStartTicks: Long? = null,
+    val recapEndTicks: Long? = null,
     val creditsStartTicks: Long? = null,
     val nextEpisodeId: String? = null,
     val nextEpisodeTitle: String? = null,
+    val trickplayInfo: TrickplayInfo? = null,
+    val seriesId: String? = null,
+    val seasonId: String? = null,
+    val videoCodec: String? = null,
+    val audioCodec: String? = null,
+    val resolutionLabel: String? = null,
+    val hdrFormat: String? = null,
+    val isTrailer: Boolean = false,
+    val trailerAudioUrl: String? = null,
     val audioTracks: List<TrackOption> = emptyList(),
     val subtitleTracks: List<TrackOption> = emptyList()
 )

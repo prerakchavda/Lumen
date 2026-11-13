@@ -25,10 +25,15 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -51,8 +56,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.seerflix.tv.core.model.CatalogRow
+import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.RowStyle
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.ContinueWatchingCard
@@ -81,9 +88,14 @@ fun HomeScreen(
         onSwitchProfile = onSwitchProfile,
         onOpenSettings = onOpenSettings,
         onSelectTab = viewModel::selectTab,
+        onSelectGenre = viewModel::selectGenre,
         onRefresh = viewModel::refresh,
         onTogglePreviewMute = viewModel::togglePreviewMute,
-        onItemFocused = viewModel::onItemFocused
+        onToggleFeaturedMyList = viewModel::toggleFeaturedMyList,
+        onItemFocused = viewModel::onItemFocused,
+        onOpenContinueWatchingOptions = viewModel::openContinueWatchingOptions,
+        onDismissContinueWatchingOptions = viewModel::dismissContinueWatchingOptions,
+        onRemoveFromContinueWatching = viewModel::removeFromContinueWatching
     )
 }
 
@@ -99,7 +111,12 @@ fun HomeContent(
     onSelectTab: (HomeTab) -> Unit,
     onRefresh: () -> Unit,
     onTogglePreviewMute: () -> Unit,
-    onItemFocused: (UnifiedMediaItem) -> Unit
+    onItemFocused: (UnifiedMediaItem) -> Unit,
+    onSelectGenre: (GenreFilterOption) -> Unit = {},
+    onToggleFeaturedMyList: () -> Unit = {},
+    onOpenContinueWatchingOptions: (UnifiedMediaItem) -> Unit = {},
+    onDismissContinueWatchingOptions: () -> Unit = {},
+    onRemoveFromContinueWatching: (UnifiedMediaItem) -> Unit = {}
 ) {
     var railExpanded by remember { mutableStateOf(false) }
 
@@ -157,6 +174,27 @@ fun HomeContent(
                         )
                     }
                 }
+                state.activeTab == HomeTab.MY_LIST && state.rows.isEmpty() -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Bookmark,
+                            contentDescription = null,
+                            tint = NetflixColors.TextMuted,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(Modifier.height(14.dp))
+                        Text("Your My List is empty", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "Add movies and shows from the Hero banner or Details screen to find them here.",
+                            color = NetflixColors.TextSecondary,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
                 else -> {
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -176,7 +214,17 @@ fun HomeContent(
                                             onOpenDetails(hero)
                                         }
                                     },
-                                    onMoreInfo = { onOpenDetails(hero) }
+                                    onMoreInfo = { onOpenDetails(hero) },
+                                    onToggleMyList = onToggleFeaturedMyList
+                                )
+                            }
+                        }
+
+                        if (state.activeTab == HomeTab.SHOWS || state.activeTab == HomeTab.MOVIES) {
+                            item(key = "genre_filter_bar") {
+                                GenreFilterBar(
+                                    selectedGenre = state.selectedGenre,
+                                    onSelectGenre = onSelectGenre
                                 )
                             }
                         }
@@ -191,7 +239,8 @@ fun HomeContent(
                                     } else {
                                         onOpenDetails(item)
                                     }
-                                }
+                                },
+                                onContinueWatchingOptions = onOpenContinueWatchingOptions
                             )
                         }
                     }
@@ -199,13 +248,132 @@ fun HomeContent(
             }
         }
     }
+
+    state.continueWatchingMenuTarget?.let { target ->
+        ContinueWatchingOptionsDialog(
+            item = target,
+            onResume = {
+                onDismissContinueWatchingOptions()
+                target.jellyfinId?.let(onPlayDirect)
+            },
+            onViewDetails = {
+                onDismissContinueWatchingOptions()
+                onOpenDetails(target)
+            },
+            onRemove = { onRemoveFromContinueWatching(target) },
+            onDismiss = onDismissContinueWatchingOptions
+        )
+    }
+}
+
+@Composable
+private fun GenreFilterBar(
+    selectedGenre: GenreFilterOption,
+    onSelectGenre: (GenreFilterOption) -> Unit
+) {
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(GenreFilterOption.ALL_GENRES, key = { it.id }) { genre ->
+            var focused by remember { mutableStateOf(false) }
+            val selected = selectedGenre.id == genre.id
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(
+                        when {
+                            selected -> NetflixColors.White
+                            focused -> Color(0xFF3E3E3E)
+                            else -> Color(0xFF232323)
+                        }
+                    )
+                    .then(
+                        if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(20.dp))
+                        else Modifier.border(1.dp, Color(0x28FFFFFF), RoundedCornerShape(20.dp))
+                    )
+                    .onFocusChanged { focused = it.isFocused }
+                    .focusable()
+                    .clickable { onSelectGenre(genre) }
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = genre.label,
+                    color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+                    fontSize = 13.sp,
+                    fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ContinueWatchingOptionsDialog(
+    item: UnifiedMediaItem,
+    onResume: () -> Unit,
+    onViewDetails: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(380.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF1A1A1A))
+                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = item.title,
+                color = NetflixColors.White,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold
+            )
+            item.episodeLabel?.let {
+                Text(it, color = NetflixColors.TextSecondary, fontSize = 13.sp)
+            }
+            Spacer(Modifier.height(4.dp))
+            ContextActionRow(Icons.Filled.PlayArrow, "Resume Playing", onResume)
+            ContextActionRow(Icons.Filled.Info, "More Details", onViewDetails)
+            ContextActionRow(Icons.Filled.DeleteOutline, "Remove from Continue Watching", onRemove)
+        }
+    }
+}
+
+@Composable
+private fun ContextActionRow(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (focused) Color(0xFF3A3A3A) else Color(0xFF242424))
+            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = NetflixColors.White, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, color = NetflixColors.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
 }
 
 @Composable
 private fun CatalogRowSection(
     row: CatalogRow,
     onItemFocus: (UnifiedMediaItem) -> Unit,
-    onItemClick: (UnifiedMediaItem) -> Unit
+    onItemClick: (UnifiedMediaItem) -> Unit,
+    onContinueWatchingOptions: (UnifiedMediaItem) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -230,7 +398,8 @@ private fun CatalogRowSection(
                         ContinueWatchingCard(
                             item = item,
                             onFocus = { onItemFocus(item) },
-                            onClick = { onItemClick(item) }
+                            onClick = { onItemClick(item) },
+                            onOptionsMenu = { onContinueWatchingOptions(item) }
                         )
                     }
                 }
@@ -272,8 +441,6 @@ private fun NetflixNavRail(
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit
 ) {
-    var focusedCount by remember { mutableStateOf(0) }
-
     Column(
         modifier = Modifier
             .fillMaxHeight()
@@ -283,10 +450,10 @@ private fun NetflixNavRail(
             .onFocusChanged { focusState ->
                 onRailFocusChange(focusState.hasFocus)
             }
-            .padding(vertical = 24.dp, horizontal = 10.dp),
+            .padding(vertical = 20.dp, horizontal = 10.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             // Netflix-inspired brand mark
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -325,6 +492,13 @@ private fun NetflixNavRail(
                 onClick = { onSelectTab(HomeTab.HOME) }
             )
             NavRailItem(
+                icon = Icons.Filled.NewReleases,
+                label = "New & Popular",
+                expanded = expanded,
+                selected = activeTab == HomeTab.NEW_AND_POPULAR,
+                onClick = { onSelectTab(HomeTab.NEW_AND_POPULAR) }
+            )
+            NavRailItem(
                 icon = Icons.Filled.Tv,
                 label = "TV Shows",
                 expanded = expanded,
@@ -339,6 +513,13 @@ private fun NetflixNavRail(
                 onClick = { onSelectTab(HomeTab.MOVIES) }
             )
             NavRailItem(
+                icon = Icons.Filled.Bookmark,
+                label = "My List",
+                expanded = expanded,
+                selected = activeTab == HomeTab.MY_LIST,
+                onClick = { onSelectTab(HomeTab.MY_LIST) }
+            )
+            NavRailItem(
                 icon = Icons.Filled.CloudDownload,
                 label = "Requests",
                 expanded = expanded,
@@ -348,7 +529,7 @@ private fun NetflixNavRail(
             )
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             NavRailItem(
                 icon = Icons.Filled.Refresh,
                 label = "Refresh",
@@ -389,7 +570,7 @@ private fun NavRailItem(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .height(44.dp)
+            .height(42.dp)
             .clip(RoundedCornerShape(6.dp))
             .background(
                 when {
@@ -451,3 +632,4 @@ private fun NavRailItem(
         }
     }
 }
+

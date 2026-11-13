@@ -1,7 +1,5 @@
 package com.seerflix.tv.feature.details
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,6 +27,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Theaters
 import androidx.compose.material3.Checkbox
@@ -50,7 +51,6 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,22 +62,23 @@ import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.components.NetflixPosterCard
 import com.seerflix.tv.ui.theme.NetflixColors
-import kotlin.math.roundToInt
 
 @Composable
 fun DetailsScreen(
     onBack: () -> Unit,
     onPlayItem: (String) -> Unit,
+    onPlayTrailer: (title: String, youtubeKey: String?, localTrailerId: String?) -> Unit,
     onOpenDetails: (UnifiedMediaItem) -> Unit,
+    onSearchActor: (name: String, personId: Int?) -> Unit,
     viewModel: DetailsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
-    val context = LocalContext.current
 
     DetailsContent(
         state = state,
@@ -90,9 +91,13 @@ fun DetailsScreen(
         onSelectSeason = viewModel::selectSeason,
         onSubmitRequest = viewModel::submitRequest,
         onWatchTrailer = { key ->
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/watch?v=$key"))
-            runCatching { context.startActivity(intent) }
-        }
+            onPlayTrailer(state.item?.title ?: "Trailer", key, state.item?.localTrailerItemId)
+        },
+        onPlayTrailer = onPlayTrailer,
+        onToggleMyList = viewModel::toggleMyList,
+        onToggleReminder = viewModel::toggleReminder,
+        onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
+        onSearchActor = onSearchActor
     )
 }
 
@@ -107,7 +112,12 @@ fun DetailsContent(
     onCancelRequest: (Int) -> Unit,
     onSelectSeason: (Int) -> Unit,
     onSubmitRequest: (requestHd: Boolean, request4k: Boolean, seasons: List<Int>?) -> Unit,
-    onWatchTrailer: (String) -> Unit
+    onWatchTrailer: (String) -> Unit,
+    onPlayTrailer: (title: String, youtubeKey: String?, localTrailerId: String?) -> Unit = { _, k, _ -> k?.let(onWatchTrailer) },
+    onToggleMyList: () -> Unit = {},
+    onToggleReminder: () -> Unit = {},
+    onRemoveFromContinueWatching: () -> Unit = {},
+    onSearchActor: (name: String, personId: Int?) -> Unit = { _, _ -> }
 ) {
     Box(
         modifier = Modifier
@@ -154,8 +164,11 @@ fun DetailsContent(
                             },
                             onRequestClick = onOpenRequestModal,
                             onWatchTrailer = {
-                                item.youtubeTrailerKey?.let(onWatchTrailer)
+                                onPlayTrailer("${item.title} • Trailer", item.youtubeTrailerKey, item.localTrailerItemId)
                             },
+                            onToggleMyList = onToggleMyList,
+                            onToggleReminder = onToggleReminder,
+                            onRemoveFromContinueWatching = onRemoveFromContinueWatching,
                             onCancelRequest = onCancelRequest
                         )
                     }
@@ -212,7 +225,36 @@ fun DetailsContent(
                         }
                     }
 
-                    // Cast Row
+                    // Trailers & More
+                    if (item.relatedVideos.isNotEmpty()) {
+                        item(key = "trailers_and_more") {
+                            Column(modifier = Modifier.padding(top = 24.dp)) {
+                                Text(
+                                    text = "Trailers & More",
+                                    color = NetflixColors.White,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
+                                )
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 48.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    items(item.relatedVideos, key = { "${it.title}_${it.youtubeKey}_${it.localTrailerItemId}" }) { video ->
+                                        RelatedVideoCard(
+                                            video = video,
+                                            fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
+                                            onClick = {
+                                                onPlayTrailer(video.title, video.youtubeKey, video.localTrailerItemId)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Cast Row (clickable for Actor Filmography search)
                     if (item.cast.isNotEmpty()) {
                         item(key = "cast_section") {
                             Column(modifier = Modifier.padding(top = 24.dp)) {
@@ -228,8 +270,20 @@ fun DetailsContent(
                                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
                                     items(item.cast, key = { "${it.name}_${it.role}" }) { member ->
+                                        var castFocused by remember { mutableStateOf(false) }
                                         Column(
-                                            modifier = Modifier.width(104.dp),
+                                            modifier = Modifier
+                                                .width(108.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (castFocused) Color(0xFF242424) else Color.Transparent)
+                                                .then(
+                                                    if (castFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
+                                                    else Modifier
+                                                )
+                                                .onFocusChanged { castFocused = it.isFocused }
+                                                .focusable()
+                                                .clickable { onSearchActor(member.name, member.personId) }
+                                                .padding(6.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
                                             AsyncImage(
@@ -244,7 +298,7 @@ fun DetailsContent(
                                             Spacer(Modifier.height(6.dp))
                                             Text(
                                                 text = member.name,
-                                                color = NetflixColors.TextPrimary,
+                                                color = if (castFocused) NetflixColors.White else NetflixColors.TextPrimary,
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 maxLines = 1,
@@ -309,6 +363,71 @@ fun DetailsContent(
 }
 
 @Composable
+private fun RelatedVideoCard(
+    video: RelatedVideoItem,
+    fallbackBackdropUrl: String?,
+    onClick: () -> Unit
+) {
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .width(220.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(6.dp))
+                .background(NetflixColors.SurfaceElevated)
+                .then(
+                    if (focused) Modifier.border(2.5.dp, NetflixColors.White, RoundedCornerShape(6.dp))
+                    else Modifier.border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(6.dp))
+                )
+        ) {
+            AsyncImage(
+                model = video.thumbnailUrl ?: fallbackBackdropUrl,
+                contentDescription = video.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = "Play Trailer",
+                tint = NetflixColors.White,
+                modifier = Modifier
+                    .size(36.dp)
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(Color(0xAA000000))
+                    .padding(6.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color(0xBB0A0A0A))
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(video.type, color = NetflixColors.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = video.title,
+            color = if (focused) NetflixColors.White else NetflixColors.TextSecondary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
 private fun DetailsHeaderSection(
     item: UnifiedMediaItem,
     episodes: List<EpisodeSummary>,
@@ -317,12 +436,15 @@ private fun DetailsHeaderSection(
     onPlay: () -> Unit,
     onRequestClick: () -> Unit,
     onWatchTrailer: () -> Unit,
+    onToggleMyList: () -> Unit,
+    onToggleReminder: () -> Unit,
+    onRemoveFromContinueWatching: () -> Unit,
     onCancelRequest: (Int) -> Unit
 ) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(370.dp)
+            .height(385.dp)
     ) {
         AsyncImage(
             model = item.backdropUrl ?: item.posterUrl,
@@ -380,15 +502,26 @@ private fun DetailsHeaderSection(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 48.dp, end = 240.dp, bottom = 20.dp)
+                .padding(start = 48.dp, end = 220.dp, bottom = 20.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 AvailabilityBadge(item = item)
                 TierPill("HD", item.hdStatus)
                 TierPill("4K", item.uhdStatus)
+                item.mediaBadges.take(4).forEach { badge ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xAA1F1F1F))
+                            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 7.dp, vertical = 3.dp)
+                    ) {
+                        Text(text = badge, color = NetflixColors.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
 
             Spacer(Modifier.height(10.dp))
@@ -474,7 +607,7 @@ private fun DetailsHeaderSection(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 val canPlay = item.isPlayable || episodes.any { it.isAvailableInJellyfin }
                 if (canPlay) {
@@ -495,12 +628,37 @@ private fun DetailsHeaderSection(
                     )
                 }
 
-                if (!item.youtubeTrailerKey.isNullOrBlank()) {
+                HeroPillButton(
+                    text = if (item.isInMyList) "In My List" else "My List",
+                    icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                    isPrimary = false,
+                    onClick = onToggleMyList
+                )
+
+                if (!canPlay && item.overallAvailability == AvailabilityTier.UNKNOWN && item.tmdbId != null) {
+                    HeroPillButton(
+                        text = if (item.isReminderSet) "Reminder Set" else "Remind Me",
+                        icon = if (item.isReminderSet) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+                        isPrimary = false,
+                        onClick = onToggleReminder
+                    )
+                }
+
+                if (!item.youtubeTrailerKey.isNullOrBlank() || !item.localTrailerItemId.isNullOrBlank()) {
                     HeroPillButton(
                         text = "Trailer",
                         icon = Icons.Filled.Theaters,
                         isPrimary = false,
                         onClick = onWatchTrailer
+                    )
+                }
+
+                if (item.resumePositionTicks > 0L && item.jellyfinId != null) {
+                    HeroPillButton(
+                        text = "Remove Progress",
+                        icon = Icons.Filled.DeleteOutline,
+                        isPrimary = false,
+                        onClick = onRemoveFromContinueWatching
                     )
                 }
 

@@ -21,5 +21,15 @@ data class UserProfile(
     val avatarUrl: String? = null,
     val avatarColorHex: Long = 0xFFE50914,
     val seerrCookie: String? = null,
-    val isAdmin: Boolean = false
-)
+    val isAdmin: Boolean = false,
+    val pinHash: String? = null,
+    val autoplayNextEpisode: Boolean = true,
+    val autoplayPreviews: Boolean = true,
+    val preferredAudioLang: String? = null,
+    val preferredSubtitleLang: String? = null,
+    val subtitleFontScale: Float = 1.0f,
+    val subtitleBackgroundAlpha: Float = 0.6f
+) {
+    val hasPin: Boolean
+        get() = !pinHash.isNullOrBlank()
+}

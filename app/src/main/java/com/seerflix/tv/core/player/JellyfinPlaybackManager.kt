@@ -2,8 +2,11 @@ package com.seerflix.tv.core.player
 
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.TrackOption
+import com.seerflix.tv.core.model.TrickplayInfo
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinDeviceProfileDto
+import com.seerflix.tv.core.network.JellyfinItemDto
+import com.seerflix.tv.core.network.JellyfinMediaSourceDto
 import com.seerflix.tv.core.network.JellyfinPlaybackInfoRequest
 import com.seerflix.tv.core.network.JellyfinPlaybackProgressRequest
 import com.seerflix.tv.core.network.SessionPreferences
@@ -17,7 +20,11 @@ class JellyfinPlaybackManager @Inject constructor(
     private val jellyfinApi: JellyfinApi,
     private val prefs: SessionPreferences
 ) {
-    suspend fun preparePlayback(userId: String, itemId: String): Result<PlaybackSessionData> = runCatching {
+    suspend fun preparePlayback(
+        userId: String,
+        itemId: String,
+        maxBitrateBps: Long? = null
+    ): Result<PlaybackSessionData> = runCatching {
         coroutineScope {
             val itemDeferred = async { jellyfinApi.getItemDetails(userId, itemId) }
             val playbackDeferred = async {
@@ -26,7 +33,9 @@ class JellyfinPlaybackManager @Inject constructor(
                     userId = userId,
                     body = JellyfinPlaybackInfoRequest(
                         userId = userId,
-                        deviceProfile = JellyfinDeviceProfileDto()
+                        deviceProfile = JellyfinDeviceProfileDto(
+                            maxStreamingBitrate = maxBitrateBps ?: 120_000_000L
+                        )
                     )
                 )
             }
@@ -44,19 +53,17 @@ class JellyfinPlaybackManager @Inject constructor(
             val base = prefs.cachedJellyfinUrl
             val token = prefs.cachedToken.orEmpty()
 
-            val (streamUrl, isHls) = if (source.supportsDirectPlay || source.supportsDirectStream) {
-                val url = "$base/Videos/${item.id}/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
-                url to false
-            } else if (!source.transcodingUrl.isNullOrBlank()) {
-                val path = source.transcodingUrl
-                val url = if (path.startsWith("http")) path else "$base$path"
-                url to true
-            } else {
-                val url = "$base/Videos/${item.id}/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&api_key=$token"
-                url to true
-            }
+            val (streamUrl, isHls) = buildStreamUrl(
+                base = base,
+                token = token,
+                itemId = item.id,
+                source = source,
+                playSessionId = playSessionId,
+                maxBitrateBps = maxBitrateBps
+            )
 
             val introSeg = segments.firstOrNull { it.type.equals("Intro", ignoreCase = true) }
+            val recapSeg = segments.firstOrNull { it.type.equals("Recap", ignoreCase = true) }
             val creditsSeg = segments.firstOrNull {
                 it.type.equals("Outro", ignoreCase = true) || it.type.equals("Credits", ignoreCase = true)
             }
@@ -101,6 +108,41 @@ class JellyfinPlaybackManager @Inject constructor(
                     )
                 }
 
+            val primaryVideo = source.mediaStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
+            val primaryAudio = source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
+            val resolutionLabel = primaryVideo?.let { v ->
+                when {
+                    (v.width ?: 0) >= 3800 || (v.height ?: 0) >= 2000 -> "4K UHD"
+                    (v.width ?: 0) >= 1900 || (v.height ?: 0) >= 1000 -> "1080p"
+                    (v.width ?: 0) >= 1200 || (v.height ?: 0) >= 700 -> "720p"
+                    v.height != null -> "${v.height}p"
+                    else -> null
+                }
+            }
+            val hdrFormat = primaryVideo?.let { v ->
+                val rt = v.videoRangeType.orEmpty()
+                when {
+                    rt.contains("DOVI", ignoreCase = true) || rt.contains("Dolby", ignoreCase = true) -> "Dolby Vision"
+                    rt.contains("HDR10Plus", ignoreCase = true) -> "HDR10+"
+                    rt.contains("HDR10", ignoreCase = true) -> "HDR10"
+                    v.videoRange.equals("HDR", ignoreCase = true) -> "HDR"
+                    else -> null
+                }
+            }
+            val audioSummary = primaryAudio?.let { a ->
+                val codec = a.codec?.uppercase()
+                val ch = when (a.channels) {
+                    8 -> "7.1"
+                    6 -> "5.1"
+                    2 -> "2.0"
+                    else -> null
+                }
+                val atmos = if (a.audioSpatialFormat.orEmpty().contains("Atmos", ignoreCase = true)) "Atmos" else null
+                listOfNotNull(codec, ch, atmos).joinToString(" ").ifBlank { null }
+            }
+
+            val trickplay = extractTrickplayInfo(item, source.id, base, token)
+
             val title = if (item.type.equals("Episode", ignoreCase = true) && !item.seriesName.isNullOrBlank()) {
                 item.seriesName
             } else item.name
@@ -121,9 +163,18 @@ class JellyfinPlaybackManager @Inject constructor(
                 runtimeTicks = source.runTimeTicks ?: item.runTimeTicks ?: 0L,
                 introStartTicks = introSeg?.startTicks,
                 introEndTicks = introSeg?.endTicks,
+                recapStartTicks = recapSeg?.startTicks,
+                recapEndTicks = recapSeg?.endTicks,
                 creditsStartTicks = creditsSeg?.startTicks,
                 nextEpisodeId = nextEpisodeId,
                 nextEpisodeTitle = nextEpisodeTitle,
+                trickplayInfo = trickplay,
+                seriesId = item.seriesId,
+                seasonId = item.seasonId,
+                videoCodec = primaryVideo?.codec?.uppercase(),
+                audioCodec = audioSummary,
+                resolutionLabel = resolutionLabel,
+                hdrFormat = hdrFormat,
                 audioTracks = audioTracks,
                 subtitleTracks = subtitleTracks
             )
@@ -168,6 +219,55 @@ class JellyfinPlaybackManager @Inject constructor(
                     positionTicks = positionTicks,
                     isPaused = false
                 )
+            )
+        }
+    }
+
+    companion object {
+        fun buildStreamUrl(
+            base: String,
+            token: String,
+            itemId: String,
+            source: JellyfinMediaSourceDto,
+            playSessionId: String,
+            maxBitrateBps: Long?
+        ): Pair<String, Boolean> {
+            if (maxBitrateBps != null) {
+                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$maxBitrateBps&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                return url to true
+            }
+            return if (source.supportsDirectPlay || source.supportsDirectStream) {
+                val url = "$base/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
+                url to false
+            } else if (!source.transcodingUrl.isNullOrBlank()) {
+                val path = source.transcodingUrl
+                val url = if (path.startsWith("http")) path else "$base$path"
+                url to true
+            } else {
+                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&api_key=$token"
+                url to true
+            }
+        }
+
+        fun extractTrickplayInfo(
+            item: JellyfinItemDto,
+            mediaSourceId: String,
+            base: String,
+            token: String
+        ): TrickplayInfo? {
+            if (item.trickplay.isEmpty() || base.isBlank()) return null
+            val byWidth = item.trickplay[mediaSourceId] ?: item.trickplay.values.firstOrNull() ?: return null
+            val chosen = byWidth["320"] ?: byWidth.values.minByOrNull { kotlin.math.abs(it.width - 320) } ?: return null
+            if (chosen.thumbnailCount <= 0 || chosen.width <= 0 || chosen.height <= 0) return null
+            val template = "$base/Videos/${item.id}/Trickplay/${chosen.width}/{tileIndex}.jpg?mediaSourceId=$mediaSourceId&api_key=$token"
+            return TrickplayInfo(
+                width = chosen.width,
+                height = chosen.height,
+                tileWidth = chosen.tileWidth.coerceAtLeast(1),
+                tileHeight = chosen.tileHeight.coerceAtLeast(1),
+                thumbnailCount = chosen.thumbnailCount,
+                intervalMs = chosen.interval.coerceAtLeast(1000),
+                baseUrlTemplate = template
             )
         }
     }

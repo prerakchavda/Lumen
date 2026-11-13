@@ -114,6 +114,18 @@ interface SeerrApi {
         @Query("language") language: String = "en"
     ): SeerrDiscoverPageDto
 
+    @GET("api/v1/person/{personId}")
+    suspend fun getPersonDetails(
+        @Path("personId") personId: Int,
+        @Query("language") language: String = "en"
+    ): SeerrPersonDetailsDto
+
+    @GET("api/v1/person/{personId}/combined_credits")
+    suspend fun getPersonCredits(
+        @Path("personId") personId: Int,
+        @Query("language") language: String = "en"
+    ): SeerrPersonCreditsDto
+
     @POST("api/v1/request")
     suspend fun createRequest(
         @Body body: SeerrCreateRequestBody

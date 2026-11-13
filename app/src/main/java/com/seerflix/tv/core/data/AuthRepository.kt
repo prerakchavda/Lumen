@@ -125,6 +125,18 @@ class AuthRepository @Inject constructor(
         prefs.removeProfile(profileId)
     }
 
+    suspend fun updateProfilePreferences(profile: UserProfile) {
+        prefs.updateProfilePreferences(profile)
+    }
+
+    suspend fun updateSubtitleAppearance(fontScale: Float, backgroundAlpha: Float) {
+        prefs.updateSubtitleAppearance(fontScale, backgroundAlpha)
+    }
+
+    fun verifyProfilePin(profile: UserProfile, enteredPin: String): Boolean {
+        return SessionPreferences.verifyPin(profile.pinHash, enteredPin)
+    }
+
     private fun pickNetflixAvatarColor(name: String): Long {
         val palette = listOf(
             0xFFE50914L, // Netflix Red

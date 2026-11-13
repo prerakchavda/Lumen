@@ -93,6 +93,7 @@ dependencies {
     implementation(libs.coil.network.okhttp)
 
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.tvprovider)
     implementation(libs.newpipe.extractor)
 
     testImplementation(libs.junit)

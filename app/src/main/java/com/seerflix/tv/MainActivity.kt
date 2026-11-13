@@ -1,5 +1,8 @@
 package com.seerflix.tv
 
+import android.app.SearchManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -42,13 +45,26 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var authRepository: AuthRepository
 
+    private var latestIntentState by mutableStateOf<Intent?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        latestIntentState = intent
         setContent {
             SeerflixTheme {
-                SeerflixNavGraph(authRepository)
+                SeerflixNavGraph(
+                    authRepository = authRepository,
+                    incomingIntent = latestIntentState,
+                    onIntentHandled = { latestIntentState = null }
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        latestIntentState = intent
     }
 }
 
@@ -56,10 +72,18 @@ private object Routes {
     const val SETUP = "setup"
     const val PROFILES = "profiles"
     const val HOME = "home"
-    const val SEARCH = "search"
+    const val SEARCH = "search?query={query}&personId={personId}&personName={personName}"
     const val REQUESTS = "requests"
     const val DETAILS = "details/{tmdbId}/{jellyfinId}/{mediaType}"
     const val PLAYER = "player/{itemId}"
+    const val TRAILER = "trailer?title={title}&youtubeKey={youtubeKey}&localTrailerId={localTrailerId}"
+
+    fun search(query: String = "", personId: Int? = null, personName: String? = null): String {
+        val encQ = Uri.encode(query)
+        val pid = personId?.toString() ?: "0"
+        val encName = Uri.encode(personName.orEmpty())
+        return "search?query=$encQ&personId=$pid&personName=$encName"
+    }
 
     fun details(item: UnifiedMediaItem): String {
         val tmdb = item.tmdbId ?: 0
@@ -70,11 +94,45 @@ private object Routes {
     fun details(tmdbId: Int, mediaType: MediaType): String =
         "details/$tmdbId/none/${mediaType.name}"
 
-    fun player(itemId: String): String = "player/$itemId"
+    fun player(itemId: String): String = "player/${Uri.encode(itemId)}"
+
+    fun trailer(title: String, youtubeKey: String?, localTrailerId: String?): String {
+        val encTitle = Uri.encode(title)
+        val encKey = Uri.encode(youtubeKey ?: "none")
+        val encLocal = Uri.encode(localTrailerId ?: "none")
+        return "trailer?title=$encTitle&youtubeKey=$encKey&localTrailerId=$encLocal"
+    }
+}
+
+private fun resolveDeepLinkRoute(intent: Intent?): String? {
+    if (intent == null) return null
+    if (intent.action == Intent.ACTION_SEARCH) {
+        val q = intent.getStringExtra(SearchManager.QUERY).orEmpty().trim()
+        if (q.isNotBlank()) return Routes.search(query = q)
+    }
+    val data = intent.data ?: return null
+    if (data.scheme != "seerflix") return null
+    val segments = data.pathSegments
+    return when (data.host) {
+        "player" -> segments.firstOrNull()?.let { Routes.player(it) }
+        "details" -> {
+            val tmdb = segments.getOrNull(0)?.toIntOrNull() ?: 0
+            val jf = segments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: "none"
+            val type = segments.getOrNull(2)?.takeIf { it.isNotBlank() } ?: MediaType.MOVIE.name
+            "details/$tmdb/$jf/$type"
+        }
+        "search" -> Routes.search(query = data.getQueryParameter("q").orEmpty())
+        "home" -> Routes.HOME
+        else -> null
+    }
 }
 
 @Composable
-private fun SeerflixNavGraph(authRepository: AuthRepository) {
+private fun SeerflixNavGraph(
+    authRepository: AuthRepository,
+    incomingIntent: Intent?,
+    onIntentHandled: () -> Unit
+) {
     val navController = rememberNavController()
     var startDestination by remember { mutableStateOf<String?>(null) }
 
@@ -84,8 +142,18 @@ private fun SeerflixNavGraph(authRepository: AuthRepository) {
         val activeProfile = authRepository.activeProfileFlow.first()
         startDestination = when {
             !config.isConfigured -> Routes.SETUP
-            activeProfile == null -> Routes.PROFILES
+            activeProfile == null || activeProfile.hasPin -> Routes.PROFILES
             else -> Routes.HOME
+        }
+    }
+
+    LaunchedEffect(startDestination, incomingIntent) {
+        if (startDestination == Routes.HOME && incomingIntent != null) {
+            val route = resolveDeepLinkRoute(incomingIntent)
+            onIntentHandled()
+            if (route != null && route != Routes.HOME) {
+                navController.navigate(route)
+            }
         }
     }
 
@@ -132,14 +200,21 @@ private fun SeerflixNavGraph(authRepository: AuthRepository) {
             HomeScreen(
                 onOpenDetails = { item -> navController.navigate(Routes.details(item)) },
                 onPlayDirect = { itemId -> navController.navigate(Routes.player(itemId)) },
-                onOpenSearch = { navController.navigate(Routes.SEARCH) },
+                onOpenSearch = { navController.navigate(Routes.search()) },
                 onOpenRequests = { navController.navigate(Routes.REQUESTS) },
                 onSwitchProfile = { navController.navigate(Routes.PROFILES) },
                 onOpenSettings = { navController.navigate(Routes.SETUP) }
             )
         }
 
-        composable(Routes.SEARCH) {
+        composable(
+            route = Routes.SEARCH,
+            arguments = listOf(
+                navArgument("query") { type = NavType.StringType; defaultValue = "" },
+                navArgument("personId") { type = NavType.StringType; defaultValue = "0" },
+                navArgument("personName") { type = NavType.StringType; defaultValue = "" }
+            )
+        ) {
             SearchScreen(
                 onBack = { navController.popBackStack() },
                 onOpenDetails = { item -> navController.navigate(Routes.details(item)) }
@@ -166,7 +241,19 @@ private fun SeerflixNavGraph(authRepository: AuthRepository) {
             DetailsScreen(
                 onBack = { navController.popBackStack() },
                 onPlayItem = { itemId -> navController.navigate(Routes.player(itemId)) },
-                onOpenDetails = { item -> navController.navigate(Routes.details(item)) }
+                onPlayTrailer = { title, ytKey, localId ->
+                    navController.navigate(Routes.trailer(title, ytKey, localId))
+                },
+                onOpenDetails = { item -> navController.navigate(Routes.details(item)) },
+                onSearchActor = { name, personId ->
+                    navController.navigate(
+                        Routes.search(
+                            query = if (personId == null) name else "",
+                            personId = personId,
+                            personName = name
+                        )
+                    )
+                }
             )
         }
 
@@ -178,5 +265,17 @@ private fun SeerflixNavGraph(authRepository: AuthRepository) {
         ) {
             PlayerScreen(onBack = { navController.popBackStack() })
         }
+
+        composable(
+            route = Routes.TRAILER,
+            arguments = listOf(
+                navArgument("title") { type = NavType.StringType; defaultValue = "Trailer" },
+                navArgument("youtubeKey") { type = NavType.StringType; defaultValue = "none" },
+                navArgument("localTrailerId") { type = NavType.StringType; defaultValue = "none" }
+            )
+        ) {
+            PlayerScreen(onBack = { navController.popBackStack() })
+        }
     }
 }
+

@@ -75,4 +75,43 @@ class UnifiedMediaItemTest {
         assertTrue(item.canRequest4k)
         assertEquals(AvailabilityTier.UNKNOWN, item.overallAvailability)
     }
+
+    @Test
+    fun `media badges my list reminder and related videos preserve values`() {
+        val trailer = RelatedVideoItem(
+            title = "Official Trailer",
+            type = "Trailer",
+            youtubeKey = "abc123",
+            thumbnailUrl = "https://img.youtube.com/vi/abc123/hqdefault.jpg"
+        )
+        val item = UnifiedMediaItem(
+            id = "tmdb_MOVIE_693134",
+            tmdbId = 693134,
+            jellyfinId = "jf-1",
+            mediaType = MediaType.MOVIE,
+            title = "Dune: Part Two",
+            isInMyList = true,
+            isReminderSet = false,
+            mediaBadges = listOf("4K", "Dolby Vision", "Dolby Atmos", "CC"),
+            relatedVideos = listOf(trailer)
+        )
+
+        assertTrue(item.isInMyList)
+        assertFalse(item.isReminderSet)
+        assertEquals(listOf("4K", "Dolby Vision", "Dolby Atmos", "CC"), item.mediaBadges)
+        assertEquals(listOf(trailer), item.relatedVideos)
+    }
+
+    @Test
+    fun `UserProfile tracks PIN status and playback defaults`() {
+        val unlocked = UserProfile("1", "Prerak", "1", "tok")
+        assertFalse(unlocked.hasPin)
+        assertTrue(unlocked.autoplayNextEpisode)
+        assertTrue(unlocked.autoplayPreviews)
+        assertEquals(1.0f, unlocked.subtitleFontScale, 0.001f)
+        assertEquals(0.6f, unlocked.subtitleBackgroundAlpha, 0.001f)
+
+        val locked = unlocked.copy(pinHash = "hashed")
+        assertTrue(locked.hasPin)
+    }
 }

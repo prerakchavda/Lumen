@@ -8,8 +8,15 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import android.graphics.Typeface
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalInspectionMode
+import androidx.compose.ui.unit.dp
 import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
 import coil3.annotation.ExperimentalCoilApi
@@ -27,6 +34,10 @@ import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.PersonSearchResult
+import com.seerflix.tv.core.model.PlaybackSessionData
+import com.seerflix.tv.core.model.QualityPreset
+import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.RowStyle
 import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -36,13 +47,20 @@ import com.seerflix.tv.feature.details.DetailsUiState
 import com.seerflix.tv.feature.home.HomeContent
 import com.seerflix.tv.feature.home.HomeTab
 import com.seerflix.tv.feature.home.HomeUiState
+import com.seerflix.tv.feature.player.EpisodesDrawerOverlay
+import com.seerflix.tv.feature.player.NextEpisodeOverlayCard
+import com.seerflix.tv.feature.player.StreamInfoOverlay
+import com.seerflix.tv.feature.profiles.PinEntryCard
 import com.seerflix.tv.feature.profiles.ProfilePickerContent
 import com.seerflix.tv.feature.profiles.ProfilePickerUiState
 import com.seerflix.tv.feature.requests.RequestFilter
 import com.seerflix.tv.feature.requests.RequestsContent
 import com.seerflix.tv.feature.requests.RequestsUiState
+import com.seerflix.tv.feature.search.SearchContent
+import com.seerflix.tv.feature.search.SearchUiState
 import com.seerflix.tv.feature.setup.SetupContent
 import com.seerflix.tv.feature.setup.SetupUiState
+import com.seerflix.tv.ui.theme.NetflixColors
 import com.seerflix.tv.ui.theme.SeerflixTheme
 import org.junit.Rule
 import org.junit.Test
@@ -225,16 +243,32 @@ class ScreenshotGeneratorTest {
                 estimatedCompletionIso = null
             ),
             uhdRequestId = 42,
+            isInMyList = true,
+            mediaBadges = listOf("4K", "Dolby Vision", "Dolby Atmos", "CC"),
             youtubeTrailerKey = "xEQP4VVuyrY",
+            relatedVideos = listOf(
+                RelatedVideoItem(
+                    title = "Official Trailer",
+                    type = "Trailer",
+                    youtubeKey = "xEQP4VVuyrY",
+                    thumbnailUrl = "art://still/tr1/TRAILER/0xFF0E3A4C/0xFF1CC8B8"
+                ),
+                RelatedVideoItem(
+                    title = "Inside Lumon Featurette",
+                    type = "Featurette",
+                    youtubeKey = "feat1",
+                    thumbnailUrl = "art://still/tr2/FEATURETTE/0xFF20133A/0xFFE91E63"
+                )
+            ),
             seasons = listOf(
                 SeasonSummary(1, "Season 1", 9, hdStatus = AvailabilityTier.AVAILABLE, uhdStatus = AvailabilityTier.AVAILABLE, jellyfinSeasonId = "s1"),
                 SeasonSummary(2, "Season 2", 10, hdStatus = AvailabilityTier.PARTIALLY_AVAILABLE, uhdStatus = AvailabilityTier.PROCESSING, jellyfinSeasonId = "s2")
             ),
             cast = listOf(
-                CastMember("Adam Scott", "Mark Scout", "art://cast/adam/AS/0xFF253746/0xFF78909C"),
-                CastMember("Britt Lower", "Helly Riggs", "art://cast/britt/BL/0xFF3A1C2A/0xFFF06292"),
-                CastMember("Zach Cherry", "Dylan George", "art://cast/zach/ZC/0xFF1E3224/0xFF66BB6A"),
-                CastMember("Tramell Tillman", "Seth Milchick", "art://cast/tramell/TT/0xFF2C2538/0xFF9575CD")
+                CastMember("Adam Scott", "Mark Scout", "art://cast/adam/AS/0xFF253746/0xFF78909C", personId = 36801),
+                CastMember("Britt Lower", "Helly Riggs", "art://cast/britt/BL/0xFF3A1C2A/0xFFF06292", personId = 1529460),
+                CastMember("Zach Cherry", "Dylan George", "art://cast/zach/ZC/0xFF1E3224/0xFF66BB6A", personId = 1718281),
+                CastMember("Tramell Tillman", "Seth Milchick", "art://cast/tramell/TT/0xFF2C2538/0xFF9575CD", personId = 1835993)
             )
         )
 
@@ -386,8 +420,8 @@ class ScreenshotGeneratorTest {
         val state = ProfilePickerUiState(
             profiles = listOf(
                 UserProfile("1", "Prerak", "1", "t1", avatarColorHex = 0xFFE50914),
-                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB),
-                UserProfile("3", "Kids", "3", "t3", avatarColorHex = 0xFF2EA44F),
+                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB, pinHash = "locked"),
+                UserProfile("3", "Sam", "3", "t3", avatarColorHex = 0xFF2EA44F),
                 UserProfile("4", "Guest", "4", "t4", avatarColorHex = 0xFFD97706)
             )
         )
@@ -404,6 +438,182 @@ class ScreenshotGeneratorTest {
                 onSignInWithPassword = {},
                 onToggleAuthMode = {}
             )
+        }
+    }
+
+    @Test
+    fun profilesManage() {
+        val state = ProfilePickerUiState(
+            isManageMode = true,
+            profiles = listOf(
+                UserProfile("1", "Prerak", "1", "t1", avatarColorHex = 0xFFE50914),
+                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB, pinHash = "locked"),
+                UserProfile("3", "Sam", "3", "t3", avatarColorHex = 0xFF2EA44F),
+                UserProfile("4", "Guest", "4", "t4", avatarColorHex = 0xFFD97706)
+            )
+        )
+
+        snapshotScreen("profiles_manage") {
+            ProfilePickerContent(
+                state = state,
+                onOpenSettings = {},
+                onSelectProfile = {},
+                onOpenAddProfile = {},
+                onCloseAuthDialog = {},
+                onUpdateUsername = {},
+                onUpdatePassword = {},
+                onSignInWithPassword = {},
+                onToggleAuthMode = {}
+            )
+        }
+    }
+
+    @Test
+    fun profilePinCard() {
+        snapshotScreen("profile_pin_card") {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(NetflixColors.Background),
+                contentAlignment = Alignment.Center
+            ) {
+                PinEntryCard(
+                    profileName = "Alex",
+                    pinInput = "12",
+                    errorMessage = null,
+                    onDigit = {},
+                    onBackspace = {},
+                    onClear = {},
+                    onDismiss = {}
+                )
+            }
+        }
+    }
+
+    @Test
+    fun search() {
+        val state = SearchUiState(
+            query = "Dune",
+            results = listOf(
+                sampleDune(),
+                samplePosterItem(
+                    "m2", "Interstellar", "art://poster/interstellar/INTERSTELLAR/0xFF0E1B38/0xFFF4B942",
+                    uhd = AvailabilityTier.AVAILABLE, hd = AvailabilityTier.AVAILABLE, jfId = "jf2"
+                ),
+                samplePosterItem(
+                    "m3", "Arrival", "art://poster/arrival/ARRIVAL/0xFF1F2A38/0xFF90CAF9",
+                    hd = AvailabilityTier.AVAILABLE, jfId = "jf3"
+                ),
+                samplePosterItem(
+                    "m4", "Blade Runner 2049", "art://poster/br2049/BLADE RUNNER/0xFF3E1810/0xFFFF9800",
+                    uhd = AvailabilityTier.AVAILABLE, hd = AvailabilityTier.AVAILABLE, jfId = "jf4"
+                )
+            ),
+            personResults = listOf(
+                PersonSearchResult(1, "Denis Villeneuve", "Directing", "art://cast/denis/DV/0xFF253746/0xFF78909C"),
+                PersonSearchResult(2, "Rebecca Ferguson", "Acting", "art://cast/rebecca/RF/0xFF3A1C2A/0xFFF06292"),
+                PersonSearchResult(3, "Timothée Chalamet", "Acting", "art://cast/timothee/TC/0xFF1E3224/0xFF66BB6A")
+            )
+        )
+
+        snapshotScreen("search") {
+            SearchContent(
+                state = state,
+                onBack = {},
+                onQueryChange = {},
+                onVoiceSearch = {},
+                onSelectGenre = {},
+                onSelectPerson = {},
+                onClearFilter = {},
+                onOpenDetails = {}
+            )
+        }
+    }
+
+    @Test
+    fun playerOverlays() {
+        val session = PlaybackSessionData(
+            itemId = "ep2",
+            title = "Severance",
+            subtitle = "S2:E4 • Woe's Hollow",
+            streamUrl = "http://example/stream",
+            isHls = false,
+            mediaSourceId = "src",
+            playSessionId = "sess",
+            resumeTicks = 0L,
+            runtimeTicks = 30_000_000_000L,
+            videoCodec = "HEVC",
+            audioCodec = "EAC3 5.1 Atmos",
+            resolutionLabel = "4K UHD",
+            hdrFormat = "Dolby Vision"
+        )
+        val seasons = listOf(
+            SeasonSummary(1, "Season 1", 9, hdStatus = AvailabilityTier.AVAILABLE, jellyfinSeasonId = "s1"),
+            SeasonSummary(2, "Season 2", 10, hdStatus = AvailabilityTier.PARTIALLY_AVAILABLE, jellyfinSeasonId = "s2")
+        )
+        val episodes = listOf(
+            EpisodeSummary(
+                id = "ep1",
+                name = "Hello, Ms. Cobel",
+                overview = "Mark returns to Lumon under startlingly different circumstances.",
+                seasonNumber = 2,
+                episodeNumber = 1,
+                runtimeTicks = 30_000_000_000L,
+                resumePositionTicks = 30_000_000_000L,
+                stillUrl = "art://still/ep1/S2E1/0xFF103742/0xFF4DD0E1",
+                isAvailableInJellyfin = true,
+                isWatched = true
+            ),
+            EpisodeSummary(
+                id = "ep2",
+                name = "Woe's Hollow",
+                overview = "The MDR team embarks on an outdoor team-building retreat.",
+                seasonNumber = 2,
+                episodeNumber = 4,
+                runtimeTicks = 31_200_000_000L,
+                resumePositionTicks = 19_000_000_000L,
+                stillUrl = "art://still/ep4/S2E4/0xFF1D2939/0xFF90CAF9",
+                isAvailableInJellyfin = true,
+                isWatched = false
+            )
+        )
+
+        snapshotScreen("player_overlays") {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(NetflixColors.Background)
+            ) {
+                StreamInfoOverlay(
+                    session = session,
+                    selectedQuality = QualityPreset.AUTO,
+                    playbackSpeed = 1.0f,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(32.dp)
+                )
+                NextEpisodeOverlayCard(
+                    nextEpisodeTitle = "S2:E5 • Trojan's Horse",
+                    autoplayEnabled = true,
+                    countdownSeconds = 4,
+                    onPlayNow = {},
+                    onWatchCredits = {},
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(32.dp)
+                )
+                EpisodesDrawerOverlay(
+                    seriesTitle = "Severance",
+                    seasons = seasons,
+                    selectedSeason = 2,
+                    episodes = episodes,
+                    isLoading = false,
+                    currentEpisodeId = "ep2",
+                    onSelectSeason = {},
+                    onSelectEpisode = {},
+                    onClose = {}
+                )
+            }
         }
     }
 
@@ -512,6 +722,8 @@ class ScreenshotGeneratorTest {
         backdropUrl = "art://backdrop/dune2/DUNE PART TWO/0xFF4A1E08/0xFFFFA726",
         hdStatus = AvailabilityTier.AVAILABLE,
         uhdStatus = AvailabilityTier.AVAILABLE,
+        isInMyList = true,
+        mediaBadges = listOf("4K", "Dolby Vision", "Dolby Atmos", "CC"),
         resumePositionTicks = 42_000_000_000L,
         runtimeTicks = 99_600_000_000L
     )

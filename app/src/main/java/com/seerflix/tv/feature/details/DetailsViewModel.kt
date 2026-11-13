@@ -191,6 +191,56 @@ class DetailsViewModel @Inject constructor(
         }
     }
 
+    fun toggleMyList() {
+        val item = _uiState.value.item ?: return
+        if (activeUserId.isBlank()) return
+        viewModelScope.launch {
+            catalogRepository.toggleMyList(activeUserId, item)
+                .onSuccess { inList ->
+                    _uiState.update {
+                        it.copy(
+                            item = it.item?.copy(isInMyList = inList),
+                            feedbackBanner = if (inList) "Added to My List" else "Removed from My List"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = "My List update failed: ${err.message}") }
+                }
+        }
+    }
+
+    fun toggleReminder() {
+        val item = _uiState.value.item ?: return
+        if (activeUserId.isBlank()) return
+        viewModelScope.launch {
+            val set = catalogRepository.toggleReminder(activeUserId, item)
+            _uiState.update {
+                it.copy(
+                    item = it.item?.copy(isReminderSet = set),
+                    feedbackBanner = if (set) "Reminder set for release" else "Reminder removed"
+                )
+            }
+        }
+    }
+
+    fun removeFromContinueWatching() {
+        val item = _uiState.value.item ?: return
+        val jfId = item.jellyfinId ?: return
+        if (activeUserId.isBlank()) return
+        viewModelScope.launch {
+            catalogRepository.removeFromContinueWatching(activeUserId, jfId)
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            item = it.item?.copy(resumePositionTicks = 0L),
+                            feedbackBanner = "Removed from Continue Watching"
+                        )
+                    }
+                }
+        }
+    }
+
     private fun startLivePollingIfNeeded(initial: UnifiedMediaItem) {
         pollingJob?.cancel()
         val needsPolling = !initial.isPlayable ||

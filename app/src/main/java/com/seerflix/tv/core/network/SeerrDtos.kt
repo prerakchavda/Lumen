@@ -61,9 +61,28 @@ data class SeerrMediaResultDto(
     val firstAirDate: String? = null,
     val posterPath: String? = null,
     val backdropPath: String? = null,
+    val profilePath: String? = null,
+    val knownForDepartment: String? = null,
+    val knownFor: List<SeerrMediaResultDto> = emptyList(),
     val voteAverage: Double? = null,
     val genreIds: List<Int> = emptyList(),
     val mediaInfo: SeerrMediaInfoDto? = null
+)
+
+@Serializable
+data class SeerrPersonDetailsDto(
+    val id: Int,
+    val name: String,
+    val biography: String? = null,
+    val profilePath: String? = null,
+    val knownForDepartment: String? = null
+)
+
+@Serializable
+data class SeerrPersonCreditsDto(
+    val id: Int? = null,
+    val cast: List<SeerrMediaResultDto> = emptyList(),
+    val crew: List<SeerrMediaResultDto> = emptyList()
 )
 
 @Serializable
