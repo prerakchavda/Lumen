@@ -32,15 +32,38 @@ annotation class JellyfinClient
 @Retention(AnnotationRetention.BINARY)
 annotation class SeerrClient
 
-private class DynamicBaseUrlInterceptor(
-    private val baseUrlProvider: () -> String
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class GeneralClient
+
+private class FailoverBaseUrlInterceptor(
+    private val candidatesProvider: () -> List<String>,
+    private val onResolvedUrl: (String) -> Unit
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
         val original = chain.request()
-        val rawBase = baseUrlProvider()
-        val targetBase = rawBase.toHttpUrlOrNull()
-            ?: throw IOException("Server URL is not configured: $rawBase")
+        val candidates = candidatesProvider()
+        if (candidates.isEmpty()) {
+            throw IOException("Server URL is not configured")
+        }
 
+        var lastError: IOException? = null
+        for ((idx, rawBase) in candidates.withIndex()) {
+            val targetBase = rawBase.toHttpUrlOrNull() ?: continue
+            val updated = rewriteRequestUrl(original, targetBase)
+            try {
+                val response = chain.proceed(updated)
+                onResolvedUrl(rawBase)
+                return response
+            } catch (io: IOException) {
+                lastError = io
+                if (idx == candidates.lastIndex) throw io
+            }
+        }
+        throw lastError ?: IOException("Unable to reach server URL")
+    }
+
+    private fun rewriteRequestUrl(original: okhttp3.Request, targetBase: HttpUrl): okhttp3.Request {
         val baseSegments = targetBase.pathSegments.filter { it.isNotEmpty() }
         val newUrlBuilder = original.url.newBuilder()
             .scheme(targetBase.scheme)
@@ -55,10 +78,9 @@ private class DynamicBaseUrlInterceptor(
             }
         }
 
-        val updated = original.newBuilder()
+        return original.newBuilder()
             .url(newUrlBuilder.build())
             .build()
-        return chain.proceed(updated)
     }
 }
 
@@ -110,6 +132,37 @@ private class SeerrSessionCookieJar(
     }
 }
 
+private fun OkHttpClient.Builder.applyDynamicSelfSignedTrust(prefs: SessionPreferences): OkHttpClient.Builder {
+    val systemDefaultTm: javax.net.ssl.X509TrustManager? = runCatching {
+        val tmf = javax.net.ssl.TrustManagerFactory.getInstance(javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm())
+        tmf.init(null as java.security.KeyStore?)
+        tmf.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().firstOrNull()
+    }.getOrNull()
+
+    val delegatingTm = object : javax.net.ssl.X509TrustManager {
+        override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
+            if (!prefs.cachedTrustSelfSigned) systemDefaultTm?.checkClientTrusted(chain, authType)
+        }
+
+        override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
+            if (!prefs.cachedTrustSelfSigned) systemDefaultTm?.checkServerTrusted(chain, authType)
+        }
+
+        override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> =
+            systemDefaultTm?.acceptedIssuers ?: emptyArray()
+    }
+
+    val sslContext = javax.net.ssl.SSLContext.getInstance("TLS").apply {
+        init(null, arrayOf<javax.net.ssl.TrustManager>(delegatingTm), java.security.SecureRandom())
+    }
+    sslSocketFactory(sslContext.socketFactory, delegatingTm)
+    val defaultVerifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier()
+    hostnameVerifier { hostname, session ->
+        if (prefs.cachedTrustSelfSigned) true else defaultVerifier.verify(hostname, session)
+    }
+    return this
+}
+
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
@@ -130,9 +183,15 @@ object NetworkModule {
             level = HttpLoggingInterceptor.Level.BASIC
         }
         return OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
-            .addInterceptor(DynamicBaseUrlInterceptor { prefs.cachedJellyfinUrl })
+            .applyDynamicSelfSignedTrust(prefs)
+            .addInterceptor(
+                FailoverBaseUrlInterceptor(
+                    candidatesProvider = { prefs.jellyfinUrlCandidates },
+                    onResolvedUrl = { prefs.cachedResolvedJellyfinUrl = it }
+                )
+            )
             .addInterceptor(JellyfinAuthInterceptor(prefs))
             .addInterceptor(logging)
             .build()
@@ -146,13 +205,27 @@ object NetworkModule {
             level = HttpLoggingInterceptor.Level.BASIC
         }
         return OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .applyDynamicSelfSignedTrust(prefs)
             .cookieJar(SeerrSessionCookieJar(prefs))
-            .addInterceptor(DynamicBaseUrlInterceptor { prefs.cachedSeerrUrl })
+            .addInterceptor(
+                FailoverBaseUrlInterceptor(
+                    candidatesProvider = { prefs.seerrUrlCandidates },
+                    onResolvedUrl = { prefs.cachedResolvedSeerrUrl = it }
+                )
+            )
             .addInterceptor(logging)
             .build()
     }
+
+    @Provides
+    @Singleton
+    @GeneralClient
+    fun provideGeneralOkHttp(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
 
     @Provides
     @Singleton

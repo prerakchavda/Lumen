@@ -114,13 +114,15 @@ interface SeerrApi {
     @GET("api/v1/movie/{movieId}/recommendations")
     suspend fun getMovieRecommendations(
         @Path("movieId") movieId: Int,
-        @Query("page") page: Int = 1
+        @Query("page") page: Int = 1,
+        @Query("language") language: String = "en"
     ): SeerrDiscoverPageDto
 
     @GET("api/v1/tv/{tvId}/recommendations")
     suspend fun getTvRecommendations(
         @Path("tvId") tvId: Int,
-        @Query("page") page: Int = 1
+        @Query("page") page: Int = 1,
+        @Query("language") language: String = "en"
     ): SeerrDiscoverPageDto
 
     @GET("api/v1/search")
@@ -147,6 +149,16 @@ interface SeerrApi {
         @Body body: SeerrCreateRequestBody
     ): SeerrRequestSummaryDto
 
+    @POST("api/v1/request/{requestId}/approve")
+    suspend fun approveRequest(
+        @Path("requestId") requestId: Int
+    ): SeerrRequestSummaryDto
+
+    @POST("api/v1/request/{requestId}/decline")
+    suspend fun declineRequest(
+        @Path("requestId") requestId: Int
+    ): SeerrRequestSummaryDto
+
     @GET("api/v1/request")
     suspend fun getRequests(
         @Query("take") take: Int = 50,
@@ -160,9 +172,24 @@ interface SeerrApi {
         @Path("requestId") requestId: Int
     )
 
+    @POST("api/v1/issue")
+    suspend fun createIssue(
+        @Body body: SeerrCreateIssueBody
+    )
+
     @GET("api/v1/settings/radarr")
     suspend fun getRadarrServers(): List<SeerrArrServerDto>
 
+    @GET("api/v1/settings/radarr/{serverId}")
+    suspend fun getRadarrServerDetails(
+        @Path("serverId") serverId: Int
+    ): SeerrArrServerDetailsResponseDto
+
     @GET("api/v1/settings/sonarr")
     suspend fun getSonarrServers(): List<SeerrArrServerDto>
+
+    @GET("api/v1/settings/sonarr/{serverId}")
+    suspend fun getSonarrServerDetails(
+        @Path("serverId") serverId: Int
+    ): SeerrArrServerDetailsResponseDto
 }

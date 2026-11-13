@@ -24,41 +24,53 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 ### Collections Hub & Saga Completion
 ![Collections Hub](screenshots/collections.png)
 
-### Title Details, TV Seasons & Live 4K Download ETA
+### Title Details, Versions/Editions, TV Seasons, Extras & Live 4K Download ETA
 ![Details Screen](screenshots/details.png)
+
+### Live TV & DVR Guide
+![Live TV & DVR Guide](screenshots/live-tv.png)
 
 ### Search, People & Genre Discovery
 ![Search Screen](screenshots/search.png)
 
-### Media3 Player Overlays (Episodes Drawer, Stream Info & Next Episode)
+### Media3 Player Overlays (Episodes Drawer, Chapters, ASS/SSA & Stream Info)
 ![Player Overlays](screenshots/player-overlays.png)
 
-### Requests & Downloads Hub (HD & 4K Queue + Live Progress)
+### Requests & Downloads Hub (HD & 4K Queue, Live Progress & Admin Approvals)
 ![Requests Screen](screenshots/requests.png)
 
-### "Who's Watching?" Profile Picker & Manage Profiles
+### "Who's Watching?" Profile Picker, PIN Lock, Kids Mode & Manage Profiles
 ![Profile Picker](screenshots/profiles.png)
+![Profile PIN Lock](screenshots/profile-pin-card.png)
 ![Manage Profiles](screenshots/profiles-manage.png)
 
-### Dual-Server Setup (Jellyfin + Seerr v3+)
+### Zero-Friction Setup (LAN Auto-Discovery, QR Companion, Dual Failover & Jellyfin-Only Mode)
 ![Server Setup](screenshots/setup.png)
 
 > *Note: UI screenshots above are rendered from the real Jetpack Compose TV layouts via CashApp Paparazzi (`./gradlew testDebugUnitTest`) using synthetic poster/backdrop preview artwork.*
 
 ## Key Features
-- **Per-User UI Presets**: Each profile independently chooses and persists its own streaming UI layout and theme — switch anytime from the Home Appearance button or Manage Profiles:
-  - **Netflix** *(default)*: `#141414` dark surface, `#E50914` crimson accents, collapsible left icon rail, `2:3` vertical posters, and giant outlined **Top 10** numerals.
-  - **Apple TV+**: `#050507` obsidian canvas, floating translucent top glass pill bar, tall `360.dp` full-bleed hero with capsule buttons, `16:9` widescreen artwork cards, and `#1` Top 10 corner pills.
-  - **Disney+ / Max**: `#0B0D17` midnight navy gradient canvas, structured top header bar, `#0063E5` / `#00D2FF` electric blue accents, framed `2:3` posters, and `TOP N` badges.
-- **Collections & Saga Completion**: Dedicated **Collections** hub and Movie Details **"Part of Saga"** rows merging Jellyfin BoxSets with Seerr collection metadata and 1-click **Request Missing**.
-- **Coming Soon & Release Reminders**: Countdown badges (`Today`, `S3 E4 • Tonight`, `Tomorrow`, `In N days`), Jellyfin `Shows/Upcoming` (**New Episodes Coming This Week**), and **"Ready to Watch • Your Reminders"** promotion when reminders become playable.
-- **"Who's Watching?" Profile Picker + Quick Connect**: Sign in with a 6-digit **Quick Connect** code synced across both Jellyfin and Seerr v3+ (with optional per-profile PIN lock, preset badges, and password login fallback).
-- **On-Device Trailer Previews**: Plays local Jellyfin trailers and Seerr YouTube `relatedVideos` directly on the Google TV via `NewPipeExtractor` + Media3 (zero load on your server, with Ken Burns backdrop fallback).
-- **Seamless HD & 4K Requests + Live ETA**:
-  - Request **HD (1080p)**, **4K (2160p)**, or **Both**, plus per-season selection for TV shows and quick-request long-press menus.
-  - Tracks `status` / `status4k` and live `%` + **ETA** directly from Seerr v3+'s `downloadStatus` / `downloadStatus4k` fields (*ensure **Enable Scan** is checked on Radarr/Sonarr inside Seerr settings*).
-  - Auto-polls every 15s on Details and Requests Hub so `Requested → Downloading 64% • ~6m left → Play` updates automatically.
-- **Media3 Player**: Direct Play first (HEVC, H.264, AV1, HDR10/Dolby Vision) with automatic Jellyfin HLS transcode fallback, **24fps frame-rate matching**, **Auto-Skip Intro/Recap** (with Undo pill), **Subtitle Sync Offset (±ms)**, **On-Demand Jellyfin Remote Subtitle Search/Download**, **Next Episode** overlay, In-Player Episodes drawer, and live Jellyfin resume reporting.
+- **Per-User UI Presets & Customizable Home**: Each profile independently chooses and persists its own streaming UI layout (`Netflix`, `Apple TV+`, or `Disney+ / Max`), default startup tab, pinned Jellyfin library rows, and hidden/reordered Home rows.
+- **Zero-Friction Onboarding & Smart Networking**:
+  - **Jellyfin-Only Mode**: Skip Seerr/Jellyseerr entirely and browse/stream your Jellyfin libraries directly.
+  - **LAN Auto-Discovery + QR Phone Companion**: Discovers Jellyfin servers via UDP `7359` broadcast and hosts a temporary local HTTP form reachable by scanning an on-screen QR code from your phone — no typing URLs with a TV remote.
+  - **Dual Local/Remote Failover & Self-Signed SSL**: Configure separate LAN and remote URLs per server with automatic failover when roaming, plus an optional self-signed certificate toggle for homelab setups.
+- **Home Theater & Codec Compatibility**:
+  - **ASS / SSA Anime Subtitles**: Renders styled ASS/SSA dialogue overlays natively via Media3, or switches cleanly between Server Burn-In and Plain Text fallback.
+  - **Audio Passthrough & Stereo Downmix**: Toggle optical/HDMI bitstream passthrough or 2.0 stereo downmix in-player.
+  - **Multi-Version & Edition Picker**: Switch between 4K Remux, 1080p Web-DL, Director's Cut, or Extended editions right on Details or inside the player.
+  - **Chapters, External Player & Auto-Skip**: Visual chapter tick marks on the seekbar with chapter jump list, `ACTION_VIEW` external player fallback (Kodi / Nova / MX / VLC), **24fps frame-rate matching**, **Auto-Skip Intro/Recap** (with Undo pill), **Subtitle Sync Offset (±ms)**, and **On-Demand Jellyfin Remote Subtitle Search/Download**.
+- **Complete Seerr v3+ Loop**:
+  - Request **HD (1080p)**, **4K (2160p)**, or **Both**, choose **Radarr / Sonarr Server, Quality Profile & Root Folder**, and select individual TV seasons.
+  - **Admin Queue & Issue Reporting**: Seerr admins can **Approve** or **Decline** pending requests straight from the TV UI, and any user can **Report an Issue** (Video, Audio, Subtitle, Other) from Details.
+  - **Live ETA & Background Ready Alerts**: Polls `downloadStatus` / `downloadStatus4k` every 15s, plus a **WorkManager** background check that promotes newly fulfilled requests into **"Ready to Watch"** and syncs to the Android TV Home **Watch Next** channel.
+- **Household, Kids Mode & Social**:
+  - **Kids Mode & Parental Filtering**: Restricts Home, Search, People, Genres, Live TV, and Requests by MPAA/TV maturity rating (`G`, `PG`, `TV-Y`, `TV-G`, `TV-PG`) with optional **4-digit Profile PIN lock** on adult profiles.
+  - **Jellyfin SyncPlay**: Create, join, and sync **Watch Together** rooms directly from the top bar or player.
+  - **Mark Watched / Unwatched** and Quick Connect 6-digit TV login.
+- **Live TV & DVR, Collections, Coming Soon & Extras**:
+  - Dedicated **Live TV** tab with EPG Now/Next timeline bars, live channel tuning, and DVR recordings.
+  - **Collections & Saga Completion** (`Part of Saga` + 1-click `Request Missing`), **Coming Soon** countdown reminders, **Extras & Special Features** row on Details, **On-Device YouTube Trailers** (`NewPipeExtractor`), **In-App GitHub Release Updater**, and localized UI (`English`, `Español`, `Français`, `Deutsch`, `日本語`) + metadata language support.
 
 ## Build & Sideload to Google TV
 1. Build the debug APK:

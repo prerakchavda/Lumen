@@ -6,10 +6,31 @@ import kotlinx.serialization.Serializable
 data class ServerConfig(
     val jellyfinUrl: String = "",
     val seerrUrl: String = "",
-    val deviceId: String = ""
+    val deviceId: String = "",
+    val jellyfinLocalUrl: String = "",
+    val seerrLocalUrl: String = "",
+    val trustSelfSignedCerts: Boolean = false
 ) {
+    val isJellyfinConfigured: Boolean
+        get() = jellyfinUrl.isNotBlank() || jellyfinLocalUrl.isNotBlank()
+
+    val isSeerrConfigured: Boolean
+        get() = seerrUrl.isNotBlank() || seerrLocalUrl.isNotBlank()
+
     val isConfigured: Boolean
-        get() = jellyfinUrl.isNotBlank() && seerrUrl.isNotBlank()
+        get() = isJellyfinConfigured
+
+    val jellyfinCandidates: List<String>
+        get() = listOf(jellyfinLocalUrl, jellyfinUrl)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+    val seerrCandidates: List<String>
+        get() = listOf(seerrLocalUrl, seerrUrl)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
 }
 
 @Serializable
@@ -17,6 +38,32 @@ enum class FrameRateMatchMode(val label: String) {
     OFF("Off"),
     SEAMLESS_ONLY("Seamless"),
     ALWAYS("Always (HDMI)")
+}
+
+@Serializable
+enum class AssSubtitleMode(val label: String) {
+    STYLED("Styled (ASS)"),
+    BURN_IN("Server Burn-In"),
+    PLAIN("Plain Text")
+}
+
+@Serializable
+enum class ContentRatingLimit(val label: String, val maxRank: Int, val jellyfinMaxOfficialRating: String?) {
+    ALL("All Ages (Unrestricted)", 4, null),
+    PG_13("Teen (PG-13 / TV-14)", 3, "PG-13"),
+    PG("Family (PG / TV-PG)", 2, "PG"),
+    G("Kids Only (G / TV-Y)", 1, "G")
+}
+
+@Serializable
+enum class HomeTabId(val label: String) {
+    HOME("Home"),
+    SHOWS("TV Shows"),
+    MOVIES("Movies"),
+    COLLECTIONS("Collections"),
+    LIVE_TV("Live TV"),
+    NEW_AND_POPULAR("New & Popular"),
+    MY_LIST("My List")
 }
 
 @Serializable
@@ -39,8 +86,30 @@ data class UserProfile(
     val autoSkipIntro: Boolean = false,
     val autoSkipRecap: Boolean = false,
     val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF,
-    val uiPreset: UiPreset = UiPreset.NETFLIX
+    val uiPreset: UiPreset = UiPreset.NETFLIX,
+    val kidsMode: Boolean = false,
+    val maxContentRating: ContentRatingLimit = ContentRatingLimit.ALL,
+    val allowKidsRequests: Boolean = false,
+    val audioPassthroughEnabled: Boolean = true,
+    val stereoDownmixEnabled: Boolean = false,
+    val assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
+    val defaultStartupTab: HomeTabId = HomeTabId.HOME,
+    val pinnedLibraryIds: List<String> = emptyList(),
+    val hiddenHomeRowIds: List<String> = emptyList(),
+    val homeRowOrder: List<String> = emptyList(),
+    val metadataLanguage: String = "en",
+    val uiLanguage: String = "en"
 ) {
     val hasPin: Boolean
         get() = !pinHash.isNullOrBlank()
+
+    val effectiveRatingLimit: ContentRatingLimit
+        get() = if (kidsMode && maxContentRating == ContentRatingLimit.ALL) {
+            ContentRatingLimit.PG
+        } else {
+            maxContentRating
+        }
+
+    val canSubmitRequests: Boolean
+        get() = !kidsMode || allowKidsRequests
 }

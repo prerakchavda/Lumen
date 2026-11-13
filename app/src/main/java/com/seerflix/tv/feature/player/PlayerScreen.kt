@@ -3,10 +3,12 @@ package com.seerflix.tv.feature.player
 import android.graphics.Bitmap
 import android.os.Build
 import android.view.KeyEvent
+import android.view.View
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -35,9 +37,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
@@ -65,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -101,13 +106,18 @@ import coil3.request.ImageRequest
 import coil3.request.SuccessResult
 import coil3.request.allowHardware
 import coil3.toBitmap
+import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.model.AssSubtitleMode
+import com.seerflix.tv.core.model.ChapterMarker
 import com.seerflix.tv.core.model.EpisodeSummary
+import com.seerflix.tv.core.model.ExternalSubtitleFile
 import com.seerflix.tv.core.model.FrameRateMatchMode
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.QualityPreset
 import com.seerflix.tv.core.model.RemoteSubtitleOption
 import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.TrickplayCrop
+import com.seerflix.tv.core.player.AssSubtitleOverlay
 import com.seerflix.tv.core.player.AutoSkipHelper
 import com.seerflix.tv.core.player.FrameRateMatcher
 import com.seerflix.tv.core.player.OffsetSubtitleParserFactory
@@ -426,18 +436,20 @@ fun PlayerScreen(
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
-                            if (!osdVisible) {
+                            if (!osdVisible && session?.isLiveTv != true) {
                                 val target = (player.currentPosition - 10_000L).coerceAtLeast(0L)
                                 player.seekTo(target)
+                                viewModel.notifySyncPlaySeek(target)
                                 currentPosMs = target
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            if (!osdVisible) {
+                            if (!osdVisible && session?.isLiveTv != true) {
                                 val target = player.currentPosition + 10_000L
                                 player.seekTo(target)
+                                viewModel.notifySyncPlaySeek(target)
                                 currentPosMs = target
                                 osdVisible = true
                                 true
@@ -466,6 +478,7 @@ fun PlayerScreen(
                 }
             }
             else -> {
+                val useAssOverlay = state.assSubtitleMode == AssSubtitleMode.STYLED && state.activeAssCues.isNotEmpty()
                 AndroidView(
                     factory = { ctx ->
                         PlayerView(ctx).apply {
@@ -476,6 +489,7 @@ fun PlayerScreen(
                     update = { view ->
                         if (view.player !== player) view.player = player
                         view.subtitleView?.let { sv ->
+                            sv.visibility = if (useAssOverlay) View.GONE else View.VISIBLE
                             sv.setApplyEmbeddedStyles(false)
                             sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * state.subtitleFontScale)
                             val alphaInt = (state.subtitleBackgroundAlpha * 255f).toInt().coerceIn(0, 255)
@@ -495,6 +509,15 @@ fun PlayerScreen(
                     modifier = Modifier.fillMaxSize()
                 )
 
+                if (useAssOverlay) {
+                    AssSubtitleOverlay(
+                        cues = state.activeAssCues,
+                        positionMs = currentPosMs + state.subtitleOffsetMs,
+                        fontScale = state.subtitleFontScale,
+                        backgroundAlpha = state.subtitleBackgroundAlpha
+                    )
+                }
+
                 // Stream Info HUD Badge (top-right)
                 if (state.showStreamInfo && session != null) {
                     StreamInfoOverlay(
@@ -507,8 +530,8 @@ fun PlayerScreen(
                     )
                 }
 
-                // Subtitle Offset Quick HUD Badge (top-center)
-                subtitleOffsetHudText?.let { hudText ->
+                // Subtitle Offset / Feedback Quick HUD Badge (top-center)
+                (subtitleOffsetHudText ?: state.feedbackMessage)?.let { hudText ->
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -541,6 +564,7 @@ fun PlayerScreen(
                             isPrimary = false,
                             onClick = {
                                 player.seekTo(seekBackMs)
+                                viewModel.notifySyncPlaySeek(seekBackMs)
                                 currentPosMs = seekBackMs
                                 autoSkipUndoPrompt = null
                             }
@@ -551,7 +575,11 @@ fun PlayerScreen(
                             text = "Skip Recap",
                             icon = Icons.Filled.SkipNext,
                             isPrimary = true,
-                            onClick = { player.seekTo(session.recapEndTicks / 10_000L) }
+                            onClick = {
+                                val target = session.recapEndTicks / 10_000L
+                                player.seekTo(target)
+                                viewModel.notifySyncPlaySeek(target)
+                            }
                         )
                     }
                     if (showSkipIntro && session?.introEndTicks != null) {
@@ -559,7 +587,11 @@ fun PlayerScreen(
                             text = "Skip Intro",
                             icon = Icons.Filled.SkipNext,
                             isPrimary = true,
-                            onClick = { player.seekTo(session.introEndTicks / 10_000L) }
+                            onClick = {
+                                val target = session.introEndTicks / 10_000L
+                                player.seekTo(target)
+                                viewModel.notifySyncPlaySeek(target)
+                            }
                         )
                     }
                 }
@@ -588,9 +620,10 @@ fun PlayerScreen(
                     exit = fadeOut()
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Top gradient & title
+                        // Top gradient & title + SyncPlay room badge
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .background(
@@ -598,17 +631,48 @@ fun PlayerScreen(
                                 )
                                 .padding(horizontal = 48.dp, vertical = 28.dp)
                         ) {
-                            PlayerControlIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = onBack)
-                            Spacer(Modifier.width(18.dp))
-                            Column {
-                                Text(
-                                    text = session?.title.orEmpty(),
-                                    color = colors.white,
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                session?.subtitle?.let { sub ->
-                                    Text(text = sub, color = colors.textSecondary, fontSize = 14.sp)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                PlayerControlIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = onBack)
+                                Spacer(Modifier.width(18.dp))
+                                Column {
+                                    Text(
+                                        text = session?.title.orEmpty(),
+                                        color = colors.white,
+                                        fontSize = 22.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    val activeChapter = session?.chapters?.lastOrNull { it.startPositionMs <= currentPosMs }
+                                    val subtitleParts = listOfNotNull(
+                                        session?.subtitle,
+                                        activeChapter?.name
+                                    )
+                                    if (subtitleParts.isNotEmpty()) {
+                                        Text(
+                                            text = subtitleParts.joinToString(" • "),
+                                            color = colors.textSecondary,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                            }
+
+                            state.syncPlayGroup?.let { group ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(16.dp))
+                                        .background(colors.accent.copy(alpha = 0.22f))
+                                        .border(1.dp, colors.accent, RoundedCornerShape(16.dp))
+                                        .padding(horizontal = 14.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Filled.Groups, contentDescription = null, tint = colors.white, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        text = "${AppStrings.current.actionWatchTogether}: ${group.groupName} (${group.participants.size})",
+                                        color = colors.white,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                             }
                         }
@@ -645,22 +709,51 @@ fun PlayerScreen(
 
                             val totalFloat = durationMs.coerceAtLeast(1L).toFloat()
                             val sliderPosMs = scrubPreviewMs ?: currentPosMs
-                            Slider(
-                                value = (sliderPosMs.toFloat() / totalFloat).coerceIn(0f, 1f),
-                                onValueChange = { frac ->
-                                    val targetMs = (frac * totalFloat).toLong()
-                                    scrubPreviewMs = targetMs
-                                    player.seekTo(targetMs)
-                                },
-                                onValueChangeFinished = {
-                                    scrubPreviewMs = null
-                                },
-                                colors = SliderDefaults.colors(
-                                    thumbColor = colors.accent,
-                                    activeTrackColor = colors.accent,
-                                    inactiveTrackColor = Color(0x55FFFFFF)
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Slider(
+                                    value = (sliderPosMs.toFloat() / totalFloat).coerceIn(0f, 1f),
+                                    onValueChange = { frac ->
+                                        val targetMs = (frac * totalFloat).toLong()
+                                        scrubPreviewMs = targetMs
+                                        player.seekTo(targetMs)
+                                    },
+                                    onValueChangeFinished = {
+                                        val target = scrubPreviewMs
+                                        scrubPreviewMs = null
+                                        if (target != null) {
+                                            viewModel.notifySyncPlaySeek(target)
+                                        }
+                                    },
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = colors.accent,
+                                        activeTrackColor = colors.accent,
+                                        inactiveTrackColor = Color(0x55FFFFFF)
+                                    )
                                 )
-                            )
+                                val chapters = session?.chapters.orEmpty()
+                                if (chapters.isNotEmpty() && durationMs > 0L) {
+                                    Canvas(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(6.dp)
+                                            .align(Alignment.Center)
+                                            .padding(horizontal = 10.dp)
+                                    ) {
+                                        chapters.forEach { ch ->
+                                            if (ch.startPositionMs > 0L && ch.startPositionMs < durationMs) {
+                                                val frac = (ch.startPositionMs.toFloat() / totalFloat).coerceIn(0.01f, 0.99f)
+                                                val x = size.width * frac
+                                                drawLine(
+                                                    color = Color.White.copy(alpha = 0.85f),
+                                                    start = Offset(x, 0f),
+                                                    end = Offset(x, size.height),
+                                                    strokeWidth = 3f
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -674,22 +767,40 @@ fun PlayerScreen(
                                     PlayerControlIcon(
                                         icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                         label = if (isPlaying) "Pause" else "Play",
-                                        onClick = { if (player.isPlaying) player.pause() else player.play() }
+                                        onClick = {
+                                            if (player.isPlaying) {
+                                                player.pause()
+                                                viewModel.notifySyncPlayPause()
+                                            } else {
+                                                player.play()
+                                                viewModel.notifySyncPlayUnpause()
+                                            }
+                                        }
                                     )
-                                    PlayerControlIcon(
-                                        icon = Icons.Filled.Replay10,
-                                        label = "Back 10s",
-                                        onClick = { player.seekTo((player.currentPosition - 10_000L).coerceAtLeast(0L)) }
-                                    )
-                                    PlayerControlIcon(
-                                        icon = Icons.Filled.Forward10,
-                                        label = "Forward 10s",
-                                        onClick = { player.seekTo(player.currentPosition + 10_000L) }
-                                    )
+                                    if (session?.isLiveTv != true) {
+                                        PlayerControlIcon(
+                                            icon = Icons.Filled.Replay10,
+                                            label = "Back 10s",
+                                            onClick = {
+                                                val target = (player.currentPosition - 10_000L).coerceAtLeast(0L)
+                                                player.seekTo(target)
+                                                viewModel.notifySyncPlaySeek(target)
+                                            }
+                                        )
+                                        PlayerControlIcon(
+                                            icon = Icons.Filled.Forward10,
+                                            label = "Forward 10s",
+                                            onClick = {
+                                                val target = player.currentPosition + 10_000L
+                                                player.seekTo(target)
+                                                viewModel.notifySyncPlaySeek(target)
+                                            }
+                                        )
+                                    }
                                     Spacer(Modifier.width(12.dp))
                                     Text(
-                                        text = "${formatMs(currentPosMs)} / ${formatMs(durationMs)}",
-                                        color = colors.textSecondary,
+                                        text = if (session?.isLiveTv == true) "LIVE" else "${formatMs(currentPosMs)} / ${formatMs(durationMs)}",
+                                        color = if (session?.isLiveTv == true) colors.accent else colors.textSecondary,
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
@@ -713,6 +824,14 @@ fun PlayerScreen(
                                             onClick = { showEpisodesDrawer = true }
                                         )
                                     }
+                                    PlayerControlIcon(
+                                        icon = Icons.AutoMirrored.Filled.OpenInNew,
+                                        label = AppStrings.current.actionExternalPlayer,
+                                        onClick = {
+                                            player.pause()
+                                            viewModel.openInExternalPlayer(context, currentPosMs)
+                                        }
+                                    )
                                     PlayerControlIcon(
                                         icon = Icons.Filled.Subtitles,
                                         label = "Audio & Subtitles",
@@ -766,15 +885,21 @@ fun PlayerScreen(
     if (showTracksDialog) {
         PlayerSettingsDialog(
             player = player,
+            session = session,
             isTrailer = session?.isTrailer == true,
             selectedSpeed = state.selectedSpeed,
             selectedQuality = state.selectedQuality,
+            selectedMediaSourceId = state.selectedMediaSourceId,
             subtitleFontScale = state.subtitleFontScale,
             subtitleBackgroundAlpha = state.subtitleBackgroundAlpha,
             subtitleOffsetMs = state.subtitleOffsetMs,
             autoSkipIntro = state.autoSkipIntro,
             autoSkipRecap = state.autoSkipRecap,
             frameRateMatchMode = state.frameRateMatchMode,
+            audioPassthroughEnabled = state.audioPassthroughEnabled,
+            stereoDownmixEnabled = state.stereoDownmixEnabled,
+            assSubtitleMode = state.assSubtitleMode,
+            activeAssSubtitleIndex = state.activeAssSubtitleIndex,
             remoteSubtitles = state.remoteSubtitles,
             remoteSubtitlesLoading = state.remoteSubtitlesLoading,
             remoteSubtitleLanguage = state.remoteSubtitleLanguage,
@@ -786,12 +911,42 @@ fun PlayerScreen(
                 showTracksDialog = false
                 viewModel.selectQuality(preset, currentPosMs)
             },
+            onSwitchMediaSource = { sourceId ->
+                showTracksDialog = false
+                viewModel.switchMediaSource(sourceId, currentPosMs)
+            },
+            onJumpToChapter = { chapter ->
+                showTracksDialog = false
+                player.seekTo(chapter.startPositionMs)
+                viewModel.notifySyncPlaySeek(chapter.startPositionMs)
+                currentPosMs = chapter.startPositionMs
+            },
             onSetSubtitleAppearance = viewModel::setSubtitleAppearance,
             onAdjustSubtitleOffset = viewModel::adjustSubtitleOffset,
             onResetSubtitleOffset = viewModel::resetSubtitleOffset,
             onToggleAutoSkipIntro = viewModel::toggleAutoSkipIntro,
             onToggleAutoSkipRecap = viewModel::toggleAutoSkipRecap,
             onSelectFrameRateMatchMode = viewModel::setFrameRateMatchMode,
+            onToggleAudioPassthrough = {
+                showTracksDialog = false
+                viewModel.toggleAudioPassthrough(currentPosMs)
+            },
+            onToggleStereoDownmix = {
+                showTracksDialog = false
+                viewModel.toggleStereoDownmix(currentPosMs)
+            },
+            onSelectAssMode = { mode ->
+                viewModel.setAssSubtitleMode(mode, currentPosMs)
+            },
+            onSelectExternalAssTrack = { ext ->
+                viewModel.selectExternalAssTrack(ext, currentPosMs)
+                showTracksDialog = false
+            },
+            onOpenExternalPlayer = {
+                showTracksDialog = false
+                player.pause()
+                viewModel.openInExternalPlayer(context, currentPosMs)
+            },
             onSearchRemoteSubtitles = viewModel::searchRemoteSubtitles,
             onDownloadRemoteSubtitle = { subId ->
                 showTracksDialog = false
@@ -1160,15 +1315,21 @@ private fun PlayerControlIcon(
 @Composable
 private fun PlayerSettingsDialog(
     player: ExoPlayer,
+    session: PlaybackSessionData?,
     isTrailer: Boolean,
     selectedSpeed: Float,
     selectedQuality: QualityPreset,
+    selectedMediaSourceId: String?,
     subtitleFontScale: Float,
     subtitleBackgroundAlpha: Float,
     subtitleOffsetMs: Long,
     autoSkipIntro: Boolean,
     autoSkipRecap: Boolean,
     frameRateMatchMode: FrameRateMatchMode,
+    audioPassthroughEnabled: Boolean,
+    stereoDownmixEnabled: Boolean,
+    assSubtitleMode: AssSubtitleMode,
+    activeAssSubtitleIndex: Int?,
     remoteSubtitles: List<RemoteSubtitleOption>,
     remoteSubtitlesLoading: Boolean,
     remoteSubtitleLanguage: String,
@@ -1177,12 +1338,19 @@ private fun PlayerSettingsDialog(
     showStreamInfo: Boolean,
     onSelectSpeed: (Float) -> Unit,
     onSelectQuality: (QualityPreset) -> Unit,
+    onSwitchMediaSource: (String) -> Unit,
+    onJumpToChapter: (ChapterMarker) -> Unit,
     onSetSubtitleAppearance: (Float, Float) -> Unit,
     onAdjustSubtitleOffset: (Long) -> Unit,
     onResetSubtitleOffset: () -> Unit,
     onToggleAutoSkipIntro: () -> Unit,
     onToggleAutoSkipRecap: () -> Unit,
     onSelectFrameRateMatchMode: (FrameRateMatchMode) -> Unit,
+    onToggleAudioPassthrough: () -> Unit,
+    onToggleStereoDownmix: () -> Unit,
+    onSelectAssMode: (AssSubtitleMode) -> Unit,
+    onSelectExternalAssTrack: (ExternalSubtitleFile?) -> Unit,
+    onOpenExternalPlayer: () -> Unit,
     onSearchRemoteSubtitles: (String) -> Unit,
     onDownloadRemoteSubtitle: (String) -> Unit,
     onToggleStreamInfo: () -> Unit,
@@ -1204,11 +1372,17 @@ private fun PlayerSettingsDialog(
     val isBitmapSubtitle = selectedTextMime == MimeTypes.APPLICATION_PGS ||
         selectedTextMime == MimeTypes.APPLICATION_VOBSUB ||
         selectedTextMime == MimeTypes.APPLICATION_DVBSUBS
+    val assExternalTracks = session?.externalSubtitleFiles.orEmpty().filter {
+        it.codec.equals("ass", ignoreCase = true) ||
+            it.codec.equals("ssa", ignoreCase = true) ||
+            it.url.contains(".ass", ignoreCase = true) ||
+            it.url.contains(".ssa", ignoreCase = true)
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(560.dp)
+                .width(580.dp)
                 .clip(dialogCorner)
                 .background(colors.dialogSurface)
                 .border(1.dp, colors.badgeBorder, dialogCorner)
@@ -1217,6 +1391,32 @@ private fun PlayerSettingsDialog(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text("Playback Settings", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+
+            // Versions & Editions (Multiple MediaSources)
+            val sources = session?.mediaSources.orEmpty()
+            if (!isTrailer && sources.size > 1) {
+                Text("Versions & Editions", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                sources.forEach { src ->
+                    TrackChoiceRow(
+                        label = src.displayLabel,
+                        selected = src.id == (selectedMediaSourceId ?: session?.mediaSourceId),
+                        onClick = { onSwitchMediaSource(src.id) }
+                    )
+                }
+            }
+
+            // Chapter Jump List
+            val chapters = session?.chapters.orEmpty()
+            if (!isTrailer && chapters.isNotEmpty()) {
+                Text("Chapters (${chapters.size})", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                chapters.take(12).forEach { chapter ->
+                    TrackChoiceRow(
+                        label = "${formatMs(chapter.startPositionMs)} • ${chapter.name}",
+                        selected = false,
+                        onClick = { onJumpToChapter(chapter) }
+                    )
+                }
+            }
 
             if (audioGroups.isNotEmpty()) {
                 Text("Audio Tracks", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -1241,13 +1441,13 @@ private fun PlayerSettingsDialog(
                 Text("Subtitles", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 TrackChoiceRow(
                     label = "Off",
-                    selected = textGroups.none { it.isSelected },
+                    selected = textGroups.none { it.isSelected } && activeAssSubtitleIndex == null,
                     onClick = {
                         player.trackSelectionParameters = player.trackSelectionParameters
                             .buildUpon()
                             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                             .build()
-                        onDismiss()
+                        onSelectExternalAssTrack(null)
                     }
                 )
                 textGroups.forEachIndexed { idx, group ->
@@ -1264,6 +1464,33 @@ private fun PlayerSettingsDialog(
                                 .build()
                             onDismiss()
                         }
+                    )
+                }
+            }
+
+            // ASS / SSA Anime & Styled Subtitle Engine
+            if (!isTrailer && assExternalTracks.isNotEmpty()) {
+                Text("ASS / SSA Subtitle Engine", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssSubtitleMode.entries.forEach { mode ->
+                        SettingChip(
+                            label = mode.label,
+                            selected = assSubtitleMode == mode,
+                            onClick = { onSelectAssMode(mode) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                assExternalTracks.forEach { ext ->
+                    val label = listOfNotNull(
+                        ext.language?.uppercase(),
+                        ext.title.ifBlank { "ASS Track #${ext.index}" },
+                        ext.codec?.uppercase()
+                    ).distinct().joinToString(" • ")
+                    TrackChoiceRow(
+                        label = label,
+                        selected = activeAssSubtitleIndex == ext.index,
+                        onClick = { onSelectExternalAssTrack(ext) }
                     )
                 }
             }
@@ -1358,6 +1585,21 @@ private fun PlayerSettingsDialog(
                 }
             }
 
+            // Audio Routing & Home Theater
+            if (!isTrailer) {
+                Text("Home Theater & Audio Routing", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                TrackChoiceRow(
+                    label = "Audio Passthrough (HDMI / Atmos / DTS)",
+                    selected = audioPassthroughEnabled,
+                    onClick = onToggleAudioPassthrough
+                )
+                TrackChoiceRow(
+                    label = "Stereo 2.0 Downmix (Night / Soundbar)",
+                    selected = stereoDownmixEnabled,
+                    onClick = onToggleStereoDownmix
+                )
+            }
+
             // Auto-Skip & 24fps Frame-Rate Matching
             if (!isTrailer) {
                 Text("Automation & Display", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -1409,12 +1651,19 @@ private fun PlayerSettingsDialog(
                 }
             }
 
-            // Stream Info Overlay toggle
+            // Stream Info Overlay toggle & External Player launch
             TrackChoiceRow(
                 label = "Stream Info Overlay",
                 selected = showStreamInfo,
                 onClick = onToggleStreamInfo
             )
+            if (!isTrailer) {
+                TrackChoiceRow(
+                    label = AppStrings.current.actionExternalPlayer,
+                    selected = false,
+                    onClick = onOpenExternalPlayer
+                )
+            }
         }
     }
 }

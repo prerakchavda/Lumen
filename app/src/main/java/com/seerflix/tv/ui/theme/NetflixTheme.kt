@@ -90,7 +90,8 @@ val SeerflixTypography = Typography(
 @Composable
 fun SeerflixTheme(
     preset: UiPreset = UiPreset.NETFLIX,
+    uiLanguage: String = "en",
     content: @Composable () -> Unit
 ) {
-    SeerflixPresetTheme(preset = preset, content = content)
+    SeerflixPresetTheme(preset = preset, uiLanguage = uiLanguage, content = content)
 }

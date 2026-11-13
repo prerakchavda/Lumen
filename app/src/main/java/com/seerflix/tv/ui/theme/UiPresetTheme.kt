@@ -234,13 +234,16 @@ object SeerflixTokens {
 @Composable
 fun SeerflixPresetTheme(
     preset: UiPreset = UiPreset.NETFLIX,
+    uiLanguage: String = "en",
     content: @Composable () -> Unit
 ) {
     val colors = colorsForPreset(preset)
     val spec = specForPreset(preset)
+    val strings = com.seerflix.tv.core.i18n.stringsForLanguage(uiLanguage)
     CompositionLocalProvider(
         LocalSeerflixColors provides colors,
-        LocalSeerflixSpec provides spec
+        LocalSeerflixSpec provides spec,
+        com.seerflix.tv.core.i18n.LocalStrings provides strings
     ) {
         MaterialTheme(
             colorScheme = tvColorSchemeFor(colors),

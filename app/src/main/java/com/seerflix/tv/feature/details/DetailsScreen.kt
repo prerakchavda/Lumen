@@ -21,21 +21,30 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Theaters
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -51,6 +60,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,11 +68,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
+import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.model.EpisodeSummary
+import com.seerflix.tv.core.model.ExtrasItem
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.RelatedVideoItem
+import com.seerflix.tv.core.model.SeerrIssueType
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.HeroPillButton
@@ -72,13 +86,14 @@ import com.seerflix.tv.ui.theme.SeerflixTokens
 @Composable
 fun DetailsScreen(
     onBack: () -> Unit,
-    onPlayItem: (String) -> Unit,
+    onPlayItem: (String, String?) -> Unit,
     onPlayTrailer: (title: String, youtubeKey: String?, localTrailerId: String?) -> Unit,
     onOpenDetails: (UnifiedMediaItem) -> Unit,
     onSearchActor: (name: String, personId: Int?) -> Unit,
     viewModel: DetailsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
 
     DetailsContent(
         state = state,
@@ -89,13 +104,21 @@ fun DetailsScreen(
         onCloseRequestModal = viewModel::closeRequestModal,
         onCancelRequest = viewModel::cancelRequest,
         onSelectSeason = viewModel::selectSeason,
-        onSubmitRequest = viewModel::submitRequest,
+        onSelectMediaSource = viewModel::selectMediaSource,
+        onSubmitRequest = { hd, uhd, seasons, hdSrv, hdProf, hdRoot, uhdSrv, uhdProf, uhdRoot ->
+            viewModel.submitRequest(hd, uhd, seasons, hdSrv, hdProf, hdRoot, uhdSrv, uhdProf, uhdRoot)
+        },
         onWatchTrailer = { key ->
             onPlayTrailer(state.item?.title ?: "Trailer", key, state.item?.localTrailerItemId)
         },
         onPlayTrailer = onPlayTrailer,
         onToggleMyList = viewModel::toggleMyList,
         onToggleReminder = viewModel::toggleReminder,
+        onToggleWatched = viewModel::toggleWatched,
+        onOpenExternalPlayer = { viewModel.openExternalPlayer(context) },
+        onOpenReportIssue = viewModel::openReportIssueModal,
+        onCloseReportIssue = viewModel::closeReportIssueModal,
+        onSubmitIssue = viewModel::submitIssue,
         onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
         onSearchActor = onSearchActor,
         onRequestCollectionItem = { part -> viewModel.requestCollectionItem(part) },
@@ -107,23 +130,40 @@ fun DetailsScreen(
 fun DetailsContent(
     state: DetailsUiState,
     onBack: () -> Unit,
-    onPlayItem: (String) -> Unit,
+    onPlayItem: (String, String?) -> Unit,
     onOpenDetails: (UnifiedMediaItem) -> Unit,
     onOpenRequestModal: () -> Unit,
     onCloseRequestModal: () -> Unit,
     onCancelRequest: (Int) -> Unit,
     onSelectSeason: (Int) -> Unit,
-    onSubmitRequest: (requestHd: Boolean, request4k: Boolean, seasons: List<Int>?) -> Unit,
+    onSelectMediaSource: (String) -> Unit = {},
+    onSubmitRequest: (
+        requestHd: Boolean,
+        request4k: Boolean,
+        seasons: List<Int>?,
+        hdServerId: Int?,
+        hdProfileId: Int?,
+        hdRootFolder: String?,
+        uhdServerId: Int?,
+        uhdProfileId: Int?,
+        uhdRootFolder: String?
+    ) -> Unit = { hd, uhd, seasons, _, _, _, _, _, _ -> },
     onWatchTrailer: (String) -> Unit,
     onPlayTrailer: (title: String, youtubeKey: String?, localTrailerId: String?) -> Unit = { _, k, _ -> k?.let(onWatchTrailer) },
     onToggleMyList: () -> Unit = {},
     onToggleReminder: () -> Unit = {},
+    onToggleWatched: () -> Unit = {},
+    onOpenExternalPlayer: () -> Unit = {},
+    onOpenReportIssue: () -> Unit = {},
+    onCloseReportIssue: () -> Unit = {},
+    onSubmitIssue: (SeerrIssueType, String) -> Unit = { _, _ -> },
     onRemoveFromContinueWatching: () -> Unit = {},
     onSearchActor: (name: String, personId: Int?) -> Unit = { _, _ -> },
     onRequestCollectionItem: (UnifiedMediaItem) -> Unit = {},
     onRequestAllMissingInCollection: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -157,6 +197,8 @@ fun DetailsContent(
                         DetailsHeaderSection(
                             item = item,
                             episodes = state.episodes,
+                            isSeerrConfigured = state.isSeerrConfigured,
+                            canSubmitRequests = state.canSubmitRequests,
                             feedbackBanner = state.feedbackBanner,
                             onBack = onBack,
                             onPlay = {
@@ -165,7 +207,7 @@ fun DetailsContent(
                                 } else {
                                     item.jellyfinId
                                 }
-                                playableId?.let(onPlayItem)
+                                playableId?.let { id -> onPlayItem(id, state.selectedMediaSourceId) }
                             },
                             onRequestClick = onOpenRequestModal,
                             onWatchTrailer = {
@@ -173,9 +215,37 @@ fun DetailsContent(
                             },
                             onToggleMyList = onToggleMyList,
                             onToggleReminder = onToggleReminder,
+                            onToggleWatched = onToggleWatched,
+                            onOpenExternalPlayer = onOpenExternalPlayer,
+                            onOpenReportIssue = onOpenReportIssue,
                             onRemoveFromContinueWatching = onRemoveFromContinueWatching,
                             onCancelRequest = onCancelRequest
                         )
+                    }
+
+                    // Multi-Version / Edition Picker
+                    if (item.mediaVersions.size > 1) {
+                        item(key = "media_versions") {
+                            Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)) {
+                                Text(
+                                    text = strings.labelVersions,
+                                    color = colors.white,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    items(item.mediaVersions, key = { it.id }) { src ->
+                                        SeasonTabChip(
+                                            label = src.displayLabel,
+                                            isSelected = src.id == (state.selectedMediaSourceId ?: item.mediaVersions.firstOrNull()?.id),
+                                            isAvailable = true,
+                                            onClick = { onSelectMediaSource(src.id) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // TV Show Seasons & Episodes
@@ -219,13 +289,40 @@ fun DetailsContent(
                                     episode = ep,
                                     onClick = {
                                         if (ep.isAvailableInJellyfin) {
-                                            onPlayItem(ep.id)
+                                            onPlayItem(ep.id, null)
                                         } else {
                                             onOpenRequestModal()
                                         }
                                     },
                                     modifier = Modifier.padding(horizontal = 48.dp, vertical = 6.dp)
                                 )
+                            }
+                        }
+                    }
+
+                    // Extras & Special Features (Jellyfin SpecialFeatures)
+                    if (item.extras.isNotEmpty()) {
+                        item(key = "extras_and_specials") {
+                            Column(modifier = Modifier.padding(top = 24.dp)) {
+                                Text(
+                                    text = strings.labelExtras,
+                                    color = colors.white,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
+                                )
+                                LazyRow(
+                                    contentPadding = PaddingValues(horizontal = 48.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    items(item.extras, key = { it.id }) { extra ->
+                                        ExtrasFeatureCard(
+                                            extra = extra,
+                                            fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
+                                            onClick = { onPlayItem(extra.id, null) }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -365,7 +462,7 @@ fun DetailsContent(
                                         }
                                     }
 
-                                    if (missingCount > 0) {
+                                    if (missingCount > 0 && state.isSeerrConfigured && state.canSubmitRequests) {
                                         HeroPillButton(
                                             text = "Request Missing ($missingCount)",
                                             icon = Icons.Filled.Add,
@@ -384,7 +481,7 @@ fun DetailsContent(
                                             item = part,
                                             onFocus = {},
                                             onClick = { onOpenDetails(part) },
-                                            onOptionsMenu = if (!part.isPlayable && part.canRequestHd) {
+                                            onOptionsMenu = if (!part.isPlayable && part.canRequestHd && state.isSeerrConfigured && state.canSubmitRequests) {
                                                 { onRequestCollectionItem(part) }
                                             } else null
                                         )
@@ -429,9 +526,20 @@ fun DetailsContent(
         RequestQualityModal(
             item = state.item!!,
             has4kServer = state.has4kServer,
+            arrServers = state.arrServers,
+            arrServersLoading = state.arrServersLoading,
             isSubmitting = state.isSubmittingRequest,
             onDismiss = onCloseRequestModal,
             onSubmit = onSubmitRequest
+        )
+    }
+
+    if (state.showReportIssueModal && state.item != null) {
+        ReportIssueModal(
+            title = state.item!!.title,
+            isSubmitting = state.isReportingIssue,
+            onDismiss = onCloseReportIssue,
+            onSubmit = onSubmitIssue
         )
     }
 }
@@ -505,9 +613,84 @@ private fun RelatedVideoCard(
 }
 
 @Composable
+private fun ExtrasFeatureCard(
+    extra: ExtrasItem,
+    fallbackBackdropUrl: String?,
+    onClick: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
+    var focused by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .width(220.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(corner)
+                .background(colors.surfaceElevated)
+                .then(
+                    if (focused) Modifier.border(2.5.dp, colors.focusBorder, corner)
+                    else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.45f), corner)
+                )
+        ) {
+            AsyncImage(
+                model = extra.thumbnailUrl ?: fallbackBackdropUrl,
+                contentDescription = extra.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = "Play Extra",
+                tint = colors.white,
+                modifier = Modifier
+                    .size(36.dp)
+                    .align(Alignment.Center)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(colors.deepBlack.copy(alpha = 0.72f))
+                    .padding(6.dp)
+            )
+            extra.extraType?.takeIf { it.isNotBlank() }?.let { et ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(colors.deepBlack.copy(alpha = 0.78f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Text(et, color = colors.white, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = extra.name,
+            color = if (focused) colors.white else colors.textSecondary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        extra.runtimeMinutes?.takeIf { it > 0 }?.let { mins ->
+            Text("${mins}m", color = colors.textMuted, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
 private fun DetailsHeaderSection(
     item: UnifiedMediaItem,
     episodes: List<EpisodeSummary>,
+    isSeerrConfigured: Boolean,
+    canSubmitRequests: Boolean,
     feedbackBanner: String?,
     onBack: () -> Unit,
     onPlay: () -> Unit,
@@ -515,17 +698,21 @@ private fun DetailsHeaderSection(
     onWatchTrailer: () -> Unit,
     onToggleMyList: () -> Unit,
     onToggleReminder: () -> Unit,
+    onToggleWatched: () -> Unit,
+    onOpenExternalPlayer: () -> Unit,
+    onOpenReportIssue: () -> Unit,
     onRemoveFromContinueWatching: () -> Unit,
     onCancelRequest: (Int) -> Unit
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val backCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(385.dp)
+            .height(400.dp)
     ) {
         AsyncImage(
             model = item.backdropUrl ?: item.posterUrl,
@@ -583,7 +770,7 @@ private fun DetailsHeaderSection(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 48.dp, end = 220.dp, bottom = 20.dp)
+                .padding(start = 48.dp, end = 160.dp, bottom = 20.dp)
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -686,71 +873,124 @@ private fun DetailsHeaderSection(
 
             Spacer(Modifier.height(16.dp))
 
-            Row(
+            LazyRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 val canPlay = item.isPlayable || episodes.any { it.isAvailableInJellyfin }
                 if (canPlay) {
+                    item(key = "act_play") {
+                        HeroPillButton(
+                            text = if (item.resumePositionTicks > 0L) strings.actionResume else strings.actionPlay,
+                            icon = Icons.Filled.PlayArrow,
+                            isPrimary = true,
+                            onClick = onPlay
+                        )
+                    }
+                    item(key = "act_ext_player") {
+                        HeroPillButton(
+                            text = strings.actionExternalPlayer,
+                            icon = Icons.AutoMirrored.Filled.OpenInNew,
+                            isPrimary = false,
+                            onClick = onOpenExternalPlayer
+                        )
+                    }
+                }
+
+                if (isSeerrConfigured && item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)) {
+                    item(key = "act_req") {
+                        if (canSubmitRequests) {
+                            HeroPillButton(
+                                text = if (canPlay) "Request 4K / More" else "Request HD / 4K",
+                                icon = Icons.Filled.Add,
+                                isPrimary = !canPlay,
+                                onClick = onRequestClick
+                            )
+                        } else {
+                            HeroPillButton(
+                                text = strings.labelKidsLocked,
+                                icon = Icons.Filled.Lock,
+                                isPrimary = false,
+                                onClick = onRequestClick
+                            )
+                        }
+                    }
+                }
+
+                item(key = "act_mylist") {
                     HeroPillButton(
-                        text = if (item.resumePositionTicks > 0L) "Resume" else "Play",
-                        icon = Icons.Filled.PlayArrow,
-                        isPrimary = true,
-                        onClick = onPlay
+                        text = if (item.isInMyList) "In My List" else "My List",
+                        icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                        isPrimary = false,
+                        onClick = onToggleMyList
                     )
                 }
 
-                if (item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)) {
-                    HeroPillButton(
-                        text = if (canPlay) "Request 4K / More" else "Request HD / 4K",
-                        icon = Icons.Filled.Add,
-                        isPrimary = !canPlay,
-                        onClick = onRequestClick
-                    )
+                if (item.jellyfinId != null) {
+                    item(key = "act_watched") {
+                        HeroPillButton(
+                            text = if (item.isWatched) strings.actionMarkUnwatched else strings.actionMarkWatched,
+                            icon = if (item.isWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            isPrimary = false,
+                            onClick = onToggleWatched
+                        )
+                    }
                 }
-
-                HeroPillButton(
-                    text = if (item.isInMyList) "In My List" else "My List",
-                    icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
-                    isPrimary = false,
-                    onClick = onToggleMyList
-                )
 
                 if (!canPlay && item.overallAvailability == AvailabilityTier.UNKNOWN && item.tmdbId != null) {
-                    HeroPillButton(
-                        text = if (item.isReminderSet) "Reminder Set" else "Remind Me",
-                        icon = if (item.isReminderSet) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
-                        isPrimary = false,
-                        onClick = onToggleReminder
-                    )
+                    item(key = "act_remind") {
+                        HeroPillButton(
+                            text = if (item.isReminderSet) "Reminder Set" else "Remind Me",
+                            icon = if (item.isReminderSet) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+                            isPrimary = false,
+                            onClick = onToggleReminder
+                        )
+                    }
                 }
 
                 if (!item.youtubeTrailerKey.isNullOrBlank() || !item.localTrailerItemId.isNullOrBlank()) {
-                    HeroPillButton(
-                        text = "Trailer",
-                        icon = Icons.Filled.Theaters,
-                        isPrimary = false,
-                        onClick = onWatchTrailer
-                    )
+                    item(key = "act_trailer") {
+                        HeroPillButton(
+                            text = strings.actionTrailer,
+                            icon = Icons.Filled.Theaters,
+                            isPrimary = false,
+                            onClick = onWatchTrailer
+                        )
+                    }
+                }
+
+                if (isSeerrConfigured && canPlay && item.tmdbId != null) {
+                    item(key = "act_issue") {
+                        HeroPillButton(
+                            text = strings.actionReportIssue,
+                            icon = Icons.Filled.Flag,
+                            isPrimary = false,
+                            onClick = onOpenReportIssue
+                        )
+                    }
                 }
 
                 if (item.resumePositionTicks > 0L && item.jellyfinId != null) {
-                    HeroPillButton(
-                        text = "Remove Progress",
-                        icon = Icons.Filled.DeleteOutline,
-                        isPrimary = false,
-                        onClick = onRemoveFromContinueWatching
-                    )
+                    item(key = "act_rm_progress") {
+                        HeroPillButton(
+                            text = "Remove Progress",
+                            icon = Icons.Filled.DeleteOutline,
+                            isPrimary = false,
+                            onClick = onRemoveFromContinueWatching
+                        )
+                    }
                 }
 
                 val pendingReqId = item.uhdRequestId ?: item.hdRequestId
                 if (pendingReqId != null && !canPlay && item.overallAvailability.isRequestedOrDownloading) {
-                    HeroPillButton(
-                        text = "Cancel Request",
-                        icon = Icons.Filled.Close,
-                        isPrimary = false,
-                        onClick = { onCancelRequest(pendingReqId) }
-                    )
+                    item(key = "act_cancel_req") {
+                        HeroPillButton(
+                            text = "Cancel Request",
+                            icon = Icons.Filled.Close,
+                            isPrimary = false,
+                            onClick = { onCancelRequest(pendingReqId) }
+                        )
+                    }
                 }
             }
         }
@@ -1010,9 +1250,21 @@ private fun EpisodeRowCard(
 private fun RequestQualityModal(
     item: UnifiedMediaItem,
     has4kServer: Boolean,
+    arrServers: List<ArrServerOption>,
+    arrServersLoading: Boolean,
     isSubmitting: Boolean,
     onDismiss: () -> Unit,
-    onSubmit: (requestHd: Boolean, request4k: Boolean, seasons: List<Int>?) -> Unit
+    onSubmit: (
+        requestHd: Boolean,
+        request4k: Boolean,
+        seasons: List<Int>?,
+        hdServerId: Int?,
+        hdProfileId: Int?,
+        hdRootFolder: String?,
+        uhdServerId: Int?,
+        uhdProfileId: Int?,
+        uhdRootFolder: String?
+    ) -> Unit
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
@@ -1020,6 +1272,29 @@ private fun RequestQualityModal(
 
     var requestHd by remember { mutableStateOf(!item.hasHd) }
     var request4k by remember { mutableStateOf(item.hasHd && !item.has4k && has4kServer) }
+
+    val hdServers = remember(arrServers) { arrServers.filter { !it.is4k } }
+    val uhdServers = remember(arrServers) { arrServers.filter { it.is4k } }
+
+    var selectedHdServer by remember(hdServers) {
+        mutableStateOf(hdServers.firstOrNull { it.isDefault } ?: hdServers.firstOrNull())
+    }
+    var selectedHdProfileId by remember(selectedHdServer) {
+        mutableStateOf(selectedHdServer?.profiles?.firstOrNull()?.id)
+    }
+    var selectedHdRoot by remember(selectedHdServer) {
+        mutableStateOf(selectedHdServer?.rootFolders?.firstOrNull())
+    }
+
+    var selectedUhdServer by remember(uhdServers) {
+        mutableStateOf(uhdServers.firstOrNull { it.isDefault } ?: uhdServers.firstOrNull())
+    }
+    var selectedUhdProfileId by remember(selectedUhdServer) {
+        mutableStateOf(selectedUhdServer?.profiles?.firstOrNull()?.id)
+    }
+    var selectedUhdRoot by remember(selectedUhdServer) {
+        mutableStateOf(selectedUhdServer?.rootFolders?.firstOrNull())
+    }
 
     val selectedSeasons = remember {
         mutableStateListOf<Int>().apply {
@@ -1031,12 +1306,13 @@ private fun RequestQualityModal(
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(500.dp)
+                .width(560.dp)
                 .clip(dialogCorner)
                 .background(colors.dialogSurface)
                 .border(1.dp, colors.badgeBorder, dialogCorner)
+                .verticalScroll(rememberScrollState())
                 .padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
                 text = "Request \"${item.title}\"",
@@ -1048,29 +1324,57 @@ private fun RequestQualityModal(
             )
 
             Text(
-                text = "Choose quality tier(s) to send to Seerr:",
+                text = "Choose quality tier, Radarr/Sonarr server, profile & root folder:",
                 color = colors.textSecondary,
-                fontSize = 14.sp
+                fontSize = 13.sp
             )
 
             // HD Option
             QualityToggleRow(
                 title = "HD (1080p)",
-                subtitle = if (item.hasHd && item.mediaType == MediaType.MOVIE) "Already in library" else "Standard Radarr / Sonarr profile",
+                subtitle = if (item.hasHd && item.mediaType == MediaType.MOVIE) "Already in library" else (selectedHdServer?.name ?: "Standard Radarr / Sonarr profile"),
                 checked = requestHd,
                 enabled = item.mediaType == MediaType.SERIES || !item.hasHd,
                 onToggle = { requestHd = !requestHd }
             )
 
+            if (requestHd && hdServers.isNotEmpty()) {
+                ArrServerOverrideSection(
+                    servers = hdServers,
+                    selectedServer = selectedHdServer,
+                    selectedProfileId = selectedHdProfileId,
+                    selectedRootFolder = selectedHdRoot,
+                    onSelectServer = { selectedHdServer = it },
+                    onSelectProfile = { selectedHdProfileId = it },
+                    onSelectRoot = { selectedHdRoot = it }
+                )
+            }
+
             // 4K Option
             if (has4kServer) {
                 QualityToggleRow(
                     title = "4K Ultra HD (2160p)",
-                    subtitle = if (item.has4k && item.mediaType == MediaType.MOVIE) "Already in library" else "4K Radarr / Sonarr profile",
+                    subtitle = if (item.has4k && item.mediaType == MediaType.MOVIE) "Already in library" else (selectedUhdServer?.name ?: "4K Radarr / Sonarr profile"),
                     checked = request4k,
                     enabled = item.mediaType == MediaType.SERIES || !item.has4k,
                     onToggle = { request4k = !request4k }
                 )
+
+                if (request4k && uhdServers.isNotEmpty()) {
+                    ArrServerOverrideSection(
+                        servers = uhdServers,
+                        selectedServer = selectedUhdServer,
+                        selectedProfileId = selectedUhdProfileId,
+                        selectedRootFolder = selectedUhdRoot,
+                        onSelectServer = { selectedUhdServer = it },
+                        onSelectProfile = { selectedUhdProfileId = it },
+                        onSelectRoot = { selectedUhdRoot = it }
+                    )
+                }
+            }
+
+            if (arrServersLoading) {
+                Text("Loading Radarr / Sonarr profiles...", color = colors.textMuted, fontSize = 12.sp)
             }
 
             if (item.mediaType == MediaType.SERIES && item.seasons.isNotEmpty()) {
@@ -1107,9 +1411,150 @@ private fun RequestQualityModal(
                     onClick = {
                         if (!isSubmitting && (requestHd || request4k)) {
                             val seasonsList = if (item.mediaType == MediaType.SERIES) selectedSeasons.toList() else null
-                            onSubmit(requestHd, request4k, seasonsList)
+                            onSubmit(
+                                requestHd,
+                                request4k,
+                                seasonsList,
+                                selectedHdServer?.id,
+                                selectedHdProfileId,
+                                selectedHdRoot,
+                                selectedUhdServer?.id,
+                                selectedUhdProfileId,
+                                selectedUhdRoot
+                            )
                         }
                     },
+                    modifier = Modifier.weight(1f)
+                )
+                HeroPillButton(
+                    text = "Cancel",
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArrServerOverrideSection(
+    servers: List<ArrServerOption>,
+    selectedServer: ArrServerOption?,
+    selectedProfileId: Int?,
+    selectedRootFolder: String?,
+    onSelectServer: (ArrServerOption) -> Unit,
+    onSelectProfile: (Int) -> Unit,
+    onSelectRoot: (String) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (servers.size > 1) {
+            Text("Server", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(servers, key = { "srv_${it.id}" }) { srv ->
+                    SeasonTabChip(
+                        label = srv.name,
+                        isSelected = srv.id == selectedServer?.id,
+                        isAvailable = srv.isDefault,
+                        onClick = { onSelectServer(srv) }
+                    )
+                }
+            }
+        }
+        val profiles = selectedServer?.profiles.orEmpty()
+        if (profiles.isNotEmpty()) {
+            Text("Quality Profile", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(profiles, key = { "prof_${it.id}" }) { prof ->
+                    SeasonTabChip(
+                        label = prof.name,
+                        isSelected = prof.id == selectedProfileId,
+                        isAvailable = false,
+                        onClick = { onSelectProfile(prof.id) }
+                    )
+                }
+            }
+        }
+        val roots = selectedServer?.rootFolders.orEmpty()
+        if (roots.isNotEmpty()) {
+            Text("Root Folder", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(roots, key = { "root_$it" }) { root ->
+                    SeasonTabChip(
+                        label = root,
+                        isSelected = root == selectedRootFolder,
+                        isAvailable = false,
+                        onClick = { onSelectRoot(root) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportIssueModal(
+    title: String,
+    isSubmitting: Boolean,
+    onDismiss: () -> Unit,
+    onSubmit: (SeerrIssueType, String) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    var selectedType by remember { mutableStateOf(SeerrIssueType.VIDEO) }
+    var message by remember { mutableStateOf("") }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(500.dp)
+                .clip(dialogCorner)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogCorner)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Report Issue", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(title, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(SeerrIssueType.entries, key = { it.name }) { type ->
+                    SeasonTabChip(
+                        label = type.label,
+                        isSelected = type == selectedType,
+                        isAvailable = false,
+                        onClick = { selectedType = type }
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = message,
+                onValueChange = { message = it },
+                label = { Text("Describe the playback or subtitle issue (optional)") },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = colors.white,
+                    unfocusedTextColor = colors.textPrimary,
+                    focusedBorderColor = colors.accent,
+                    unfocusedBorderColor = colors.badgeBorder
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                HeroPillButton(
+                    text = if (isSubmitting) "Reporting..." else "Submit Issue",
+                    icon = Icons.Filled.Flag,
+                    isPrimary = true,
+                    onClick = { if (!isSubmitting) onSubmit(selectedType, message) },
                     modifier = Modifier.weight(1f)
                 )
                 HeroPillButton(

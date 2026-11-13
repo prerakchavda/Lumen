@@ -265,7 +265,10 @@ data class UnifiedMediaItem(
     val localTrailerItemId: String? = null,
     val relatedVideos: List<RelatedVideoItem> = emptyList(),
     val seasons: List<SeasonSummary> = emptyList(),
-    val cast: List<CastMember> = emptyList()
+    val cast: List<CastMember> = emptyList(),
+    val mediaVersions: List<MediaSourceOption> = emptyList(),
+    val extras: List<ExtrasItem> = emptyList(),
+    val isAdult: Boolean = false
 ) {
     val isPlayable: Boolean
         get() = jellyfinId != null
@@ -363,7 +366,136 @@ data class TrackOption(
     val index: Int,
     val label: String,
     val language: String?,
-    val codec: String?
+    val codec: String?,
+    val isExternal: Boolean = false,
+    val externalUrl: String? = null
+)
+
+data class ChapterMarker(
+    val name: String,
+    val startPositionMs: Long
+)
+
+data class MediaSourceOption(
+    val id: String,
+    val name: String,
+    val container: String? = null,
+    val bitrate: Long? = null,
+    val resolutionLabel: String? = null,
+    val videoCodec: String? = null,
+    val audioSummary: String? = null
+) {
+    val displayLabel: String
+        get() = listOfNotNull(
+            name.takeIf { it.isNotBlank() },
+            resolutionLabel,
+            videoCodec,
+            audioSummary,
+            bitrate?.takeIf { it > 0L }?.let { "${it / 1_000_000L} Mbps" }
+        ).distinct().joinToString(" • ").ifBlank { id }
+}
+
+data class ExternalSubtitleFile(
+    val index: Int,
+    val title: String,
+    val language: String?,
+    val codec: String?,
+    val url: String
+)
+
+data class ExtrasItem(
+    val id: String,
+    val name: String,
+    val overview: String = "",
+    val extraType: String? = null,
+    val runtimeMinutes: Int? = null,
+    val thumbnailUrl: String? = null
+)
+
+data class JellyfinLibraryView(
+    val id: String,
+    val name: String,
+    val collectionType: String? = null
+)
+
+data class LiveTvProgram(
+    val id: String,
+    val title: String,
+    val overview: String? = null,
+    val startMs: Long = 0L,
+    val endMs: Long = 0L,
+    val timeRangeLabel: String = "",
+    val isSeries: Boolean = false
+) {
+    fun progressFraction(nowMs: Long = System.currentTimeMillis()): Float {
+        if (endMs <= startMs) return 0f
+        return ((nowMs - startMs).toFloat() / (endMs - startMs).toFloat()).coerceIn(0f, 1f)
+    }
+}
+
+data class LiveTvChannel(
+    val id: String,
+    val number: String?,
+    val name: String,
+    val logoUrl: String?,
+    val currentProgram: LiveTvProgram? = null,
+    val nextProgram: LiveTvProgram? = null
+)
+
+data class SyncPlayGroup(
+    val groupId: String,
+    val groupName: String,
+    val state: String,
+    val participants: List<String> = emptyList(),
+    val isPlaying: Boolean = false,
+    val positionTicks: Long = 0L,
+    val playingItemId: String? = null,
+    val playingItemName: String? = null
+)
+
+data class ArrQualityProfile(
+    val id: Int,
+    val name: String
+)
+
+data class ArrServerOption(
+    val id: Int,
+    val name: String,
+    val is4k: Boolean,
+    val isDefault: Boolean,
+    val profiles: List<ArrQualityProfile> = emptyList(),
+    val rootFolders: List<String> = emptyList()
+)
+
+enum class SeerrIssueType(val code: Int, val label: String) {
+    VIDEO(1, "Video Problem"),
+    AUDIO(2, "Audio Sync / Missing"),
+    SUBTITLE(3, "Subtitles"),
+    OTHER(4, "Other")
+}
+
+@kotlinx.serialization.Serializable
+data class ReadyRequestAlert(
+    val requestId: Int,
+    val tmdbId: Int,
+    val jellyfinId: String? = null,
+    val mediaType: MediaType,
+    val title: String,
+    val posterUrl: String? = null,
+    val timestampMs: Long = 0L
+)
+
+data class AppUpdateInfo(
+    val latestVersion: String,
+    val releaseNotes: String,
+    val downloadUrl: String?,
+    val htmlUrl: String
+)
+
+data class DiscoveredServer(
+    val id: String,
+    val name: String,
+    val address: String
 )
 
 data class PlaybackSessionData(
@@ -393,5 +525,10 @@ data class PlaybackSessionData(
     val isTrailer: Boolean = false,
     val trailerAudioUrl: String? = null,
     val audioTracks: List<TrackOption> = emptyList(),
-    val subtitleTracks: List<TrackOption> = emptyList()
+    val subtitleTracks: List<TrackOption> = emptyList(),
+    val chapters: List<ChapterMarker> = emptyList(),
+    val mediaSources: List<MediaSourceOption> = emptyList(),
+    val externalSubtitleFiles: List<ExternalSubtitleFile> = emptyList(),
+    val directPlayUrl: String? = null,
+    val isLiveTv: Boolean = false
 )

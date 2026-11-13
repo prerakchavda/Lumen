@@ -31,9 +31,14 @@ import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CastMember
 import com.seerflix.tv.core.model.CatalogRow
 import com.seerflix.tv.core.model.CollectionSummary
+import com.seerflix.tv.core.model.DiscoveredServer
 import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.model.EpisodeSummary
+import com.seerflix.tv.core.model.ExtrasItem
+import com.seerflix.tv.core.model.LiveTvChannel
+import com.seerflix.tv.core.model.LiveTvProgram
 import com.seerflix.tv.core.model.MediaRequestSummary
+import com.seerflix.tv.core.model.MediaSourceOption
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.PlaybackSessionData
@@ -273,14 +278,25 @@ class ScreenshotGeneratorTest {
                 CastMember("Britt Lower", "Helly Riggs", "art://cast/britt/BL/0xFF3A1C2A/0xFFF06292", personId = 1529460),
                 CastMember("Zach Cherry", "Dylan George", "art://cast/zach/ZC/0xFF1E3224/0xFF66BB6A", personId = 1718281),
                 CastMember("Tramell Tillman", "Seth Milchick", "art://cast/tramell/TT/0xFF2C2538/0xFF9575CD", personId = 1835993)
+            ),
+            mediaVersions = listOf(
+                MediaSourceOption("src_4k_dv", "4K Dolby Vision Remux", "mkv", 62_000_000L, "4K", "HEVC", "TRUEHD 7.1"),
+                MediaSourceOption("src_1080p", "1080p Web-DL", "mp4", 12_000_000L, "1080p", "H264", "EAC3 5.1")
+            ),
+            extras = listOf(
+                ExtrasItem("ex1", "The Lexington Letter (Companion Special)", extraType = "Featurette", runtimeMinutes = 14, thumbnailUrl = "art://still/ex1/LEXINGTON/0xFF0E3A4C/0xFF1CC8B8"),
+                ExtrasItem("ex2", "Designing Lumon Industries", extraType = "BehindTheScenes", runtimeMinutes = 9, thumbnailUrl = "art://still/ex2/BEHIND SCENES/0xFF20133A/0xFFE91E63")
             )
         )
 
         val state = DetailsUiState(
             item = severance,
             selectedSeasonNumber = 2,
+            selectedMediaSourceId = "src_4k_dv",
             isLoading = false,
             has4kServer = true,
+            isSeerrConfigured = true,
+            canSubmitRequests = true,
             episodes = listOf(
                 EpisodeSummary(
                     id = "ep1",
@@ -313,13 +329,13 @@ class ScreenshotGeneratorTest {
             DetailsContent(
                 state = state,
                 onBack = {},
-                onPlayItem = {},
+                onPlayItem = { _, _ -> },
                 onOpenDetails = {},
                 onOpenRequestModal = {},
                 onCloseRequestModal = {},
                 onCancelRequest = {},
                 onSelectSeason = {},
-                onSubmitRequest = { _, _, _ -> },
+                onSubmitRequest = { _, _, _, _, _, _, _, _, _ -> },
                 onWatchTrailer = {}
             )
         }
@@ -329,6 +345,8 @@ class ScreenshotGeneratorTest {
     fun requests() {
         val state = RequestsUiState(
             filter = RequestFilter.ALL,
+            isAdmin = true,
+            isSeerrConfigured = true,
             isLoading = false,
             allRequests = listOf(
                 MediaRequestSummary(
@@ -385,9 +403,9 @@ class ScreenshotGeneratorTest {
                     posterUrl = "art://poster/dd/DAREDEVIL/0xFF3D0A0E/0xFFE50914",
                     backdropUrl = null,
                     is4k = true,
-                    requestStatus = 2,
+                    requestStatus = 1,
                     mediaStatus = AvailabilityTier.PENDING,
-                    requestedBy = "Prerak",
+                    requestedBy = "Sam",
                     createdAt = "2026-11-13",
                     downloadProgress = null
                 ),
@@ -423,9 +441,9 @@ class ScreenshotGeneratorTest {
     fun profiles() {
         val state = ProfilePickerUiState(
             profiles = listOf(
-                UserProfile("1", "Prerak", "1", "t1", avatarColorHex = 0xFFE50914),
-                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB, pinHash = "locked"),
-                UserProfile("3", "Sam", "3", "t3", avatarColorHex = 0xFF2EA44F),
+                UserProfile("1", "Prerak", "1", "t1", avatarColorHex = 0xFFE50914, isAdmin = true),
+                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB, pinHash = "locked", uiPreset = UiPreset.APPLE_TV),
+                UserProfile("3", "Sam (Kids)", "3", "t3", avatarColorHex = 0xFF2EA44F, kidsMode = true, uiPreset = UiPreset.DISNEY_PLUS),
                 UserProfile("4", "Guest", "4", "t4", avatarColorHex = 0xFFD97706)
             )
         )
@@ -450,9 +468,9 @@ class ScreenshotGeneratorTest {
         val state = ProfilePickerUiState(
             isManageMode = true,
             profiles = listOf(
-                UserProfile("1", "Prerak", "1", "t1", avatarColorHex = 0xFFE50914),
-                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB, pinHash = "locked"),
-                UserProfile("3", "Sam", "3", "t3", avatarColorHex = 0xFF2EA44F),
+                UserProfile("1", "Prerak", "1", "t1", avatarColorHex = 0xFFE50914, isAdmin = true),
+                UserProfile("2", "Alex", "2", "t2", avatarColorHex = 0xFF0071EB, pinHash = "locked", uiPreset = UiPreset.APPLE_TV),
+                UserProfile("3", "Sam (Kids)", "3", "t3", avatarColorHex = 0xFF2EA44F, kidsMode = true, uiPreset = UiPreset.DISNEY_PLUS),
                 UserProfile("4", "Guest", "4", "t4", avatarColorHex = 0xFFD97706)
             )
         )
@@ -624,8 +642,16 @@ class ScreenshotGeneratorTest {
     @Test
     fun setup() {
         val state = SetupUiState(
-            jellyfinUrl = "http://192.168.1.100:8096",
-            seerrUrl = "http://192.168.1.100:5055",
+            jellyfinUrl = "https://jf.home.example.com",
+            jellyfinLocalUrl = "http://192.168.1.50:8096",
+            seerrUrl = "https://seerr.home.example.com",
+            seerrLocalUrl = "http://192.168.1.50:5055",
+            trustSelfSignedCerts = true,
+            discoveredServers = listOf(
+                DiscoveredServer("s1", "Living Room NAS", "http://192.168.1.50:8096"),
+                DiscoveredServer("s2", "Studio Media Server", "http://192.168.1.78:8096")
+            ),
+            companionUrl = "http://192.168.1.42:49210/",
             isTesting = false,
             statusMessage = "Connected to Home Jellyfin & Seerr (v3.0.1)"
         )
@@ -636,6 +662,62 @@ class ScreenshotGeneratorTest {
                 onJellyfinUrlChange = {},
                 onSeerrUrlChange = {},
                 onConnectClick = {}
+            )
+        }
+    }
+
+    @Test
+    fun liveTv() {
+        val now = System.currentTimeMillis()
+        val state = HomeUiState(
+            activeTab = HomeTab.LIVE_TV,
+            profile = UserProfile("1", "Prerak", "1", "token", avatarColorHex = 0xFFE50914),
+            isLoading = false,
+            liveTvChannels = listOf(
+                LiveTvChannel(
+                    id = "ch_hbo",
+                    number = "501",
+                    name = "HBO 4K",
+                    logoUrl = "art://still/hbo/HBO 4K/0xFF14182B/0xFF00D2FF",
+                    currentProgram = LiveTvProgram("p1", "Dune: Part Two", startMs = now - 3_000_000L, endMs = now + 3_000_000L, timeRangeLabel = "8:00 PM - 10:45 PM"),
+                    nextProgram = LiveTvProgram("p2", "The Last of Us S2E1", timeRangeLabel = "10:45 PM - 11:45 PM")
+                ),
+                LiveTvChannel(
+                    id = "ch_espn",
+                    number = "206",
+                    name = "ESPN HD",
+                    logoUrl = "art://still/espn/ESPN HD/0xFF3D0A0E/0xFFE50914",
+                    currentProgram = LiveTvProgram("p3", "NBA Primetime: Finals Preview", startMs = now - 1_500_000L, endMs = now + 2_100_000L, timeRangeLabel = "8:30 PM - 9:30 PM"),
+                    nextProgram = LiveTvProgram("p4", "SportsCenter Live", timeRangeLabel = "9:30 PM - 10:30 PM")
+                ),
+                LiveTvChannel(
+                    id = "ch_sci",
+                    number = "284",
+                    name = "Discovery Sci",
+                    logoUrl = "art://still/sci/SCIENCE/0xFF0E3A4C/0xFF1CC8B8",
+                    currentProgram = LiveTvProgram("p5", "Cosmos: Possible Worlds", startMs = now - 900_000L, endMs = now + 2_700_000L, timeRangeLabel = "8:45 PM - 9:45 PM"),
+                    nextProgram = LiveTvProgram("p6", "How the Universe Works", timeRangeLabel = "9:45 PM - 10:45 PM")
+                )
+            ),
+            liveTvRecordings = listOf(
+                samplePosterItem("rec1", "Formula 1: Monaco GP", "art://poster/f1/MONACO GP/0xFF3D0A0E/0xFFE50914", hd = AvailabilityTier.AVAILABLE, jfId = "rec1"),
+                samplePosterItem("rec2", "Severance Live Q&A", "art://poster/sevqa/SEVERANCE LIVE/0xFF0E3A4C/0xFF1CC8B8", hd = AvailabilityTier.AVAILABLE, jfId = "rec2")
+            )
+        )
+
+        snapshotScreen("live_tv") {
+            HomeContent(
+                state = state,
+                onOpenDetails = {},
+                onPlayDirect = {},
+                onOpenSearch = {},
+                onOpenRequests = {},
+                onSwitchProfile = {},
+                onOpenSettings = {},
+                onSelectTab = {},
+                onRefresh = {},
+                onTogglePreviewMute = {},
+                onItemFocused = {}
             )
         }
     }

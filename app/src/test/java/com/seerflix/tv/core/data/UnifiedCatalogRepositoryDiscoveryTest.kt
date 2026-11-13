@@ -72,6 +72,12 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             testFile = tempFolder.newFile("seerflix_test.preferences_pb"),
             json = Json { ignoreUnknownKeys = true }
         )
+        kotlinx.coroutines.runBlocking {
+            prefs.saveServerUrls(
+                jellyfinUrl = "http://jf:8096",
+                seerrUrl = "http://seerr:5055"
+            )
+        }
         jellyfinApi = FakeJellyfinApi()
         seerrApi = FakeSeerrApi()
         repository = UnifiedCatalogRepository(jellyfinApi, seerrApi, prefs)
@@ -433,6 +439,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun getLatestItems(userId: String, limit: Int, includeItemTypes: String, fields: String) =
             latestItems
 
+        override suspend fun getUserViews(userId: String) = JellyfinItemsResponse()
+
         override suspend fun getLibraryItems(
             userId: String,
             recursive: Boolean,
@@ -440,7 +448,9 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             fields: String,
             sortBy: String,
             sortOrder: String,
-            limit: Int
+            limit: Int,
+            parentId: String?,
+            maxOfficialRating: String?
         ) = JellyfinItemsResponse(libraryItems, libraryItems.size)
 
         override suspend fun getFavoriteItems(
@@ -476,8 +486,9 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             fields: String,
             limit: Int
         ) = JellyfinItemsResponse()
-        override suspend fun getItemDetails(userId: String, itemId: String) =
+        override suspend fun getItemDetails(userId: String, itemId: String, fields: String) =
             libraryItems.first { it.id == itemId }
+        override suspend fun getSpecialFeatures(itemId: String, userId: String): List<JellyfinItemDto> = emptyList()
         override suspend fun getSeasons(seriesId: String, userId: String, fields: String) = JellyfinItemsResponse()
         override suspend fun getEpisodes(seriesId: String, userId: String, seasonId: String?, fields: String) =
             JellyfinItemsResponse()
@@ -509,6 +520,16 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             JellyfinItemsResponse(upcomingEpisodes, upcomingEpisodes.size)
         override suspend fun searchRemoteSubtitles(itemId: String, language: String) = remoteSubtitles
         override suspend fun downloadRemoteSubtitle(itemId: String, subtitleId: String) = Unit
+        override suspend fun getLiveTvChannels(userId: String, fields: String, addCurrentProgram: Boolean) = JellyfinItemsResponse()
+        override suspend fun getLiveTvPrograms(userId: String, hasAired: Boolean, limit: Int, fields: String) = JellyfinItemsResponse()
+        override suspend fun getLiveTvRecordings(userId: String, limit: Int, fields: String) = JellyfinItemsResponse()
+        override suspend fun getSyncPlayGroups(): List<com.seerflix.tv.core.network.JellyfinSyncPlayGroupDto> = emptyList()
+        override suspend fun createSyncPlayGroup(body: com.seerflix.tv.core.network.JellyfinCreateSyncPlayRequest) = Unit
+        override suspend fun joinSyncPlayGroup(body: com.seerflix.tv.core.network.JellyfinJoinSyncPlayRequest) = Unit
+        override suspend fun leaveSyncPlayGroup() = Unit
+        override suspend fun syncPlayPause() = Unit
+        override suspend fun syncPlayUnpause() = Unit
+        override suspend fun syncPlaySeek(body: com.seerflix.tv.core.network.JellyfinSeekSyncPlayRequest) = Unit
         override suspend fun reportPlaybackStart(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackProgress(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackStopped(body: JellyfinPlaybackProgressRequest) = Unit
@@ -567,8 +588,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             SeerrSeasonDetailDto(seasonNumber = seasonNumber)
         override suspend fun getCollectionDetails(collectionId: Int, language: String) =
             collectionDetailsHandler(collectionId)
-        override suspend fun getMovieRecommendations(movieId: Int, page: Int) = SeerrDiscoverPageDto()
-        override suspend fun getTvRecommendations(tvId: Int, page: Int) = SeerrDiscoverPageDto()
+        override suspend fun getMovieRecommendations(movieId: Int, page: Int, language: String) = SeerrDiscoverPageDto()
+        override suspend fun getTvRecommendations(tvId: Int, page: Int, language: String) = SeerrDiscoverPageDto()
         override suspend fun search(query: String, page: Int, language: String) = SeerrDiscoverPageDto()
         override suspend fun getPersonDetails(personId: Int, language: String) =
             SeerrPersonDetailsDto(id = personId, name = "Person $personId")
@@ -577,9 +598,14 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             createdRequests += body
             return SeerrRequestSummaryDto(id = 1, status = 1, is4k = body.is4k)
         }
+        override suspend fun approveRequest(requestId: Int) = SeerrRequestSummaryDto(id = requestId, status = 2)
+        override suspend fun declineRequest(requestId: Int) = SeerrRequestSummaryDto(id = requestId, status = 3)
         override suspend fun getRequests(take: Int, skip: Int, filter: String, sort: String) = SeerrRequestsPageDto()
         override suspend fun deleteRequest(requestId: Int) = Unit
+        override suspend fun createIssue(body: com.seerflix.tv.core.network.SeerrCreateIssueBody) = Unit
         override suspend fun getRadarrServers(): List<SeerrArrServerDto> = emptyList()
+        override suspend fun getRadarrServerDetails(serverId: Int) = com.seerflix.tv.core.network.SeerrArrServerDetailsResponseDto()
         override suspend fun getSonarrServers(): List<SeerrArrServerDto> = emptyList()
+        override suspend fun getSonarrServerDetails(serverId: Int) = com.seerflix.tv.core.network.SeerrArrServerDetailsResponseDto()
     }
 }

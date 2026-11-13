@@ -2,14 +2,17 @@ package com.seerflix.tv.feature.requests
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
+import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -25,6 +28,10 @@ enum class RequestFilter(val label: String) {
 data class RequestsUiState(
     val filter: RequestFilter = RequestFilter.ALL,
     val allRequests: List<MediaRequestSummary> = emptyList(),
+    val isAdmin: Boolean = false,
+    val isSeerrConfigured: Boolean = true,
+    val busyRequestId: Int? = null,
+    val actionMessage: String? = null,
     val isLoading: Boolean = true,
     val errorMessage: String? = null
 ) {
@@ -45,7 +52,9 @@ data class RequestsUiState(
 
 @HiltViewModel
 class RequestsViewModel @Inject constructor(
-    private val catalogRepository: UnifiedCatalogRepository
+    private val catalogRepository: UnifiedCatalogRepository,
+    private val authRepository: AuthRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(RequestsUiState())
@@ -67,12 +76,34 @@ class RequestsViewModel @Inject constructor(
 
     fun refresh(silent: Boolean = false) {
         viewModelScope.launch {
+            val isAdmin = authRepository.activeProfileFlow.first()?.isAdmin == true
+            val seerrConfigured = sessionPreferences.isSeerrConfigured
+            if (!seerrConfigured) {
+                _uiState.update {
+                    it.copy(
+                        isAdmin = isAdmin,
+                        isSeerrConfigured = false,
+                        allRequests = emptyList(),
+                        isLoading = false,
+                        errorMessage = null
+                    )
+                }
+                return@launch
+            }
             if (!silent) {
-                _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+                _uiState.update { it.copy(isLoading = true, errorMessage = null, isAdmin = isAdmin, isSeerrConfigured = true) }
             }
             catalogRepository.loadRequestsHub()
                 .onSuccess { list ->
-                    _uiState.update { it.copy(allRequests = list, isLoading = false, errorMessage = null) }
+                    _uiState.update {
+                        it.copy(
+                            allRequests = list,
+                            isAdmin = isAdmin,
+                            isSeerrConfigured = true,
+                            isLoading = false,
+                            errorMessage = null
+                        )
+                    }
                 }
                 .onFailure { err ->
                     if (!silent) {
@@ -80,6 +111,34 @@ class RequestsViewModel @Inject constructor(
                             it.copy(isLoading = false, errorMessage = err.message ?: "Failed to load requests")
                         }
                     }
+                }
+        }
+    }
+
+    fun approveRequest(requestId: Int) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
+            catalogRepository.approveRequest(requestId)
+                .onSuccess {
+                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Request #$requestId approved") }
+                    refresh(silent = true)
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Approve failed: ${err.message}") }
+                }
+        }
+    }
+
+    fun declineRequest(requestId: Int) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
+            catalogRepository.declineRequest(requestId)
+                .onSuccess {
+                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Request #$requestId declined") }
+                    refresh(silent = true)
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Decline failed: ${err.message}") }
                 }
         }
     }

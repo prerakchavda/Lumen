@@ -48,6 +48,11 @@ interface JellyfinApi {
         @Query("Fields") fields: String = "PrimaryImageAspectRatio,Overview,Genres,ProviderIds,UserData,RunTimeTicks,RemoteTrailers,MediaStreams"
     ): List<JellyfinItemDto>
 
+    @GET("Users/{userId}/Views")
+    suspend fun getUserViews(
+        @Path("userId") userId: String
+    ): JellyfinItemsResponse
+
     @GET("Users/{userId}/Items")
     suspend fun getLibraryItems(
         @Path("userId") userId: String,
@@ -56,7 +61,9 @@ interface JellyfinApi {
         @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating,RemoteTrailers,MediaStreams",
         @Query("SortBy") sortBy: String = "DateCreated,SortName",
         @Query("SortOrder") sortOrder: String = "Descending",
-        @Query("Limit") limit: Int = 500
+        @Query("Limit") limit: Int = 500,
+        @Query("ParentId") parentId: String? = null,
+        @Query("MaxOfficialRating") maxOfficialRating: String? = null
     ): JellyfinItemsResponse
 
     @GET("Users/{userId}/Items")
@@ -125,8 +132,15 @@ interface JellyfinApi {
     @GET("Users/{userId}/Items/{itemId}")
     suspend fun getItemDetails(
         @Path("userId") userId: String,
-        @Path("itemId") itemId: String
+        @Path("itemId") itemId: String,
+        @Query("Fields") fields: String = "Chapters,MediaSources,MediaStreams,Overview,Genres,ProviderIds,UserData,People,RemoteTrailers,OfficialRating"
     ): JellyfinItemDto
+
+    @GET("Items/{itemId}/SpecialFeatures")
+    suspend fun getSpecialFeatures(
+        @Path("itemId") itemId: String,
+        @Query("UserId") userId: String
+    ): List<JellyfinItemDto>
 
     @GET("Shows/{seriesId}/Seasons")
     suspend fun getSeasons(
@@ -208,6 +222,55 @@ interface JellyfinApi {
     suspend fun downloadRemoteSubtitle(
         @Path("itemId") itemId: String,
         @Path("subtitleId") subtitleId: String
+    )
+
+    @GET("LiveTv/Channels")
+    suspend fun getLiveTvChannels(
+        @Query("UserId") userId: String,
+        @Query("Fields") fields: String = "PrimaryImageAspectRatio,ChannelInfo",
+        @Query("AddCurrentProgram") addCurrentProgram: Boolean = true
+    ): JellyfinItemsResponse
+
+    @GET("LiveTv/Programs")
+    suspend fun getLiveTvPrograms(
+        @Query("UserId") userId: String,
+        @Query("HasAired") hasAired: Boolean = false,
+        @Query("Limit") limit: Int = 100,
+        @Query("Fields") fields: String = "Overview,ChannelInfo"
+    ): JellyfinItemsResponse
+
+    @GET("LiveTv/Recordings")
+    suspend fun getLiveTvRecordings(
+        @Query("UserId") userId: String,
+        @Query("Limit") limit: Int = 40,
+        @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData"
+    ): JellyfinItemsResponse
+
+    @GET("SyncPlay/List")
+    suspend fun getSyncPlayGroups(): List<JellyfinSyncPlayGroupDto>
+
+    @POST("SyncPlay/New")
+    suspend fun createSyncPlayGroup(
+        @Body body: JellyfinCreateSyncPlayRequest
+    )
+
+    @POST("SyncPlay/Join")
+    suspend fun joinSyncPlayGroup(
+        @Body body: JellyfinJoinSyncPlayRequest
+    )
+
+    @POST("SyncPlay/Leave")
+    suspend fun leaveSyncPlayGroup()
+
+    @POST("SyncPlay/Pause")
+    suspend fun syncPlayPause()
+
+    @POST("SyncPlay/Unpause")
+    suspend fun syncPlayUnpause()
+
+    @POST("SyncPlay/Seek")
+    suspend fun syncPlaySeek(
+        @Body body: JellyfinSeekSyncPlayRequest
     )
 
     @POST("Sessions/Playing")

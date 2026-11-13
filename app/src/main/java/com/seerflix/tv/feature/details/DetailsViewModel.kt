@@ -1,15 +1,22 @@
 package com.seerflix.tv.feature.details
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.SeerrIssueType
 import com.seerflix.tv.core.model.UnifiedMediaItem
+import com.seerflix.tv.core.model.UserProfile
+import com.seerflix.tv.core.network.SessionPreferences
+import com.seerflix.tv.core.player.ExternalPlayerHelper
+import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.ResolvedPreviewStream
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,8 +40,15 @@ data class DetailsUiState(
     val episodesLoading: Boolean = false,
     val previewStream: ResolvedPreviewStream? = null,
     val has4kServer: Boolean = true,
+    val selectedMediaSourceId: String? = null,
+    val arrServers: List<ArrServerOption> = emptyList(),
+    val arrServersLoading: Boolean = false,
     val showRequestModal: Boolean = false,
     val isSubmittingRequest: Boolean = false,
+    val showReportIssueModal: Boolean = false,
+    val isReportingIssue: Boolean = false,
+    val isSeerrConfigured: Boolean = true,
+    val canSubmitRequests: Boolean = true,
     val feedbackBanner: String? = null,
     val isLoading: Boolean = true,
     val errorMessage: String? = null
@@ -45,7 +59,9 @@ class DetailsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val authRepository: AuthRepository,
     private val catalogRepository: UnifiedCatalogRepository,
-    private val trailerResolver: YouTubeTrailerResolver
+    private val trailerResolver: YouTubeTrailerResolver,
+    private val playbackManager: JellyfinPlaybackManager,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
 
     private val tmdbIdArg: Int? = savedStateHandle.get<String>("tmdbId")?.toIntOrNull()?.takeIf { it > 0 }
@@ -59,6 +75,7 @@ class DetailsViewModel @Inject constructor(
 
     private var pollingJob: Job? = null
     private var activeUserId: String = ""
+    private var activeProfile: UserProfile? = null
 
     init {
         loadAll()
@@ -73,6 +90,8 @@ class DetailsViewModel @Inject constructor(
                 return@launch
             }
             activeUserId = profile.jellyfinUserId
+            activeProfile = profile
+            val seerrConfigured = sessionPreferences.isSeerrConfigured
 
             val result = catalogRepository.loadFullDetails(
                 userId = activeUserId,
@@ -87,26 +106,32 @@ class DetailsViewModel @Inject constructor(
                     it.copy(
                         item = item,
                         selectedSeasonNumber = defaultSeason,
+                        selectedMediaSourceId = it.selectedMediaSourceId ?: item.mediaVersions.firstOrNull()?.id,
+                        isSeerrConfigured = seerrConfigured,
+                        canSubmitRequests = profile.canSubmitRequests,
                         isLoading = false
                     )
                 }
 
-                launch {
-                    val has4k = catalogRepository.has4kServerConfigured(item.mediaType)
-                    _uiState.update { it.copy(has4kServer = has4k) }
+                if (seerrConfigured) {
+                    launch {
+                        val has4k = catalogRepository.has4kServerConfigured(item.mediaType)
+                        _uiState.update { it.copy(has4kServer = has4k) }
+                    }
                 }
                 launch {
                     val recs = catalogRepository.loadRecommendations(
                         userId = activeUserId,
                         tmdbId = item.tmdbId,
                         jellyfinId = item.jellyfinId,
-                        mediaType = item.mediaType
+                        mediaType = item.mediaType,
+                        activeProfile = profile
                     )
                     _uiState.update { it.copy(recommendations = recs) }
                 }
                 item.collectionId?.let { colId ->
                     launch {
-                        val saga = catalogRepository.loadCollectionSaga(activeUserId, colId)
+                        val saga = catalogRepository.loadCollectionSaga(activeUserId, colId, activeProfile = profile)
                         _uiState.update { it.copy(collectionSaga = saga) }
                     }
                 }
@@ -130,6 +155,10 @@ class DetailsViewModel @Inject constructor(
         }
     }
 
+    fun selectMediaSource(mediaSourceId: String) {
+        _uiState.update { it.copy(selectedMediaSourceId = mediaSourceId) }
+    }
+
     fun selectSeason(seasonNumber: Int) {
         val item = _uiState.value.item ?: return
         val season = item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
@@ -147,28 +176,74 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun openRequestModal() {
+        if (!_uiState.value.isSeerrConfigured) {
+            _uiState.update { it.copy(feedbackBanner = "Connect Seerr in Server Settings to submit requests.") }
+            return
+        }
+        if (!_uiState.value.canSubmitRequests) {
+            _uiState.update { it.copy(feedbackBanner = "Requests are locked in Kids Mode for this profile.") }
+            return
+        }
+        val item = _uiState.value.item ?: return
         _uiState.update { it.copy(showRequestModal = true, feedbackBanner = null) }
+        if (_uiState.value.arrServers.isEmpty()) {
+            viewModelScope.launch {
+                _uiState.update { it.copy(arrServersLoading = true) }
+                val servers = catalogRepository.loadArrServers(item.mediaType)
+                _uiState.update { it.copy(arrServers = servers, arrServersLoading = false) }
+            }
+        }
     }
 
     fun closeRequestModal() {
         _uiState.update { it.copy(showRequestModal = false) }
     }
 
-    fun submitRequest(requestHd: Boolean, request4k: Boolean, seasons: List<Int>?) {
+    fun submitRequest(
+        requestHd: Boolean,
+        request4k: Boolean,
+        seasons: List<Int>?,
+        hdServerId: Int? = null,
+        hdProfileId: Int? = null,
+        hdRootFolder: String? = null,
+        uhdServerId: Int? = null,
+        uhdProfileId: Int? = null,
+        uhdRootFolder: String? = null
+    ) {
         val item = _uiState.value.item ?: return
         val tmdbId = item.tmdbId ?: return
+        if (!_uiState.value.canSubmitRequests) {
+            _uiState.update { it.copy(showRequestModal = false, feedbackBanner = "Requests locked in Kids Mode") }
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmittingRequest = true, feedbackBanner = null) }
             var anySuccess = false
             var lastError: String? = null
 
             if (requestHd) {
-                catalogRepository.submitRequest(tmdbId, item.mediaType, is4k = false, seasons = seasons)
+                catalogRepository.submitRequest(
+                    tmdbId = tmdbId,
+                    mediaType = item.mediaType,
+                    is4k = false,
+                    seasons = seasons,
+                    serverId = hdServerId,
+                    profileId = hdProfileId,
+                    rootFolder = hdRootFolder
+                )
                     .onSuccess { anySuccess = true }
                     .onFailure { lastError = it.message }
             }
             if (request4k) {
-                catalogRepository.submitRequest(tmdbId, item.mediaType, is4k = true, seasons = seasons)
+                catalogRepository.submitRequest(
+                    tmdbId = tmdbId,
+                    mediaType = item.mediaType,
+                    is4k = true,
+                    seasons = seasons,
+                    serverId = uhdServerId,
+                    profileId = uhdProfileId,
+                    rootFolder = uhdRootFolder
+                )
                     .onSuccess { anySuccess = true }
                     .onFailure { lastError = it.message }
             }
@@ -195,6 +270,110 @@ class DetailsViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uiState.update { it.copy(feedbackBanner = "Cancel failed: ${err.message}") }
+                }
+        }
+    }
+
+    fun openReportIssueModal() {
+        if (!_uiState.value.isSeerrConfigured) {
+            _uiState.update { it.copy(feedbackBanner = "Issue reporting requires Seerr.") }
+            return
+        }
+        _uiState.update { it.copy(showReportIssueModal = true, feedbackBanner = null) }
+    }
+
+    fun closeReportIssueModal() {
+        _uiState.update { it.copy(showReportIssueModal = false) }
+    }
+
+    fun submitIssue(issueType: SeerrIssueType, message: String) {
+        val item = _uiState.value.item ?: return
+        val tmdbId = item.tmdbId ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isReportingIssue = true) }
+            catalogRepository.reportIssue(
+                tmdbId = tmdbId,
+                mediaType = item.mediaType,
+                issueType = issueType,
+                message = message
+            )
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            isReportingIssue = false,
+                            showReportIssueModal = false,
+                            feedbackBanner = "Issue reported to Seerr"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            isReportingIssue = false,
+                            showReportIssueModal = false,
+                            feedbackBanner = "Failed to report issue: ${err.message}"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun toggleWatched() {
+        val item = _uiState.value.item ?: return
+        val jfId = item.jellyfinId ?: return
+        if (activeUserId.isBlank()) return
+        val nextWatched = !item.isWatched
+        viewModelScope.launch {
+            catalogRepository.markWatched(activeUserId, jfId, nextWatched)
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            item = it.item?.copy(
+                                isWatched = nextWatched,
+                                resumePositionTicks = if (nextWatched) 0L else it.item.resumePositionTicks
+                            ),
+                            feedbackBanner = if (nextWatched) "Marked as watched" else "Marked as unwatched"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = "Update failed: ${err.message}") }
+                }
+        }
+    }
+
+    fun openExternalPlayer(context: Context) {
+        val item = _uiState.value.item ?: return
+        val playableId = if (item.mediaType == MediaType.SERIES) {
+            _uiState.value.episodes.firstOrNull { it.isAvailableInJellyfin }?.id ?: item.jellyfinId
+        } else {
+            item.jellyfinId
+        } ?: return
+        if (activeUserId.isBlank()) return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(feedbackBanner = "Opening external player...") }
+            playbackManager.preparePlayback(
+                userId = activeUserId,
+                itemId = playableId,
+                mediaSourceId = _uiState.value.selectedMediaSourceId
+            )
+                .onSuccess { session ->
+                    val launched = ExternalPlayerHelper.launchExternalPlayer(
+                        context = context,
+                        streamUrl = session.directPlayUrl ?: session.streamUrl,
+                        title = session.title,
+                        positionMs = session.resumeTicks / 10_000L,
+                        externalSubtitles = session.externalSubtitleFiles
+                    )
+                    _uiState.update {
+                        it.copy(
+                            feedbackBanner = if (launched) null else "No compatible external video player installed"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = "External player failed: ${err.message}") }
                 }
         }
     }

@@ -8,6 +8,7 @@ import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.UnifiedMediaItem
+import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,6 +27,7 @@ data class SearchUiState(
     val trendingItems: List<UnifiedMediaItem> = emptyList(),
     val selectedGenre: GenreFilterOption? = null,
     val activePersonName: String? = null,
+    val isSeerrConfigured: Boolean = true,
     val isSearching: Boolean = false,
     val isLoadingSuggestions: Boolean = false
 )
@@ -34,14 +36,20 @@ data class SearchUiState(
 class SearchViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val authRepository: AuthRepository,
-    private val catalogRepository: UnifiedCatalogRepository
+    private val catalogRepository: UnifiedCatalogRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
 
     private val initialQuery: String = savedStateHandle.get<String>("query").orEmpty()
     private val initialPersonId: Int? = savedStateHandle.get<String>("personId")?.toIntOrNull()?.takeIf { it > 0 }
     private val initialPersonName: String? = savedStateHandle.get<String>("personName")?.takeIf { it.isNotBlank() }
 
-    private val _uiState = MutableStateFlow(SearchUiState(query = initialQuery))
+    private val _uiState = MutableStateFlow(
+        SearchUiState(
+            query = initialQuery,
+            isSeerrConfigured = sessionPreferences.isSeerrConfigured
+        )
+    )
     val uiState: StateFlow<SearchUiState> = _uiState.asStateFlow()
 
     private var searchJob: Job? = null
@@ -56,9 +64,15 @@ class SearchViewModel @Inject constructor(
 
     private fun loadTrendingSuggestions() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingSuggestions = true) }
-            val userId = authRepository.activeProfileFlow.first()?.jellyfinUserId.orEmpty()
-            val trending = catalogRepository.loadTrendingTitles(userId)
+            _uiState.update {
+                it.copy(
+                    isLoadingSuggestions = true,
+                    isSeerrConfigured = sessionPreferences.isSeerrConfigured
+                )
+            }
+            val profile = authRepository.activeProfileFlow.first()
+            val userId = profile?.jellyfinUserId.orEmpty()
+            val trending = catalogRepository.loadTrendingTitles(userId, activeProfile = profile)
             _uiState.update { it.copy(trendingItems = trending, isLoadingSuggestions = false) }
         }
     }
@@ -79,8 +93,13 @@ class SearchViewModel @Inject constructor(
         searchJob = viewModelScope.launch {
             delay(350L)
             _uiState.update { it.copy(isSearching = true) }
-            val userId = authRepository.activeProfileFlow.first()?.jellyfinUserId.orEmpty()
-            val (mediaResults, people) = catalogRepository.searchUnifiedWithPeople(userId, newQuery.trim())
+            val profile = authRepository.activeProfileFlow.first()
+            val userId = profile?.jellyfinUserId.orEmpty()
+            val (mediaResults, people) = catalogRepository.searchUnifiedWithPeople(
+                userId = userId,
+                query = newQuery.trim(),
+                activeProfile = profile
+            )
             _uiState.update {
                 it.copy(
                     results = mediaResults,
@@ -107,8 +126,9 @@ class SearchViewModel @Inject constructor(
                     isSearching = true
                 )
             }
-            val userId = authRepository.activeProfileFlow.first()?.jellyfinUserId.orEmpty()
-            val items = catalogRepository.loadByGenre(userId, genre)
+            val profile = authRepository.activeProfileFlow.first()
+            val userId = profile?.jellyfinUserId.orEmpty()
+            val items = catalogRepository.loadByGenre(userId, genre, activeProfile = profile)
             _uiState.update { it.copy(results = items, isSearching = false) }
         }
     }
@@ -128,8 +148,9 @@ class SearchViewModel @Inject constructor(
                     isSearching = true
                 )
             }
-            val userId = authRepository.activeProfileFlow.first()?.jellyfinUserId.orEmpty()
-            val items = catalogRepository.loadPersonCredits(userId, personId)
+            val profile = authRepository.activeProfileFlow.first()
+            val userId = profile?.jellyfinUserId.orEmpty()
+            val items = catalogRepository.loadPersonCredits(userId, personId, activeProfile = profile)
             _uiState.update { it.copy(results = items, isSearching = false) }
         }
     }

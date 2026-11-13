@@ -1,14 +1,21 @@
 package com.seerflix.tv.core.player
 
+import com.seerflix.tv.core.model.AssSubtitleMode
+import com.seerflix.tv.core.model.ChapterMarker
+import com.seerflix.tv.core.model.ExternalSubtitleFile
+import com.seerflix.tv.core.model.MediaSourceOption
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.TrickplayInfo
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinDeviceProfileDto
+import com.seerflix.tv.core.network.JellyfinDirectPlayProfileDto
 import com.seerflix.tv.core.network.JellyfinItemDto
 import com.seerflix.tv.core.network.JellyfinMediaSourceDto
 import com.seerflix.tv.core.network.JellyfinPlaybackInfoRequest
 import com.seerflix.tv.core.network.JellyfinPlaybackProgressRequest
+import com.seerflix.tv.core.network.JellyfinSubtitleProfileDto
+import com.seerflix.tv.core.network.JellyfinTranscodingProfileDto
 import com.seerflix.tv.core.network.SessionPreferences
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -23,9 +30,21 @@ class JellyfinPlaybackManager @Inject constructor(
     suspend fun preparePlayback(
         userId: String,
         itemId: String,
-        maxBitrateBps: Long? = null
+        maxBitrateBps: Long? = null,
+        mediaSourceId: String? = null,
+        audioPassthroughEnabled: Boolean = true,
+        stereoDownmixEnabled: Boolean = false,
+        assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
+        burnInSubtitleIndex: Int? = null
     ): Result<PlaybackSessionData> = runCatching {
         coroutineScope {
+            val deviceProfile = buildDeviceProfile(
+                maxBitrateBps = maxBitrateBps,
+                audioPassthroughEnabled = audioPassthroughEnabled,
+                stereoDownmixEnabled = stereoDownmixEnabled,
+                assSubtitleMode = assSubtitleMode,
+                burnInSubtitleIndex = burnInSubtitleIndex
+            )
             val itemDeferred = async { jellyfinApi.getItemDetails(userId, itemId) }
             val playbackDeferred = async {
                 jellyfinApi.getPlaybackInfo(
@@ -33,9 +52,10 @@ class JellyfinPlaybackManager @Inject constructor(
                     userId = userId,
                     body = JellyfinPlaybackInfoRequest(
                         userId = userId,
-                        deviceProfile = JellyfinDeviceProfileDto(
-                            maxStreamingBitrate = maxBitrateBps ?: 120_000_000L
-                        )
+                        mediaSourceId = mediaSourceId,
+                        subtitleStreamIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null,
+                        maxAudioChannels = if (stereoDownmixEnabled) 2 else null,
+                        deviceProfile = deviceProfile
                     )
                 )
             }
@@ -47,10 +67,15 @@ class JellyfinPlaybackManager @Inject constructor(
             val playback = playbackDeferred.await()
             val segments = segmentsDeferred.await()
 
-            val source = playback.mediaSources.firstOrNull()
-                ?: error("No playable media sources returned by Jellyfin")
+            val source = if (!mediaSourceId.isNullOrBlank()) {
+                playback.mediaSources.firstOrNull { it.id == mediaSourceId }
+                    ?: playback.mediaSources.firstOrNull()
+            } else {
+                playback.mediaSources.firstOrNull()
+            } ?: error("No playable media sources returned by Jellyfin")
+
             val playSessionId = playback.playSessionId ?: "${System.currentTimeMillis()}"
-            val base = prefs.cachedJellyfinUrl
+            val base = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
             val token = prefs.cachedToken.orEmpty()
 
             val (streamUrl, isHls) = buildStreamUrl(
@@ -59,7 +84,9 @@ class JellyfinPlaybackManager @Inject constructor(
                 itemId = item.id,
                 source = source,
                 playSessionId = playSessionId,
-                maxBitrateBps = maxBitrateBps
+                maxBitrateBps = maxBitrateBps,
+                stereoDownmix = stereoDownmixEnabled,
+                burnInSubtitleIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null
             )
 
             val introSeg = segments.firstOrNull { it.type.equals("Intro", ignoreCase = true) }
@@ -97,16 +124,47 @@ class JellyfinPlaybackManager @Inject constructor(
                     )
                 }
 
-            val subtitleTracks = source.mediaStreams
+            val externalSubtitles = source.mediaStreams
                 .filter { it.type.equals("Subtitle", ignoreCase = true) }
-                .map {
-                    TrackOption(
-                        index = it.index,
-                        label = it.displayTitle ?: it.language?.uppercase() ?: "Subtitle ${it.index}",
-                        language = it.language,
-                        codec = it.codec
+                .mapNotNull { stream ->
+                    val ext = normalizeSubtitleFormat(stream.codec)
+                    val delivery = stream.deliveryUrl?.let { path ->
+                        if (path.startsWith("http")) path else "$base$path"
+                    } ?: "$base/Videos/${item.id}/${source.id}/Subtitles/${stream.index}/0/Stream.$ext?api_key=$token"
+                    ExternalSubtitleFile(
+                        index = stream.index,
+                        title = stream.displayTitle ?: stream.title ?: stream.language?.uppercase() ?: "Sub ${stream.index}",
+                        language = stream.language,
+                        codec = stream.codec,
+                        url = delivery
                     )
                 }
+
+            val subtitleTracks = source.mediaStreams
+                .filter { it.type.equals("Subtitle", ignoreCase = true) }
+                .map { stream ->
+                    val matchingExt = externalSubtitles.firstOrNull { it.index == stream.index }
+                    TrackOption(
+                        index = stream.index,
+                        label = stream.displayTitle ?: stream.language?.uppercase() ?: "Subtitle ${stream.index}",
+                        language = stream.language,
+                        codec = stream.codec,
+                        isExternal = stream.isExternal,
+                        externalUrl = matchingExt?.url
+                    )
+                }
+
+            val chapters = item.chapters
+                .filter { !it.name.isNullOrBlank() || it.startPositionTicks > 0L }
+                .mapIndexed { idx, ch ->
+                    ChapterMarker(
+                        name = ch.name?.takeIf { it.isNotBlank() } ?: "Chapter ${idx + 1}",
+                        startPositionMs = (ch.startPositionTicks / 10_000L).coerceAtLeast(0L)
+                    )
+                }
+                .sortedBy { it.startPositionMs }
+
+            val mediaSourceOptions = playback.mediaSources.map { ms -> mapMediaSourceOption(ms) }
 
             val primaryVideo = source.mediaStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
             val primaryAudio = source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
@@ -151,6 +209,8 @@ class JellyfinPlaybackManager @Inject constructor(
                 "S${item.parentIndexNumber ?: 1}:E${item.indexNumber ?: 0} • ${item.name}"
             } else item.productionYear?.toString()
 
+            val directPlayUrl = "$base/Videos/${item.id}/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
+
             PlaybackSessionData(
                 itemId = item.id,
                 title = title,
@@ -176,9 +236,24 @@ class JellyfinPlaybackManager @Inject constructor(
                 resolutionLabel = resolutionLabel,
                 hdrFormat = hdrFormat,
                 audioTracks = audioTracks,
-                subtitleTracks = subtitleTracks
+                subtitleTracks = subtitleTracks,
+                chapters = chapters,
+                mediaSources = mediaSourceOptions,
+                externalSubtitleFiles = externalSubtitles,
+                directPlayUrl = directPlayUrl,
+                isLiveTv = item.type.equals("TvChannel", ignoreCase = true)
             )
         }
+    }
+
+    suspend fun prepareLiveTvPlayback(
+        userId: String,
+        channelId: String
+    ): Result<PlaybackSessionData> = preparePlayback(
+        userId = userId,
+        itemId = channelId
+    ).map { session ->
+        session.copy(isLiveTv = true)
     }
 
     suspend fun searchRemoteSubtitles(
@@ -255,16 +330,117 @@ class JellyfinPlaybackManager @Inject constructor(
     }
 
     companion object {
+        fun buildDeviceProfile(
+            maxBitrateBps: Long? = null,
+            audioPassthroughEnabled: Boolean = true,
+            stereoDownmixEnabled: Boolean = false,
+            assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
+            burnInSubtitleIndex: Int? = null
+        ): JellyfinDeviceProfileDto {
+            val directAudioCodecs = when {
+                stereoDownmixEnabled -> "aac,mp3,opus,flac,vorbis"
+                audioPassthroughEnabled -> "aac,mp3,ac3,eac3,dts,truehd,opus,flac,vorbis"
+                else -> "aac,mp3,ac3,opus,flac,vorbis"
+            }
+            val transcodeAudioCodecs = if (stereoDownmixEnabled) {
+                "aac,mp3"
+            } else if (audioPassthroughEnabled) {
+                "aac,ac3,eac3,mp3"
+            } else {
+                "aac,mp3"
+            }
+            val assMethod = if (assSubtitleMode == AssSubtitleMode.BURN_IN && burnInSubtitleIndex != null) {
+                "Encode"
+            } else {
+                "External"
+            }
+            return JellyfinDeviceProfileDto(
+                maxStreamingBitrate = maxBitrateBps ?: 120_000_000L,
+                directPlayProfiles = listOf(
+                    JellyfinDirectPlayProfileDto(
+                        type = "Video",
+                        container = "mp4,m4v,mkv,webm,mov,ts",
+                        videoCodec = "h264,hevc,vp9,av1",
+                        audioCodec = directAudioCodecs
+                    )
+                ),
+                transcodingProfiles = listOf(
+                    JellyfinTranscodingProfileDto(
+                        container = "ts",
+                        type = "Video",
+                        videoCodec = "h264,hevc",
+                        audioCodec = transcodeAudioCodecs,
+                        protocol = "hls"
+                    )
+                ),
+                subtitleProfiles = listOf(
+                    JellyfinSubtitleProfileDto("ass", assMethod),
+                    JellyfinSubtitleProfileDto("ssa", assMethod),
+                    JellyfinSubtitleProfileDto("srt", "External"),
+                    JellyfinSubtitleProfileDto("vtt", "External"),
+                    JellyfinSubtitleProfileDto("subrip", "External")
+                )
+            )
+        }
+
+        fun mapMediaSourceOption(source: JellyfinMediaSourceDto): MediaSourceOption {
+            val video = source.mediaStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
+            val audio = source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
+            val res = video?.let {
+                when {
+                    (it.width ?: 0) >= 3800 || (it.height ?: 0) >= 2000 -> "4K"
+                    (it.width ?: 0) >= 1900 || (it.height ?: 0) >= 1000 -> "1080p"
+                    (it.width ?: 0) >= 1200 || (it.height ?: 0) >= 700 -> "720p"
+                    it.height != null -> "${it.height}p"
+                    else -> null
+                }
+            }
+            val audioLabel = audio?.let { a ->
+                val ch = when (a.channels) {
+                    8 -> "7.1"
+                    6 -> "5.1"
+                    2 -> "2.0"
+                    else -> null
+                }
+                listOfNotNull(a.codec?.uppercase(), ch).joinToString(" ").ifBlank { null }
+            }
+            return MediaSourceOption(
+                id = source.id,
+                name = source.name ?: source.container?.uppercase() ?: source.id,
+                container = source.container,
+                bitrate = source.bitrate,
+                resolutionLabel = res,
+                videoCodec = video?.codec?.uppercase(),
+                audioSummary = audioLabel
+            )
+        }
+
+        fun normalizeSubtitleFormat(codec: String?): String = when (codec?.lowercase()) {
+            "subrip", "srt" -> "srt"
+            "ass" -> "ass"
+            "ssa" -> "ssa"
+            "vtt", "webvtt" -> "vtt"
+            else -> "srt"
+        }
+
         fun buildStreamUrl(
             base: String,
             token: String,
             itemId: String,
             source: JellyfinMediaSourceDto,
             playSessionId: String,
-            maxBitrateBps: Long?
+            maxBitrateBps: Long?,
+            stereoDownmix: Boolean = false,
+            burnInSubtitleIndex: Int? = null
         ): Pair<String, Boolean> {
-            if (maxBitrateBps != null) {
-                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$maxBitrateBps&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+            val audioParam = if (stereoDownmix) "&MaxAudioChannels=2" else ""
+            if (burnInSubtitleIndex != null) {
+                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                return url to true
+            }
+            if (maxBitrateBps != null || stereoDownmix) {
+                val br = maxBitrateBps ?: 120_000_000L
+                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
             return if (source.supportsDirectPlay || source.supportsDirectStream) {

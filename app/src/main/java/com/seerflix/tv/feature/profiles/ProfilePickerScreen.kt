@@ -468,21 +468,35 @@ private fun ProfileSettingsDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+
+    var activeSection by remember(profile.id) { mutableStateOf(0) } // 0=Appearance, 1=Theater, 2=Kids&PIN
+
+    var selectedPreset by remember(profile.id) { mutableStateOf(profile.uiPreset) }
+    var uiLanguage by remember(profile.id) { mutableStateOf(profile.uiLanguage) }
+    var metadataLanguage by remember(profile.id) { mutableStateOf(profile.metadataLanguage) }
+    var defaultStartupTab by remember(profile.id) { mutableStateOf(profile.defaultStartupTab) }
+
     var autoplayNext by remember(profile.id) { mutableStateOf(profile.autoplayNextEpisode) }
     var autoplayPreviews by remember(profile.id) { mutableStateOf(profile.autoplayPreviews) }
     var autoSkipIntro by remember(profile.id) { mutableStateOf(profile.autoSkipIntro) }
     var autoSkipRecap by remember(profile.id) { mutableStateOf(profile.autoSkipRecap) }
     var frameRateMatchMode by remember(profile.id) { mutableStateOf(profile.frameRateMatchMode) }
+    var audioPassthrough by remember(profile.id) { mutableStateOf(profile.audioPassthroughEnabled) }
+    var stereoDownmix by remember(profile.id) { mutableStateOf(profile.stereoDownmixEnabled) }
+    var assSubtitleMode by remember(profile.id) { mutableStateOf(profile.assSubtitleMode) }
     var audioLang by remember(profile.id) { mutableStateOf(profile.preferredAudioLang) }
     var subLang by remember(profile.id) { mutableStateOf(profile.preferredSubtitleLang) }
-    var selectedPreset by remember(profile.id) { mutableStateOf(profile.uiPreset) }
+
+    var kidsMode by remember(profile.id) { mutableStateOf(profile.kidsMode) }
+    var maxContentRating by remember(profile.id) { mutableStateOf(profile.maxContentRating) }
+    var allowKidsRequests by remember(profile.id) { mutableStateOf(profile.allowKidsRequests) }
     var pinCode by remember(profile.id) { mutableStateOf("") }
     var clearPin by remember(profile.id) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(540.dp)
+                .width(620.dp)
                 .clip(dialogShape)
                 .background(colors.dialogSurface)
                 .border(1.dp, colors.badgeBorder, dialogShape)
@@ -490,117 +504,239 @@ private fun ProfileSettingsDialog(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Profile Settings • ${profile.name}", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-
-            Text("UI Preset", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                UiPreset.entries.forEach { preset ->
-                    PrefChip(
-                        label = preset.displayName,
-                        selected = selectedPreset == preset,
-                        onClick = { selectedPreset = preset },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
             Text(
-                text = selectedPreset.subtitle,
-                color = colors.textMuted,
-                fontSize = 11.sp
+                text = "Profile Settings • ${profile.name}",
+                color = colors.white,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
             )
 
-            PreferenceSwitchRow(
-                label = "Autoplay Next Episode",
-                checked = autoplayNext,
-                onToggle = { autoplayNext = !autoplayNext }
-            )
-            PreferenceSwitchRow(
-                label = "Autoplay Previews While Browsing",
-                checked = autoplayPreviews,
-                onToggle = { autoplayPreviews = !autoplayPreviews }
-            )
-            PreferenceSwitchRow(
-                label = "Auto-Skip Intro",
-                checked = autoSkipIntro,
-                onToggle = { autoSkipIntro = !autoSkipIntro }
-            )
-            PreferenceSwitchRow(
-                label = "Auto-Skip Recap",
-                checked = autoSkipRecap,
-                onToggle = { autoSkipRecap = !autoSkipRecap }
-            )
-
-            Text("24fps Frame-Rate Matching", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            // Section tabs
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                com.seerflix.tv.core.model.FrameRateMatchMode.entries.forEach { mode ->
+                listOf("Appearance & Language", "Home Theater", "Kids & PIN").forEachIndexed { idx, title ->
                     PrefChip(
-                        label = mode.label,
-                        selected = frameRateMatchMode == mode,
-                        onClick = { frameRateMatchMode = mode },
+                        label = title,
+                        selected = activeSection == idx,
+                        onClick = { activeSection = idx },
                         modifier = Modifier.weight(1f)
                     )
                 }
             }
 
-            Text("Preferred Audio Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(null to "Default", "eng" to "English", "spa" to "Spanish", "jpn" to "Japanese").forEach { (code, label) ->
-                    PrefChip(
-                        label = label,
-                        selected = audioLang == code,
-                        onClick = { audioLang = code },
-                        modifier = Modifier.weight(1f)
+            when (activeSection) {
+                0 -> {
+                    Text("UI Preset", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        UiPreset.entries.forEach { preset ->
+                            PrefChip(
+                                label = preset.displayName,
+                                selected = selectedPreset == preset,
+                                onClick = { selectedPreset = preset },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    Text(
+                        text = selectedPreset.subtitle,
+                        color = colors.textMuted,
+                        fontSize = 11.sp
                     )
-                }
-            }
 
-            Text("Preferred Subtitle Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(null to "Default", "off" to "Off", "eng" to "English", "spa" to "Spanish").forEach { (code, label) ->
-                    PrefChip(
-                        label = label,
-                        selected = subLang == code,
-                        onClick = { subLang = code },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
+                    Text("App UI Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        com.seerflix.tv.core.i18n.SupportedLanguages.forEach { (code, label) ->
+                            PrefChip(
+                                label = label,
+                                selected = uiLanguage == code,
+                                onClick = { uiLanguage = code },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
 
-            Text(
-                text = if (profile.hasPin && !clearPin) "Profile PIN (Currently Locked)" else "Set 4-Digit Profile PIN",
-                color = colors.textSecondary,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = pinCode,
-                    onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }.take(4)
-                        pinCode = digits
-                        if (digits.isNotEmpty()) clearPin = false
-                    },
-                    placeholder = { Text(if (profile.hasPin && !clearPin) "•••• (enter new 4 digits)" else "4 digits (optional)") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = colors.white,
-                        unfocusedTextColor = colors.textPrimary,
-                        focusedBorderColor = colors.accent,
-                        unfocusedBorderColor = Color(0x55FFFFFF)
-                    ),
-                    modifier = Modifier.weight(1f)
-                )
-                if (profile.hasPin && !clearPin) {
-                    DialogButton(
-                        text = "Remove PIN",
-                        isPrimary = false,
-                        onClick = { clearPin = true; pinCode = "" },
-                        modifier = Modifier.width(120.dp)
+                    Text("Metadata / Seerr Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        com.seerflix.tv.core.i18n.SupportedLanguages.forEach { (code, label) ->
+                            PrefChip(
+                                label = label,
+                                selected = metadataLanguage == code,
+                                onClick = { metadataLanguage = code },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    Text("Default Startup Tab", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    val tabList = com.seerflix.tv.core.model.HomeTabId.entries
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tabList.take(4).forEach { tab ->
+                            PrefChip(
+                                label = tab.label,
+                                selected = defaultStartupTab == tab,
+                                onClick = { defaultStartupTab = tab },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        tabList.drop(4).forEach { tab ->
+                            PrefChip(
+                                label = tab.label,
+                                selected = defaultStartupTab == tab,
+                                onClick = { defaultStartupTab = tab },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+
+                1 -> {
+                    PreferenceSwitchRow(
+                        label = "Autoplay Next Episode",
+                        checked = autoplayNext,
+                        onToggle = { autoplayNext = !autoplayNext }
                     )
+                    PreferenceSwitchRow(
+                        label = "Autoplay Previews While Browsing",
+                        checked = autoplayPreviews,
+                        onToggle = { autoplayPreviews = !autoplayPreviews }
+                    )
+                    PreferenceSwitchRow(
+                        label = "Auto-Skip Intro",
+                        checked = autoSkipIntro,
+                        onToggle = { autoSkipIntro = !autoSkipIntro }
+                    )
+                    PreferenceSwitchRow(
+                        label = "Auto-Skip Recap",
+                        checked = autoSkipRecap,
+                        onToggle = { autoSkipRecap = !autoSkipRecap }
+                    )
+                    PreferenceSwitchRow(
+                        label = "HDMI Audio Passthrough (TrueHD / DTS-HD / EAC3)",
+                        checked = audioPassthrough,
+                        onToggle = { audioPassthrough = !audioPassthrough }
+                    )
+                    PreferenceSwitchRow(
+                        label = "Stereo Downmix (TV Speakers / Night Mode)",
+                        checked = stereoDownmix,
+                        onToggle = { stereoDownmix = !stereoDownmix }
+                    )
+
+                    Text("ASS / SSA Anime Subtitles", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.seerflix.tv.core.model.AssSubtitleMode.entries.forEach { mode ->
+                            PrefChip(
+                                label = mode.label,
+                                selected = assSubtitleMode == mode,
+                                onClick = { assSubtitleMode = mode },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    Text("24fps Frame-Rate Matching", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.seerflix.tv.core.model.FrameRateMatchMode.entries.forEach { mode ->
+                            PrefChip(
+                                label = mode.label,
+                                selected = frameRateMatchMode == mode,
+                                onClick = { frameRateMatchMode = mode },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    Text("Preferred Audio / Subtitle Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(null to "Default", "eng" to "Eng", "spa" to "Spa", "jpn" to "Jpn").forEach { (code, label) ->
+                            PrefChip(
+                                label = "Aud: $label",
+                                selected = audioLang == code,
+                                onClick = { audioLang = code },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(null to "Default", "off" to "Off", "eng" to "Eng", "spa" to "Spa").forEach { (code, label) ->
+                            PrefChip(
+                                label = "Sub: $label",
+                                selected = subLang == code,
+                                onClick = { subLang = code },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+
+                2 -> {
+                    PreferenceSwitchRow(
+                        label = "Kids Profile Mode (Parental Filter)",
+                        checked = kidsMode,
+                        onToggle = {
+                            kidsMode = !kidsMode
+                            if (kidsMode && maxContentRating == com.seerflix.tv.core.model.ContentRatingLimit.ALL) {
+                                maxContentRating = com.seerflix.tv.core.model.ContentRatingLimit.PG
+                            }
+                        }
+                    )
+                    if (kidsMode) {
+                        PreferenceSwitchRow(
+                            label = "Allow Seerr Requests in Kids Mode",
+                            checked = allowKidsRequests,
+                            onToggle = { allowKidsRequests = !allowKidsRequests }
+                        )
+                    }
+
+                    Text("Max Allowed Content Rating", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        com.seerflix.tv.core.model.ContentRatingLimit.entries.forEach { limit ->
+                            PrefChip(
+                                label = limit.label,
+                                selected = maxContentRating == limit,
+                                onClick = { maxContentRating = limit },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = if (profile.hasPin && !clearPin) "Profile PIN (Currently Locked)" else "Set 4-Digit Profile PIN",
+                        color = colors.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = pinCode,
+                            onValueChange = { raw ->
+                                val digits = raw.filter { it.isDigit() }.take(4)
+                                pinCode = digits
+                                if (digits.isNotEmpty()) clearPin = false
+                            },
+                            placeholder = { Text(if (profile.hasPin && !clearPin) "•••• (enter new 4 digits)" else "4 digits (optional)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = colors.white,
+                                unfocusedTextColor = colors.textPrimary,
+                                focusedBorderColor = colors.accent,
+                                unfocusedBorderColor = Color(0x55FFFFFF)
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (profile.hasPin && !clearPin) {
+                            DialogButton(
+                                text = "Remove PIN",
+                                isPrimary = false,
+                                onClick = { clearPin = true; pinCode = "" },
+                                modifier = Modifier.width(120.dp)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -616,9 +752,18 @@ private fun ProfileSettingsDialog(
                             autoSkipIntro = autoSkipIntro,
                             autoSkipRecap = autoSkipRecap,
                             frameRateMatchMode = frameRateMatchMode,
+                            audioPassthroughEnabled = audioPassthrough,
+                            stereoDownmixEnabled = stereoDownmix,
+                            assSubtitleMode = assSubtitleMode,
                             preferredAudioLang = audioLang,
                             preferredSubtitleLang = subLang,
-                            uiPreset = selectedPreset
+                            uiPreset = selectedPreset,
+                            uiLanguage = uiLanguage,
+                            metadataLanguage = metadataLanguage,
+                            defaultStartupTab = defaultStartupTab,
+                            kidsMode = kidsMode,
+                            maxContentRating = maxContentRating,
+                            allowKidsRequests = allowKidsRequests
                         )
                         onSave(updated, pinCode, clearPin)
                     },

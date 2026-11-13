@@ -31,13 +31,26 @@ class AuthRepository @Inject constructor(
 
     suspend fun testAndSaveServers(
         jellyfinUrl: String,
-        seerrUrl: String
+        seerrUrl: String,
+        jellyfinLocalUrl: String = "",
+        seerrLocalUrl: String = "",
+        trustSelfSignedCerts: Boolean = false
     ): Result<Pair<String, String>> = runCatching {
-        prefs.saveServerUrls(jellyfinUrl, seerrUrl)
+        prefs.saveServerUrls(
+            jellyfinUrl = jellyfinUrl,
+            seerrUrl = seerrUrl,
+            jellyfinLocalUrl = jellyfinLocalUrl,
+            seerrLocalUrl = seerrLocalUrl,
+            trustSelfSignedCerts = trustSelfSignedCerts
+        )
         val jfInfo = jellyfinApi.getPublicSystemInfo()
-        val seerrStatus = seerrApi.getStatus()
         val jfName = jfInfo.serverName ?: "Jellyfin"
-        val seerrVer = seerrStatus.version ?: "Seerr"
+        val seerrVer = if (prefs.isSeerrConfigured) {
+            val seerrStatus = seerrApi.getStatus()
+            seerrStatus.version ?: "Seerr"
+        } else {
+            "Not Configured (Jellyfin-Only Mode)"
+        }
         jfName to seerrVer
     }
 
@@ -49,19 +62,22 @@ class AuthRepository @Inject constructor(
         val jfAuth = jellyfinApi.authenticateByName(
             JellyfinAuthRequest(username = username.trim(), password = password)
         )
-        // Best-effort Seerr v3+ login using the same Jellyfin credentials
-        runCatching {
-            seerrApi.loginWithJellyfin(
-                SeerrJellyfinLoginRequest(username = username.trim(), password = password)
-            )
+        if (prefs.isSeerrConfigured) {
+            // Best-effort Seerr v3+ login using the same Jellyfin credentials
+            runCatching {
+                seerrApi.loginWithJellyfin(
+                    SeerrJellyfinLoginRequest(username = username.trim(), password = password)
+                )
+            }
         }
+        val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
             jellyfinUserId = jfAuth.user.id,
             jellyfinToken = jfAuth.accessToken,
             avatarUrl = jfAuth.user.primaryImageTag?.let {
-                MediaImageUrls.jellyfinUserAvatar(prefs.cachedJellyfinUrl, jfAuth.user.id)
+                MediaImageUrls.jellyfinUserAvatar(activeJfBase, jfAuth.user.id)
             },
             avatarColorHex = pickNetflixAvatarColor(jfAuth.user.name),
             seerrCookie = prefs.cachedSeerrCookie,
@@ -72,8 +88,9 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun initiateQuickConnect(): Result<JellyfinQuickConnectState> = runCatching {
-        // Prefer Seerr v3+ Quick Connect endpoint if available so one code signs into both!
-        val seerrQc = runCatching { seerrApi.initiateQuickConnect() }.getOrNull()
+        val seerrQc = if (prefs.isSeerrConfigured) {
+            runCatching { seerrApi.initiateQuickConnect() }.getOrNull()
+        } else null
         if (seerrQc != null) {
             JellyfinQuickConnectState(
                 secret = seerrQc.secret,
@@ -86,25 +103,29 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun pollAndCompleteQuickConnect(secret: String): Result<UserProfile?> = runCatching {
-        // Check Seerr Quick Connect first, fallback to Jellyfin Quick Connect
-        val seerrCheck = runCatching { seerrApi.checkQuickConnect(secret) }.getOrNull()
+        val seerrCheck = if (prefs.isSeerrConfigured) {
+            runCatching { seerrApi.checkQuickConnect(secret) }.getOrNull()
+        } else null
         val isReady = seerrCheck?.authenticated ?: jellyfinApi.checkQuickConnect(secret).authenticated
         if (!isReady) return@runCatching null
 
         val jfAuth = jellyfinApi.authenticateWithQuickConnect(
             JellyfinQuickConnectAuthRequest(secret = secret)
         )
-        runCatching {
-            seerrApi.authenticateQuickConnect(SeerrQuickConnectAuthRequest(secret = secret))
+        if (prefs.isSeerrConfigured) {
+            runCatching {
+                seerrApi.authenticateQuickConnect(SeerrQuickConnectAuthRequest(secret = secret))
+            }
         }
 
+        val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
             jellyfinUserId = jfAuth.user.id,
             jellyfinToken = jfAuth.accessToken,
             avatarUrl = jfAuth.user.primaryImageTag?.let {
-                MediaImageUrls.jellyfinUserAvatar(prefs.cachedJellyfinUrl, jfAuth.user.id)
+                MediaImageUrls.jellyfinUserAvatar(activeJfBase, jfAuth.user.id)
             },
             avatarColorHex = pickNetflixAvatarColor(jfAuth.user.name),
             seerrCookie = prefs.cachedSeerrCookie,
@@ -137,9 +158,19 @@ class AuthRepository @Inject constructor(
     suspend fun updatePlaybackPreferences(
         autoSkipIntro: Boolean? = null,
         autoSkipRecap: Boolean? = null,
-        frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null
+        frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null,
+        audioPassthroughEnabled: Boolean? = null,
+        stereoDownmixEnabled: Boolean? = null,
+        assSubtitleMode: com.seerflix.tv.core.model.AssSubtitleMode? = null
     ) {
-        prefs.updatePlaybackPreferences(autoSkipIntro, autoSkipRecap, frameRateMatchMode)
+        prefs.updatePlaybackPreferences(
+            autoSkipIntro = autoSkipIntro,
+            autoSkipRecap = autoSkipRecap,
+            frameRateMatchMode = frameRateMatchMode,
+            audioPassthroughEnabled = audioPassthroughEnabled,
+            stereoDownmixEnabled = stereoDownmixEnabled,
+            assSubtitleMode = assSubtitleMode
+        )
     }
 
     suspend fun updateActiveUiPreset(preset: UiPreset) {

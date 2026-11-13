@@ -55,7 +55,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val activeProfile by authRepository.activeProfileFlow.collectAsState(initial = null)
             val activePreset = activeProfile?.uiPreset ?: UiPreset.NETFLIX
-            SeerflixTheme(preset = activePreset) {
+            val activeLanguage = activeProfile?.uiLanguage ?: "en"
+            SeerflixTheme(preset = activePreset, uiLanguage = activeLanguage) {
                 SeerflixNavGraph(
                     authRepository = authRepository,
                     incomingIntent = latestIntentState,
@@ -79,7 +80,7 @@ private object Routes {
     const val SEARCH = "search?query={query}&personId={personId}&personName={personName}"
     const val REQUESTS = "requests"
     const val DETAILS = "details/{tmdbId}/{jellyfinId}/{mediaType}"
-    const val PLAYER = "player/{itemId}"
+    const val PLAYER = "player/{itemId}?mediaSourceId={mediaSourceId}"
     const val TRAILER = "trailer?title={title}&youtubeKey={youtubeKey}&localTrailerId={localTrailerId}"
 
     fun search(query: String = "", personId: Int? = null, personName: String? = null): String {
@@ -98,7 +99,11 @@ private object Routes {
     fun details(tmdbId: Int, mediaType: MediaType): String =
         "details/$tmdbId/none/${mediaType.name}"
 
-    fun player(itemId: String): String = "player/${Uri.encode(itemId)}"
+    fun player(itemId: String, mediaSourceId: String? = null): String {
+        val encItem = Uri.encode(itemId)
+        val encSrc = Uri.encode(mediaSourceId.orEmpty())
+        return "player/$encItem?mediaSourceId=$encSrc"
+    }
 
     fun trailer(title: String, youtubeKey: String?, localTrailerId: String?): String {
         val encTitle = Uri.encode(title)
@@ -244,7 +249,9 @@ private fun SeerflixNavGraph(
         ) {
             DetailsScreen(
                 onBack = { navController.popBackStack() },
-                onPlayItem = { itemId -> navController.navigate(Routes.player(itemId)) },
+                onPlayItem = { itemId, mediaSourceId ->
+                    navController.navigate(Routes.player(itemId, mediaSourceId))
+                },
                 onPlayTrailer = { title, ytKey, localId ->
                     navController.navigate(Routes.trailer(title, ytKey, localId))
                 },
@@ -264,7 +271,8 @@ private fun SeerflixNavGraph(
         composable(
             route = Routes.PLAYER,
             arguments = listOf(
-                navArgument("itemId") { type = NavType.StringType }
+                navArgument("itemId") { type = NavType.StringType },
+                navArgument("mediaSourceId") { type = NavType.StringType; defaultValue = "" }
             )
         ) {
             PlayerScreen(onBack = { navController.popBackStack() })

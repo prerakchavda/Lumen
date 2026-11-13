@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -46,9 +48,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
+import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
@@ -63,7 +67,9 @@ fun RequestsScreen(
         onBack = onBack,
         onRefresh = { viewModel.refresh() },
         onSelectFilter = viewModel::selectFilter,
-        onOpenRequestDetails = onOpenRequestDetails
+        onOpenRequestDetails = onOpenRequestDetails,
+        onApproveRequest = viewModel::approveRequest,
+        onDeclineRequest = viewModel::declineRequest
     )
 }
 
@@ -73,9 +79,12 @@ fun RequestsContent(
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onSelectFilter: (RequestFilter) -> Unit,
-    onOpenRequestDetails: (tmdbId: Int, mediaType: MediaType) -> Unit
+    onOpenRequestDetails: (tmdbId: Int, mediaType: MediaType) -> Unit,
+    onApproveRequest: (Int) -> Unit = {},
+    onDeclineRequest: (Int) -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -91,13 +100,17 @@ fun RequestsContent(
                 FocusIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
                 Column {
                     Text(
-                        text = "Requests & Downloads",
+                        text = "${strings.navRequests} & Downloads",
                         color = colors.white,
                         fontSize = 26.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Live status synced with Seerr v3+ • Auto-refreshes every 15s",
+                        text = if (state.isSeerrConfigured) {
+                            "Live status synced with Seerr v3+ • Auto-refreshes every 15s"
+                        } else {
+                            "Jellyfin-Only Mode • Add a Seerr URL in Server Settings to enable requests"
+                        },
                         color = colors.textSecondary,
                         fontSize = 13.sp
                     )
@@ -105,6 +118,11 @@ fun RequestsContent(
             }
 
             FocusIconButton(Icons.Filled.Refresh, "Refresh", onRefresh)
+        }
+
+        state.actionMessage?.let { msg ->
+            Spacer(Modifier.height(10.dp))
+            Text(msg, color = colors.matchGreen, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
 
         Spacer(Modifier.height(18.dp))
@@ -123,6 +141,25 @@ fun RequestsContent(
 
         Box(modifier = Modifier.fillMaxSize()) {
             when {
+                !state.isSeerrConfigured -> {
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Seerr Not Connected (Jellyfin-Only Mode)",
+                            color = colors.white,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Add a Seerr URL in Server Setup to browse, submit, approve, or track media requests.",
+                            color = colors.textSecondary,
+                            fontSize = 14.sp
+                        )
+                    }
+                }
                 state.isLoading -> {
                     CircularProgressIndicator(color = colors.accent, modifier = Modifier.align(Alignment.Center))
                 }
@@ -145,6 +182,10 @@ fun RequestsContent(
                         items(state.visibleRequests, key = { it.requestId }) { req ->
                             RequestItemCard(
                                 req = req,
+                                isAdmin = state.isAdmin,
+                                isBusy = state.busyRequestId == req.requestId,
+                                onApprove = { onApproveRequest(req.requestId) },
+                                onDecline = { onDeclineRequest(req.requestId) },
                                 onClick = {
                                     if (req.tmdbId > 0) {
                                         onOpenRequestDetails(req.tmdbId, req.mediaType)
@@ -162,10 +203,15 @@ fun RequestsContent(
 @Composable
 private fun RequestItemCard(
     req: MediaRequestSummary,
+    isAdmin: Boolean,
+    isBusy: Boolean,
+    onApprove: () -> Unit,
+    onDecline: () -> Unit,
     onClick: () -> Unit
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
 
@@ -265,6 +311,24 @@ private fun RequestItemCard(
                             .background(colors.progressFill)
                     )
                 }
+            }
+        }
+
+        if (isAdmin && req.requestStatus == 1) {
+            Spacer(Modifier.width(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                HeroPillButton(
+                    text = if (isBusy) "..." else strings.actionApprove,
+                    icon = Icons.Filled.Check,
+                    isPrimary = true,
+                    onClick = { if (!isBusy) onApprove() }
+                )
+                HeroPillButton(
+                    text = strings.actionDecline,
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = { if (!isBusy) onDecline() }
+                )
             }
         }
     }

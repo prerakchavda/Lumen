@@ -31,6 +31,35 @@ class TvChannelSyncManager @Inject constructor(
         }
     }
 
+    suspend fun promoteNewReleaseToWatchNext(alert: com.seerflix.tv.core.model.ReadyRequestAlert) =
+        withContext(Dispatchers.IO) {
+            val jfId = alert.jellyfinId ?: return@withContext
+            runCatching {
+                val type = when (alert.mediaType) {
+                    MediaType.MOVIE -> TvContractCompat.WatchNextPrograms.TYPE_MOVIE
+                    MediaType.EPISODE -> TvContractCompat.WatchNextPrograms.TYPE_TV_EPISODE
+                    MediaType.SERIES -> TvContractCompat.WatchNextPrograms.TYPE_TV_SERIES
+                }
+                val builder = WatchNextProgram.Builder()
+                    .setType(type)
+                    .setWatchNextType(TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_NEW)
+                    .setLastEngagementTimeUtcMillis(System.currentTimeMillis())
+                    .setTitle(alert.title)
+                    .setDescription("Requested title is now ready to watch")
+                    .setIntentUri(buildPlayerDeepLink(jfId))
+                    .setInternalProviderId("ready_$jfId")
+
+                alert.posterUrl?.let { art ->
+                    builder.setPosterArtUri(Uri.parse(art))
+                    builder.setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_2_3)
+                }
+                context.contentResolver.insert(
+                    TvContractCompat.WatchNextPrograms.CONTENT_URI,
+                    builder.build().toContentValues()
+                )
+            }
+        }
+
     private fun syncWatchNext(items: List<UnifiedMediaItem>) {
         val resolver = context.contentResolver
         val existingIds = mutableMapOf<String, Long>()

@@ -66,6 +66,7 @@ data class SeerrMediaResultDto(
     val knownFor: List<SeerrMediaResultDto> = emptyList(),
     val voteAverage: Double? = null,
     val genreIds: List<Int> = emptyList(),
+    val adult: Boolean = false,
     val mediaInfo: SeerrMediaInfoDto? = null
 )
 
@@ -223,6 +224,7 @@ data class SeerrMovieDetailsDto(
     val voteAverage: Double? = null,
     val posterPath: String? = null,
     val backdropPath: String? = null,
+    val adult: Boolean = false,
     val genres: List<SeerrGenreDto> = emptyList(),
     val credits: SeerrCreditsDto? = null,
     val relatedVideos: List<SeerrRelatedVideoDto> = emptyList(),
@@ -259,7 +261,10 @@ data class SeerrCreateRequestBody(
     val mediaType: String,
     val mediaId: Int,
     val is4k: Boolean = false,
-    val seasons: List<Int>? = null
+    val seasons: List<Int>? = null,
+    val serverId: Int? = null,
+    val profileId: Int? = null,
+    val rootFolder: String? = null
 )
 
 @Serializable
@@ -276,9 +281,39 @@ data class SeerrPageInfoDto(
 )
 
 @Serializable
+data class SeerrArrProfileDto(
+    val id: Int,
+    val name: String = ""
+)
+
+@Serializable
+data class SeerrArrRootFolderDto(
+    val id: Int? = null,
+    val path: String = ""
+)
+
+@Serializable
 data class SeerrArrServerDto(
     val id: Int,
     val name: String? = null,
     val is4k: Boolean = false,
-    val isDefault: Boolean = false
+    val isDefault: Boolean = false,
+    val activeProfileId: Int? = null,
+    val activeDirectory: String? = null,
+    val profiles: List<SeerrArrProfileDto> = emptyList(),
+    val rootFolders: List<SeerrArrRootFolderDto> = emptyList()
+)
+
+@Serializable
+data class SeerrArrServerDetailsResponseDto(
+    val server: SeerrArrServerDto? = null,
+    val profiles: List<SeerrArrProfileDto> = emptyList(),
+    val rootFolders: List<SeerrArrRootFolderDto> = emptyList()
+)
+
+@Serializable
+data class SeerrCreateIssueBody(
+    val issueType: Int,
+    val message: String,
+    val mediaId: Int
 )

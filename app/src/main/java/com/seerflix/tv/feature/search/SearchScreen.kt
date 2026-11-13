@@ -135,7 +135,12 @@ fun SearchContent(
             OutlinedTextField(
                 value = state.query,
                 onValueChange = onQueryChange,
-                placeholder = { Text("Search movies, TV shows, or cast (Library + Seerr)...") },
+                placeholder = {
+                    Text(
+                        if (state.isSeerrConfigured) "Search movies, TV shows, or cast (Library + Seerr)..."
+                        else "Search movies & TV shows in your Jellyfin library..."
+                    )
+                },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = colors.textSecondary) },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(

@@ -94,6 +94,8 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.tvprovider)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.zxing.core)
     implementation(libs.newpipe.extractor)
 
     testImplementation(libs.junit)

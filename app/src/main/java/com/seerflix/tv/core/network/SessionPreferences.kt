@@ -74,10 +74,15 @@ class SessionPreferences private constructor(
 
     private object Keys {
         val JELLYFIN_URL = stringPreferencesKey("jellyfin_url")
+        val JELLYFIN_LOCAL_URL = stringPreferencesKey("jellyfin_local_url")
         val SEERR_URL = stringPreferencesKey("seerr_url")
+        val SEERR_LOCAL_URL = stringPreferencesKey("seerr_local_url")
+        val TRUST_SELF_SIGNED = stringPreferencesKey("trust_self_signed")
         val DEVICE_ID = stringPreferencesKey("device_id")
         val PROFILES_JSON = stringPreferencesKey("profiles_json")
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
+        val TRACKED_REQUESTS_JSON = stringPreferencesKey("tracked_requests_json")
+        val READY_ALERTS_JSON = stringPreferencesKey("ready_alerts_json")
 
         fun localMyList(profileId: String) = stringPreferencesKey("local_my_list_$profileId")
         fun reminders(profileId: String) = stringPreferencesKey("reminders_$profileId")
@@ -88,7 +93,27 @@ class SessionPreferences private constructor(
         private set
 
     @Volatile
+    var cachedJellyfinLocalUrl: String = ""
+        private set
+
+    @Volatile
     var cachedSeerrUrl: String = ""
+        private set
+
+    @Volatile
+    var cachedSeerrLocalUrl: String = ""
+        private set
+
+    @Volatile
+    var cachedResolvedJellyfinUrl: String = ""
+        internal set
+
+    @Volatile
+    var cachedResolvedSeerrUrl: String = ""
+        internal set
+
+    @Volatile
+    var cachedTrustSelfSigned: Boolean = false
         private set
 
     @Volatile
@@ -103,15 +128,53 @@ class SessionPreferences private constructor(
     var cachedSeerrCookie: String? = null
         private set
 
+    @Volatile
+    var cachedMetadataLanguage: String = "en"
+        private set
+
+    @Volatile
+    var cachedUiLanguage: String = "en"
+        private set
+
+    val isSeerrConfigured: Boolean
+        get() = cachedSeerrUrl.isNotBlank() || cachedSeerrLocalUrl.isNotBlank()
+
+    val jellyfinUrlCandidates: List<String>
+        get() = buildList {
+            if (cachedResolvedJellyfinUrl.isNotBlank()) add(cachedResolvedJellyfinUrl)
+            if (cachedJellyfinLocalUrl.isNotBlank()) add(cachedJellyfinLocalUrl)
+            if (cachedJellyfinUrl.isNotBlank()) add(cachedJellyfinUrl)
+        }.distinct()
+
+    val seerrUrlCandidates: List<String>
+        get() = buildList {
+            if (cachedResolvedSeerrUrl.isNotBlank()) add(cachedResolvedSeerrUrl)
+            if (cachedSeerrLocalUrl.isNotBlank()) add(cachedSeerrLocalUrl)
+            if (cachedSeerrUrl.isNotBlank()) add(cachedSeerrUrl)
+        }.distinct()
+
     val serverConfigFlow: Flow<ServerConfig> = dataStore.data.map { prefs ->
         val deviceId = prefs[Keys.DEVICE_ID] ?: UUID.randomUUID().toString()
+        val trust = prefs[Keys.TRUST_SELF_SIGNED] == "true"
         val config = ServerConfig(
             jellyfinUrl = prefs[Keys.JELLYFIN_URL].orEmpty(),
             seerrUrl = prefs[Keys.SEERR_URL].orEmpty(),
-            deviceId = deviceId
+            deviceId = deviceId,
+            jellyfinLocalUrl = prefs[Keys.JELLYFIN_LOCAL_URL].orEmpty(),
+            seerrLocalUrl = prefs[Keys.SEERR_LOCAL_URL].orEmpty(),
+            trustSelfSignedCerts = trust
         )
         cachedJellyfinUrl = config.jellyfinUrl
+        cachedJellyfinLocalUrl = config.jellyfinLocalUrl
         cachedSeerrUrl = config.seerrUrl
+        cachedSeerrLocalUrl = config.seerrLocalUrl
+        cachedTrustSelfSigned = trust
+        if (cachedResolvedJellyfinUrl.isBlank() || cachedResolvedJellyfinUrl !in config.jellyfinCandidates) {
+            cachedResolvedJellyfinUrl = config.jellyfinCandidates.firstOrNull().orEmpty()
+        }
+        if (cachedResolvedSeerrUrl.isBlank() || cachedResolvedSeerrUrl !in config.seerrCandidates) {
+            cachedResolvedSeerrUrl = config.seerrCandidates.firstOrNull().orEmpty()
+        }
         cachedDeviceId = deviceId
         config
     }
@@ -128,7 +191,16 @@ class SessionPreferences private constructor(
         val found = list.firstOrNull { it.id == activeId }
         cachedToken = found?.jellyfinToken
         cachedSeerrCookie = found?.seerrCookie
+        cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
+        cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
         found
+    }
+
+    val readyAlertsFlow: Flow<List<com.seerflix.tv.core.model.ReadyRequestAlert>> = dataStore.data.map { prefs ->
+        val raw = prefs[Keys.READY_ALERTS_JSON] ?: return@map emptyList()
+        runCatching {
+            json.decodeFromString<List<com.seerflix.tv.core.model.ReadyRequestAlert>>(raw)
+        }.getOrDefault(emptyList())
     }
 
     suspend fun warmup() {
@@ -141,14 +213,30 @@ class SessionPreferences private constructor(
         }
     }
 
-    suspend fun saveServerUrls(jellyfinUrl: String, seerrUrl: String) {
+    suspend fun saveServerUrls(
+        jellyfinUrl: String,
+        seerrUrl: String,
+        jellyfinLocalUrl: String = "",
+        seerrLocalUrl: String = "",
+        trustSelfSignedCerts: Boolean = false
+    ) {
         val cleanJf = normalizeUrl(jellyfinUrl)
+        val cleanJfLocal = normalizeUrl(jellyfinLocalUrl)
         val cleanSeerr = normalizeUrl(seerrUrl)
+        val cleanSeerrLocal = normalizeUrl(seerrLocalUrl)
         cachedJellyfinUrl = cleanJf
+        cachedJellyfinLocalUrl = cleanJfLocal
         cachedSeerrUrl = cleanSeerr
+        cachedSeerrLocalUrl = cleanSeerrLocal
+        cachedTrustSelfSigned = trustSelfSignedCerts
+        cachedResolvedJellyfinUrl = cleanJfLocal.ifBlank { cleanJf }
+        cachedResolvedSeerrUrl = cleanSeerrLocal.ifBlank { cleanSeerr }
         dataStore.edit { prefs ->
             prefs[Keys.JELLYFIN_URL] = cleanJf
+            prefs[Keys.JELLYFIN_LOCAL_URL] = cleanJfLocal
             prefs[Keys.SEERR_URL] = cleanSeerr
+            prefs[Keys.SEERR_LOCAL_URL] = cleanSeerrLocal
+            prefs[Keys.TRUST_SELF_SIGNED] = trustSelfSignedCerts.toString()
             if (prefs[Keys.DEVICE_ID].isNullOrBlank()) {
                 prefs[Keys.DEVICE_ID] = cachedDeviceId
             }
@@ -173,7 +261,19 @@ class SessionPreferences private constructor(
                     autoSkipIntro = existing.autoSkipIntro,
                     autoSkipRecap = existing.autoSkipRecap,
                     frameRateMatchMode = existing.frameRateMatchMode,
-                    uiPreset = existing.uiPreset
+                    uiPreset = existing.uiPreset,
+                    kidsMode = existing.kidsMode,
+                    maxContentRating = existing.maxContentRating,
+                    allowKidsRequests = existing.allowKidsRequests,
+                    audioPassthroughEnabled = existing.audioPassthroughEnabled,
+                    stereoDownmixEnabled = existing.stereoDownmixEnabled,
+                    assSubtitleMode = existing.assSubtitleMode,
+                    defaultStartupTab = existing.defaultStartupTab,
+                    pinnedLibraryIds = existing.pinnedLibraryIds,
+                    hiddenHomeRowIds = existing.hiddenHomeRowIds,
+                    homeRowOrder = existing.homeRowOrder,
+                    metadataLanguage = existing.metadataLanguage,
+                    uiLanguage = existing.uiLanguage
                 )
             } else profile
             val updated = current.filterNot { it.id == profile.id } + merged
@@ -182,6 +282,8 @@ class SessionPreferences private constructor(
         }
         cachedToken = profile.jellyfinToken
         cachedSeerrCookie = profile.seerrCookie
+        cachedMetadataLanguage = profile.metadataLanguage.ifBlank { "en" }
+        cachedUiLanguage = profile.uiLanguage.ifBlank { "en" }
     }
 
     suspend fun updateProfilePreferences(updatedProfile: UserProfile) {
@@ -193,6 +295,10 @@ class SessionPreferences private constructor(
                 if (it.id == updatedProfile.id) updatedProfile else it
             }
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+            if (prefs[Keys.ACTIVE_PROFILE_ID] == updatedProfile.id) {
+                cachedMetadataLanguage = updatedProfile.metadataLanguage.ifBlank { "en" }
+                cachedUiLanguage = updatedProfile.uiLanguage.ifBlank { "en" }
+            }
         }
     }
 
@@ -217,7 +323,10 @@ class SessionPreferences private constructor(
     suspend fun updatePlaybackPreferences(
         autoSkipIntro: Boolean? = null,
         autoSkipRecap: Boolean? = null,
-        frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null
+        frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null,
+        audioPassthroughEnabled: Boolean? = null,
+        stereoDownmixEnabled: Boolean? = null,
+        assSubtitleMode: com.seerflix.tv.core.model.AssSubtitleMode? = null
     ) {
         dataStore.edit { prefs ->
             val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
@@ -229,7 +338,10 @@ class SessionPreferences private constructor(
                     it.copy(
                         autoSkipIntro = autoSkipIntro ?: it.autoSkipIntro,
                         autoSkipRecap = autoSkipRecap ?: it.autoSkipRecap,
-                        frameRateMatchMode = frameRateMatchMode ?: it.frameRateMatchMode
+                        frameRateMatchMode = frameRateMatchMode ?: it.frameRateMatchMode,
+                        audioPassthroughEnabled = audioPassthroughEnabled ?: it.audioPassthroughEnabled,
+                        stereoDownmixEnabled = stereoDownmixEnabled ?: it.stereoDownmixEnabled,
+                        assSubtitleMode = assSubtitleMode ?: it.assSubtitleMode
                     )
                 } else it
             }
@@ -250,12 +362,45 @@ class SessionPreferences private constructor(
         }
     }
 
+    suspend fun getTrackedPendingRequestIds(): Set<Int> {
+        val raw = dataStore.data.first()[Keys.TRACKED_REQUESTS_JSON] ?: return emptySet()
+        return runCatching { json.decodeFromString<Set<Int>>(raw) }.getOrDefault(emptySet())
+    }
+
+    suspend fun saveTrackedPendingRequestIds(ids: Set<Int>) {
+        dataStore.edit { prefs ->
+            prefs[Keys.TRACKED_REQUESTS_JSON] = json.encodeToString(ids)
+        }
+    }
+
+    suspend fun addReadyRequestAlerts(alerts: List<com.seerflix.tv.core.model.ReadyRequestAlert>) {
+        if (alerts.isEmpty()) return
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.READY_ALERTS_JSON]?.let {
+                runCatching { json.decodeFromString<List<com.seerflix.tv.core.model.ReadyRequestAlert>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val merged = (alerts + current).distinctBy { it.requestId }.take(10)
+            prefs[Keys.READY_ALERTS_JSON] = json.encodeToString(merged)
+        }
+    }
+
+    suspend fun dismissReadyAlert(requestId: Int) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.READY_ALERTS_JSON]?.let {
+                runCatching { json.decodeFromString<List<com.seerflix.tv.core.model.ReadyRequestAlert>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            prefs[Keys.READY_ALERTS_JSON] = json.encodeToString(current.filterNot { it.requestId == requestId })
+        }
+    }
+
     suspend fun setActiveProfile(profileId: String?) {
         dataStore.edit { prefs ->
             if (profileId == null) {
                 prefs.remove(Keys.ACTIVE_PROFILE_ID)
                 cachedToken = null
                 cachedSeerrCookie = null
+                cachedMetadataLanguage = "en"
+                cachedUiLanguage = "en"
             } else {
                 prefs[Keys.ACTIVE_PROFILE_ID] = profileId
                 val current = prefs[Keys.PROFILES_JSON]?.let {
@@ -264,6 +409,8 @@ class SessionPreferences private constructor(
                 val found = current.firstOrNull { it.id == profileId }
                 cachedToken = found?.jellyfinToken
                 cachedSeerrCookie = found?.seerrCookie
+                cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
+                cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
             }
         }
     }
