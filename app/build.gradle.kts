@@ -17,14 +17,34 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.0"
+        versionName = "0.1.0-beta"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        val keystorePath = System.getenv("SEERFLIX_KEYSTORE_PATH")
+        val keystorePassword = System.getenv("SEERFLIX_KEYSTORE_PASSWORD")
+        val keyAlias = System.getenv("SEERFLIX_KEY_ALIAS")
+        val keyPassword = System.getenv("SEERFLIX_KEY_PASSWORD")
+        if (!keystorePath.isNullOrBlank() &&
+            !keystorePassword.isNullOrBlank() &&
+            !keyAlias.isNullOrBlank() &&
+            !keyPassword.isNullOrBlank()
+        ) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                this.keyAlias = keyAlias
+                this.keyPassword = keyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

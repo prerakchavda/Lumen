@@ -49,6 +49,8 @@ class OnboardingNetworkingAndUpdatesTest {
 
     @Test
     fun `AppUpdateChecker compares semantic versions and parses GitHub release APK asset`() {
+        assertTrue(AppUpdateChecker.isNewerVersion("0.1.0-beta", "v0.1.1"))
+        assertTrue(AppUpdateChecker.isNewerVersion("0.1.0-beta", "v0.2.0"))
         assertTrue(AppUpdateChecker.isNewerVersion("1.0.0", "v1.2.0"))
         assertTrue(AppUpdateChecker.isNewerVersion("1.2.0", "2.0.0"))
         assertFalse(AppUpdateChecker.isNewerVersion("1.2.0", "v1.2.0"))

@@ -11,3 +11,6 @@ captures/
 *.aab
 app/src/test/snapshots/
 .kotlin/
+*.jks
+*.keystore
+keystore.properties

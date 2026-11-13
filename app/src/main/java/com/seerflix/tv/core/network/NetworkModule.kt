@@ -1,6 +1,7 @@
 package com.seerflix.tv.core.network
 
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import com.seerflix.tv.BuildConfig
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -91,7 +92,7 @@ private class JellyfinAuthInterceptor(
         val token = prefs.cachedToken
         val deviceId = prefs.cachedDeviceId
         val authHeader = buildString {
-            append("""MediaBrowser Client="Seerflix", Device="Google TV", DeviceId="$deviceId", Version="1.0.0"""")
+            append("""MediaBrowser Client="Seerflix", Device="Google TV", DeviceId="$deviceId", Version="${BuildConfig.VERSION_NAME}"""")
             if (!token.isNullOrBlank()) {
                 append(""", Token="$token"""")
             }
