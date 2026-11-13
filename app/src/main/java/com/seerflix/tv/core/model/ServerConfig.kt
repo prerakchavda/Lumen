@@ -38,7 +38,8 @@ data class UserProfile(
     val subtitleBackgroundAlpha: Float = 0.6f,
     val autoSkipIntro: Boolean = false,
     val autoSkipRecap: Boolean = false,
-    val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF
+    val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF,
+    val uiPreset: UiPreset = UiPreset.NETFLIX
 ) {
     val hasPin: Boolean
         get() = !pinHash.isNullOrBlank()

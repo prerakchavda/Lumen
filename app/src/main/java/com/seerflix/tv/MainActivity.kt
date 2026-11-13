@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +26,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.feature.details.DetailsScreen
 import com.seerflix.tv.feature.home.HomeScreen
@@ -33,8 +35,8 @@ import com.seerflix.tv.feature.profiles.ProfilePickerScreen
 import com.seerflix.tv.feature.requests.RequestsScreen
 import com.seerflix.tv.feature.search.SearchScreen
 import com.seerflix.tv.feature.setup.SetupScreen
-import com.seerflix.tv.ui.theme.NetflixColors
 import com.seerflix.tv.ui.theme.SeerflixTheme
+import com.seerflix.tv.ui.theme.SeerflixTokens
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
@@ -51,7 +53,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         latestIntentState = intent
         setContent {
-            SeerflixTheme {
+            val activeProfile by authRepository.activeProfileFlow.collectAsState(initial = null)
+            val activePreset = activeProfile?.uiPreset ?: UiPreset.NETFLIX
+            SeerflixTheme(preset = activePreset) {
                 SeerflixNavGraph(
                     authRepository = authRepository,
                     incomingIntent = latestIntentState,
@@ -161,10 +165,10 @@ private fun SeerflixNavGraph(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(NetflixColors.Background),
+                .background(SeerflixTokens.colors.background),
             contentAlignment = Alignment.Center
         ) {
-            CircularProgressIndicator(color = NetflixColors.NetflixRed)
+            CircularProgressIndicator(color = SeerflixTokens.colors.accent)
         }
         return
     }

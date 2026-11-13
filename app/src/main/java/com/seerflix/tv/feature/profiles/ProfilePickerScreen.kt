@@ -53,8 +53,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UserProfile
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
 fun ProfilePickerScreen(
@@ -104,10 +105,12 @@ fun ProfilePickerContent(
     onSaveProfilePreferences: (UserProfile, String, Boolean) -> Unit = { _, _, _ -> },
     onRemoveProfile: (String) -> Unit = {}
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(NetflixColors.Background)
+            .background(colors.background)
     ) {
         // Top-right Manage Profiles & Server Settings buttons
         Row(
@@ -139,7 +142,7 @@ fun ProfilePickerContent(
         ) {
             Text(
                 text = if (state.isManageMode) "Manage Profiles" else "Who's watching?",
-                color = NetflixColors.White,
+                color = colors.white,
                 fontSize = 38.sp,
                 fontWeight = FontWeight.Medium
             )
@@ -187,20 +190,21 @@ fun ProfilePickerContent(
     }
 
     if (state.showAuthDialog) {
+        val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
         Dialog(onDismissRequest = onCloseAuthDialog) {
             Column(
                 modifier = Modifier
                     .width(480.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF181818))
-                    .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                    .clip(dialogShape)
+                    .background(colors.dialogSurface)
+                    .border(1.dp, colors.badgeBorder, dialogShape)
                     .padding(28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
                     text = if (state.usePasswordMode) "Sign In with Password" else "Quick Connect",
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -208,7 +212,7 @@ fun ProfilePickerContent(
                 if (!state.usePasswordMode) {
                     Text(
                         text = "Open Jellyfin or Seerr on your phone/computer → Quick Connect, and enter this code:",
-                        color = NetflixColors.TextSecondary,
+                        color = colors.textSecondary,
                         fontSize = 14.sp
                     )
 
@@ -216,13 +220,13 @@ fun ProfilePickerContent(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF262626))
-                                .border(1.dp, NetflixColors.NetflixRed, RoundedCornerShape(8.dp))
+                                .background(colors.surfaceElevated)
+                                .border(1.dp, colors.accent, RoundedCornerShape(8.dp))
                                 .padding(horizontal = 32.dp, vertical = 18.dp)
                         ) {
                             Text(
                                 text = state.quickConnectCode!!,
-                                color = NetflixColors.White,
+                                color = colors.white,
                                 fontSize = 38.sp,
                                 fontWeight = FontWeight.Black,
                                 letterSpacing = 8.sp
@@ -230,11 +234,11 @@ fun ProfilePickerContent(
                         }
                         Text(
                             text = "Waiting for approval…",
-                            color = NetflixColors.MatchGreen,
+                            color = colors.matchGreen,
                             fontSize = 13.sp
                         )
                     } else if (state.isAuthenticating) {
-                        CircularProgressIndicator(color = NetflixColors.NetflixRed)
+                        CircularProgressIndicator(color = colors.accent)
                     }
                 } else {
                     OutlinedTextField(
@@ -243,9 +247,9 @@ fun ProfilePickerContent(
                         label = { Text("Jellyfin Username") },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = NetflixColors.White,
-                            unfocusedTextColor = NetflixColors.TextPrimary,
-                            focusedBorderColor = NetflixColors.NetflixRed,
+                            focusedTextColor = colors.white,
+                            unfocusedTextColor = colors.textPrimary,
+                            focusedBorderColor = colors.accent,
                             unfocusedBorderColor = Color(0x55FFFFFF)
                         ),
                         modifier = Modifier.fillMaxWidth()
@@ -257,9 +261,9 @@ fun ProfilePickerContent(
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = NetflixColors.White,
-                            unfocusedTextColor = NetflixColors.TextPrimary,
-                            focusedBorderColor = NetflixColors.NetflixRed,
+                            focusedTextColor = colors.white,
+                            unfocusedTextColor = colors.textPrimary,
+                            focusedBorderColor = colors.accent,
                             unfocusedBorderColor = Color(0x55FFFFFF)
                         ),
                         modifier = Modifier.fillMaxWidth()
@@ -273,7 +277,7 @@ fun ProfilePickerContent(
                 }
 
                 state.errorMessage?.let { err ->
-                    Text(text = err, color = NetflixColors.NetflixRed, fontSize = 13.sp)
+                    Text(text = err, color = colors.accent, fontSize = 13.sp)
                 }
 
                 Row(
@@ -305,6 +309,7 @@ private fun TopCornerButton(
     active: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -312,12 +317,12 @@ private fun TopCornerButton(
             .clip(RoundedCornerShape(6.dp))
             .background(
                 when {
-                    active -> NetflixColors.White
-                    focused -> Color(0xFF333333)
-                    else -> Color(0xFF1F1F1F)
+                    active -> colors.white
+                    focused -> colors.surfaceElevated
+                    else -> colors.surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp)) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick)
@@ -326,13 +331,13 @@ private fun TopCornerButton(
         Icon(
             icon,
             contentDescription = label,
-            tint = if (active) NetflixColors.DeepBlack else NetflixColors.TextSecondary,
+            tint = if (active) colors.deepBlack else colors.textSecondary,
             modifier = Modifier.size(18.dp)
         )
         Spacer(Modifier.width(8.dp))
         Text(
             label,
-            color = if (active) NetflixColors.DeepBlack else NetflixColors.TextSecondary,
+            color = if (active) colors.deepBlack else colors.textSecondary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold
         )
@@ -372,18 +377,21 @@ fun PinEntryCard(
     onClear: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     Column(
         modifier = Modifier
             .width(380.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF181818))
-            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+            .clip(dialogShape)
+            .background(colors.dialogSurface)
+            .border(1.dp, colors.badgeBorder, dialogShape)
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Icon(Icons.Filled.Lock, contentDescription = null, tint = NetflixColors.NetflixRed, modifier = Modifier.size(28.dp))
-        Text("Enter PIN for $profileName", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Icon(Icons.Filled.Lock, contentDescription = null, tint = colors.accent, modifier = Modifier.size(28.dp))
+        Text("Enter PIN for $profileName", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             repeat(4) { idx ->
@@ -392,17 +400,17 @@ fun PinEntryCard(
                     modifier = Modifier
                         .size(44.dp)
                         .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF262626))
+                        .background(colors.surfaceElevated)
                         .border(
                             1.5.dp,
-                            if (filled) NetflixColors.White else Color(0x44FFFFFF),
+                            if (filled) colors.white else colors.badgeBorder,
                             RoundedCornerShape(8.dp)
                         ),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = if (filled) "●" else "",
-                        color = NetflixColors.White,
+                        color = colors.white,
                         fontSize = 22.sp
                     )
                 }
@@ -410,7 +418,7 @@ fun PinEntryCard(
         }
 
         errorMessage?.let {
-            Text(it, color = NetflixColors.NetflixRed, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(it, color = colors.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
 
         // D-pad friendly numeric keypad
@@ -457,6 +465,9 @@ private fun ProfileSettingsDialog(
     onRemove: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     var autoplayNext by remember(profile.id) { mutableStateOf(profile.autoplayNextEpisode) }
     var autoplayPreviews by remember(profile.id) { mutableStateOf(profile.autoplayPreviews) }
     var autoSkipIntro by remember(profile.id) { mutableStateOf(profile.autoSkipIntro) }
@@ -464,21 +475,39 @@ private fun ProfileSettingsDialog(
     var frameRateMatchMode by remember(profile.id) { mutableStateOf(profile.frameRateMatchMode) }
     var audioLang by remember(profile.id) { mutableStateOf(profile.preferredAudioLang) }
     var subLang by remember(profile.id) { mutableStateOf(profile.preferredSubtitleLang) }
+    var selectedPreset by remember(profile.id) { mutableStateOf(profile.uiPreset) }
     var pinCode by remember(profile.id) { mutableStateOf("") }
     var clearPin by remember(profile.id) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(520.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF181818))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .width(540.dp)
+                .clip(dialogShape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogShape)
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Profile Settings • ${profile.name}", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("Profile Settings • ${profile.name}", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+
+            Text("UI Preset", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                UiPreset.entries.forEach { preset ->
+                    PrefChip(
+                        label = preset.displayName,
+                        selected = selectedPreset == preset,
+                        onClick = { selectedPreset = preset },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            Text(
+                text = selectedPreset.subtitle,
+                color = colors.textMuted,
+                fontSize = 11.sp
+            )
 
             PreferenceSwitchRow(
                 label = "Autoplay Next Episode",
@@ -501,7 +530,7 @@ private fun ProfileSettingsDialog(
                 onToggle = { autoSkipRecap = !autoSkipRecap }
             )
 
-            Text("24fps Frame-Rate Matching", color = NetflixColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("24fps Frame-Rate Matching", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 com.seerflix.tv.core.model.FrameRateMatchMode.entries.forEach { mode ->
                     PrefChip(
@@ -513,7 +542,7 @@ private fun ProfileSettingsDialog(
                 }
             }
 
-            Text("Preferred Audio Language", color = NetflixColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("Preferred Audio Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(null to "Default", "eng" to "English", "spa" to "Spanish", "jpn" to "Japanese").forEach { (code, label) ->
                     PrefChip(
@@ -525,7 +554,7 @@ private fun ProfileSettingsDialog(
                 }
             }
 
-            Text("Preferred Subtitle Language", color = NetflixColors.TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text("Preferred Subtitle Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(null to "Default", "off" to "Off", "eng" to "English", "spa" to "Spanish").forEach { (code, label) ->
                     PrefChip(
@@ -539,7 +568,7 @@ private fun ProfileSettingsDialog(
 
             Text(
                 text = if (profile.hasPin && !clearPin) "Profile PIN (Currently Locked)" else "Set 4-Digit Profile PIN",
-                color = NetflixColors.TextSecondary,
+                color = colors.textSecondary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
             )
@@ -558,9 +587,9 @@ private fun ProfileSettingsDialog(
                     visualTransformation = PasswordVisualTransformation(),
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = NetflixColors.White,
-                        unfocusedTextColor = NetflixColors.TextPrimary,
-                        focusedBorderColor = NetflixColors.NetflixRed,
+                        focusedTextColor = colors.white,
+                        unfocusedTextColor = colors.textPrimary,
+                        focusedBorderColor = colors.accent,
                         unfocusedBorderColor = Color(0x55FFFFFF)
                     ),
                     modifier = Modifier.weight(1f)
@@ -588,7 +617,8 @@ private fun ProfileSettingsDialog(
                             autoSkipRecap = autoSkipRecap,
                             frameRateMatchMode = frameRateMatchMode,
                             preferredAudioLang = audioLang,
-                            preferredSubtitleLang = subLang
+                            preferredSubtitleLang = subLang,
+                            uiPreset = selectedPreset
                         )
                         onSave(updated, pinCode, clearPin)
                     },
@@ -617,6 +647,7 @@ private fun PreferenceSwitchRow(
     checked: Boolean,
     onToggle: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -624,18 +655,18 @@ private fun PreferenceSwitchRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
-            .background(if (focused) Color(0xFF323232) else Color(0xFF232323))
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+            .background(if (focused) colors.surfaceElevated else colors.surface)
+            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
-        Text(label, color = NetflixColors.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text(label, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Medium)
         Switch(
             checked = checked,
             onCheckedChange = { onToggle() },
-            colors = SwitchDefaults.colors(checkedThumbColor = NetflixColors.White, checkedTrackColor = NetflixColors.NetflixRed)
+            colors = SwitchDefaults.colors(checkedThumbColor = colors.white, checkedTrackColor = colors.accent)
         )
     }
 }
@@ -647,18 +678,19 @@ private fun PrefChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(6.dp))
             .background(
                 when {
-                    selected -> NetflixColors.White
-                    focused -> Color(0xFF3E3E3E)
-                    else -> Color(0xFF242424)
+                    selected -> colors.white
+                    focused -> colors.surfaceElevated
+                    else -> colors.surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp)) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick)
@@ -667,7 +699,7 @@ private fun PrefChip(
     ) {
         Text(
             text = label,
-            color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+            color = if (selected) colors.deepBlack else colors.white,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
@@ -680,6 +712,7 @@ private fun NetflixAvatarTile(
     isManageMode: Boolean = false,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "avatarScale")
 
@@ -700,7 +733,7 @@ private fun NetflixAvatarTile(
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(profile.avatarColorHex))
                 .then(
-                    if (focused) Modifier.border(3.dp, NetflixColors.White, RoundedCornerShape(8.dp))
+                    if (focused) Modifier.border(3.dp, colors.focusBorder, RoundedCornerShape(8.dp))
                     else Modifier
                 ),
             contentAlignment = Alignment.Center
@@ -715,7 +748,7 @@ private fun NetflixAvatarTile(
             } else {
                 Text(
                     text = profile.name.take(1).uppercase(),
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 52.sp,
                     fontWeight = FontWeight.Black
                 )
@@ -728,7 +761,7 @@ private fun NetflixAvatarTile(
                         .background(Color(0x88000000)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Edit, contentDescription = "Edit Profile", tint = NetflixColors.White, modifier = Modifier.size(36.dp))
+                    Icon(Icons.Filled.Edit, contentDescription = "Edit Profile", tint = colors.white, modifier = Modifier.size(36.dp))
                 }
             } else if (profile.hasPin) {
                 Box(
@@ -737,25 +770,43 @@ private fun NetflixAvatarTile(
                         .padding(8.dp)
                         .size(26.dp)
                         .clip(CircleShape)
-                        .background(Color(0xCC141414)),
+                        .background(colors.background.copy(alpha = 0.8f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Lock, contentDescription = "PIN Protected", tint = NetflixColors.White, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Filled.Lock, contentDescription = "PIN Protected", tint = colors.white, modifier = Modifier.size(14.dp))
                 }
             }
         }
         Spacer(Modifier.height(12.dp))
         Text(
             text = profile.name,
-            color = if (focused) NetflixColors.White else NetflixColors.TextSecondary,
+            color = if (focused) colors.white else colors.textSecondary,
             fontSize = 16.sp,
             fontWeight = if (focused) FontWeight.Bold else FontWeight.Normal
         )
+        if (isManageMode) {
+            Spacer(Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(profile.uiPreset.accentHex).copy(alpha = 0.22f))
+                    .border(1.dp, Color(profile.uiPreset.accentHex).copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = profile.uiPreset.shortLabel,
+                    color = colors.textPrimary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun AddProfileTile(onClick: () -> Unit) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "addProfileScale")
 
@@ -774,24 +825,24 @@ private fun AddProfileTile(onClick: () -> Unit) {
             modifier = Modifier
                 .size(132.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(if (focused) Color(0xFF3A3A3A) else Color(0xFF242424))
+                .background(if (focused) colors.surfaceElevated else colors.surface)
                 .then(
-                    if (focused) Modifier.border(3.dp, NetflixColors.White, RoundedCornerShape(8.dp))
-                    else Modifier.border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(8.dp))
+                    if (focused) Modifier.border(3.dp, colors.focusBorder, RoundedCornerShape(8.dp))
+                    else Modifier.border(1.dp, colors.badgeBorder, RoundedCornerShape(8.dp))
                 ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = Icons.Filled.Add,
                 contentDescription = "Add Profile",
-                tint = NetflixColors.TextSecondary,
+                tint = colors.textSecondary,
                 modifier = Modifier.size(52.dp)
             )
         }
         Spacer(Modifier.height(12.dp))
         Text(
             text = "Add Profile",
-            color = if (focused) NetflixColors.White else NetflixColors.TextSecondary,
+            color = if (focused) colors.white else colors.textSecondary,
             fontSize = 16.sp
         )
     }
@@ -804,6 +855,7 @@ private fun DialogButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
@@ -811,18 +863,18 @@ private fun DialogButton(
             .clip(RoundedCornerShape(6.dp))
             .background(
                 when {
-                    isPrimary -> NetflixColors.NetflixRed
-                    focused -> Color(0xFF3E3E3E)
-                    else -> Color(0xFF2B2B2B)
+                    isPrimary -> colors.accent
+                    focused -> colors.surfaceElevated
+                    else -> colors.surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(text = text, color = NetflixColors.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        Text(text = text, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 

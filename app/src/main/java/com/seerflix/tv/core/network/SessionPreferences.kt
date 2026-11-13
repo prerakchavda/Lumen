@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.ServerConfig
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -171,7 +172,8 @@ class SessionPreferences private constructor(
                     subtitleBackgroundAlpha = existing.subtitleBackgroundAlpha,
                     autoSkipIntro = existing.autoSkipIntro,
                     autoSkipRecap = existing.autoSkipRecap,
-                    frameRateMatchMode = existing.frameRateMatchMode
+                    frameRateMatchMode = existing.frameRateMatchMode,
+                    uiPreset = existing.uiPreset
                 )
             } else profile
             val updated = current.filterNot { it.id == profile.id } + merged
@@ -230,6 +232,19 @@ class SessionPreferences private constructor(
                         frameRateMatchMode = frameRateMatchMode ?: it.frameRateMatchMode
                     )
                 } else it
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+        }
+    }
+
+    suspend fun updateActiveUiPreset(preset: UiPreset) {
+        dataStore.edit { prefs ->
+            val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val updated = current.map {
+                if (it.id == activeId) it.copy(uiPreset = preset) else it
             }
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
         }

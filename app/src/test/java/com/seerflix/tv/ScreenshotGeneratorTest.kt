@@ -41,6 +41,7 @@ import com.seerflix.tv.core.model.QualityPreset
 import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.RowStyle
 import com.seerflix.tv.core.model.SeasonSummary
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.feature.details.DetailsContent
@@ -61,8 +62,10 @@ import com.seerflix.tv.feature.search.SearchContent
 import com.seerflix.tv.feature.search.SearchUiState
 import com.seerflix.tv.feature.setup.SetupContent
 import com.seerflix.tv.feature.setup.SetupUiState
+import com.seerflix.tv.ui.components.UiPresetPickerCard
 import com.seerflix.tv.ui.theme.NetflixColors
 import com.seerflix.tv.ui.theme.SeerflixTheme
+import com.seerflix.tv.ui.theme.SeerflixTokens
 import org.junit.Rule
 import org.junit.Test
 import kotlin.math.abs
@@ -767,8 +770,176 @@ class ScreenshotGeneratorTest {
         }
     }
 
+    @Test
+    fun homeAppleTv() {
+        val state = sampleHomeState(UiPreset.APPLE_TV)
+        snapshotScreen("home_apple_tv", preset = UiPreset.APPLE_TV) {
+            HomeContent(
+                state = state,
+                onOpenDetails = {},
+                onPlayDirect = {},
+                onOpenSearch = {},
+                onOpenRequests = {},
+                onSwitchProfile = {},
+                onOpenSettings = {},
+                onSelectTab = {},
+                onRefresh = {},
+                onTogglePreviewMute = {},
+                onItemFocused = {}
+            )
+        }
+    }
+    @Test
+    fun homeDisneyPlus() {
+        val state = sampleHomeState(UiPreset.DISNEY_PLUS)
+        snapshotScreen("home_disney_plus", preset = UiPreset.DISNEY_PLUS) {
+            HomeContent(
+                state = state,
+                onOpenDetails = {},
+                onPlayDirect = {},
+                onOpenSearch = {},
+                onOpenRequests = {},
+                onSwitchProfile = {},
+                onOpenSettings = {},
+                onSelectTab = {},
+                onRefresh = {},
+                onTogglePreviewMute = {},
+                onItemFocused = {}
+            )
+        }
+    }
+
+    @Test
+    fun appearancePicker() {
+        snapshotScreen("appearance_picker", preset = UiPreset.APPLE_TV) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(SeerflixTokens.colors.background),
+                contentAlignment = Alignment.Center
+            ) {
+                UiPresetPickerCard(
+                    profileName = "Prerak",
+                    currentPreset = UiPreset.APPLE_TV,
+                    onSelectPreset = {},
+                    onDismiss = {}
+                )
+            }
+        }
+    }
+
+    private fun sampleHomeState(preset: UiPreset): HomeUiState {
+        val dune = sampleDune()
+        return HomeUiState(
+            activeTab = HomeTab.HOME,
+            profile = UserProfile("1", "Prerak", "1", "token", avatarColorHex = 0xFFE50914, uiPreset = preset),
+            featuredItem = dune,
+            activeDownloadCount = 2,
+            isLoading = false,
+            rows = listOf(
+                CatalogRow(
+                    id = "continue_watching",
+                    title = "Continue Watching for Prerak",
+                    style = RowStyle.CONTINUE_WATCHING,
+                    items = listOf(
+                        UnifiedMediaItem(
+                            id = "cw_sev",
+                            tmdbId = 95396,
+                            jellyfinId = "jf_sev_ep",
+                            mediaType = MediaType.SERIES,
+                            title = "Severance",
+                            episodeLabel = "S2 • E4",
+                            backdropUrl = "art://backdrop/severance/SEVERANCE/0xFF0E3A4C/0xFF1CC8B8",
+                            runtimeTicks = 30_000_000_000L,
+                            resumePositionTicks = 18_600_000_000L,
+                            hdStatus = AvailabilityTier.AVAILABLE,
+                            uhdStatus = AvailabilityTier.AVAILABLE
+                        ),
+                        UnifiedMediaItem(
+                            id = "cw_tlou",
+                            tmdbId = 100088,
+                            jellyfinId = "jf_tlou_ep",
+                            mediaType = MediaType.SERIES,
+                            title = "The Last of Us",
+                            episodeLabel = "S2 • E1",
+                            backdropUrl = "art://backdrop/tlou/THE LAST OF US/0xFF283518/0xFFD99B38",
+                            runtimeTicks = 36_000_000_000L,
+                            resumePositionTicks = 12_600_000_000L,
+                            hdStatus = AvailabilityTier.AVAILABLE
+                        ),
+                        UnifiedMediaItem(
+                            id = "cw_arc",
+                            tmdbId = 94605,
+                            jellyfinId = "jf_arc_ep",
+                            mediaType = MediaType.SERIES,
+                            title = "Arcane",
+                            episodeLabel = "S2 • E7",
+                            backdropUrl = "art://backdrop/arcane/ARCANE/0xFF20133A/0xFFE91E63",
+                            runtimeTicks = 24_000_000_000L,
+                            resumePositionTicks = 19_200_000_000L,
+                            hdStatus = AvailabilityTier.AVAILABLE,
+                            uhdStatus = AvailabilityTier.AVAILABLE
+                        )
+                    )
+                ),
+                CatalogRow(
+                    id = "top_10_movies",
+                    title = "Top 10 Movies on Seerflix Today",
+                    style = RowStyle.TOP_10,
+                    items = listOf(
+                        dune,
+                        samplePosterItem(
+                            "m2", "Interstellar", "art://poster/interstellar/INTERSTELLAR/0xFF0E1B38/0xFFF4B942",
+                            uhd = AvailabilityTier.AVAILABLE, hd = AvailabilityTier.AVAILABLE, jfId = "jf2",
+                            backdropUrl = "art://backdrop/interstellar/INTERSTELLAR/0xFF0E1B38/0xFFF4B942"
+                        ),
+                        samplePosterItem(
+                            "m3", "The Brutalist", "art://poster/brutalist/THE BRUTALIST/0xFF292421/0xFFE07A5F",
+                            hd = AvailabilityTier.PROCESSING,
+                            hdDl = DownloadProgressInfo(false, "downloading", "2160p", 100L, 11L, 89f, "~2m left", null),
+                            backdropUrl = "art://backdrop/brutalist/THE BRUTALIST/0xFF292421/0xFFE07A5F"
+                        ),
+                        samplePosterItem(
+                            "m4", "Blade Runner 2049", "art://poster/br2049/BLADE RUNNER/0xFF3E1810/0xFFFF9800",
+                            uhd = AvailabilityTier.AVAILABLE, hd = AvailabilityTier.AVAILABLE, jfId = "jf4",
+                            backdropUrl = "art://backdrop/br2049/BLADE RUNNER/0xFF3E1810/0xFFFF9800"
+                        )
+                    )
+                ),
+                CatalogRow(
+                    id = "trending",
+                    title = "Trending Now",
+                    style = RowStyle.POSTER,
+                    items = listOf(
+                        samplePosterItem(
+                            "t1", "Severance", "art://poster/sev/SEVERANCE/0xFF0E3A4C/0xFF1CC8B8",
+                            hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jft1",
+                            backdropUrl = "art://backdrop/sev/SEVERANCE/0xFF0E3A4C/0xFF1CC8B8"
+                        ),
+                        samplePosterItem(
+                            "t2", "Cyberpunk: Edgerunners", "art://poster/cp/EDGERUNNERS/0xFF1E133D/0xFF00E5FF",
+                            hd = AvailabilityTier.AVAILABLE, jfId = "jft2",
+                            backdropUrl = "art://backdrop/cp/EDGERUNNERS/0xFF1E133D/0xFF00E5FF"
+                        ),
+                        samplePosterItem(
+                            "t3", "Daredevil: Born Again", "art://poster/dd/DAREDEVIL/0xFF3D0A0E/0xFFE50914",
+                            hd = AvailabilityTier.PENDING,
+                            backdropUrl = "art://backdrop/dd/DAREDEVIL/0xFF3D0A0E/0xFFE50914"
+                        ),
+                        samplePosterItem(
+                            "t4", "Shōgun", "art://poster/shogun/SHOGUN/0xFF2B1B17/0xFFD4AF37",
+                            hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jft4",
+                            backdropUrl = "art://backdrop/shogun/SHOGUN/0xFF2B1B17/0xFFD4AF37"
+                        )
+                    )
+                )
+            )
+        )
+    }
+
     private fun snapshotScreen(
         name: String,
+        preset: UiPreset = UiPreset.NETFLIX,
         content: @androidx.compose.runtime.Composable () -> Unit
     ) {
         paparazzi.snapshot(name = name) {
@@ -776,7 +947,7 @@ class ScreenshotGeneratorTest {
                 LocalInspectionMode provides true,
                 LocalAsyncImagePreviewHandler provides artworkPreviewHandler
             ) {
-                SeerflixTheme {
+                SeerflixTheme(preset = preset) {
                     content()
                 }
             }
@@ -812,7 +983,8 @@ class ScreenshotGeneratorTest {
         hd: AvailabilityTier = AvailabilityTier.UNKNOWN,
         uhd: AvailabilityTier = AvailabilityTier.UNKNOWN,
         jfId: String? = null,
-        hdDl: DownloadProgressInfo? = null
+        hdDl: DownloadProgressInfo? = null,
+        backdropUrl: String? = null
     ) = UnifiedMediaItem(
         id = id,
         tmdbId = abs(id.hashCode()),
@@ -820,6 +992,7 @@ class ScreenshotGeneratorTest {
         mediaType = MediaType.MOVIE,
         title = title,
         posterUrl = posterUrl,
+        backdropUrl = backdropUrl,
         hdStatus = hd,
         uhdStatus = uhd,
         hdDownload = hdDl

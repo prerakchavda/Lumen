@@ -49,7 +49,7 @@ import coil3.compose.AsyncImage
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaType
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
 fun RequestsScreen(
@@ -75,10 +75,11 @@ fun RequestsContent(
     onSelectFilter: (RequestFilter) -> Unit,
     onOpenRequestDetails: (tmdbId: Int, mediaType: MediaType) -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(NetflixColors.Background)
+            .background(colors.background)
             .padding(horizontal = 48.dp, vertical = 28.dp)
     ) {
         Row(
@@ -91,13 +92,13 @@ fun RequestsContent(
                 Column {
                     Text(
                         text = "Requests & Downloads",
-                        color = NetflixColors.White,
+                        color = colors.white,
                         fontSize = 26.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = "Live status synced with Seerr v3+ • Auto-refreshes every 15s",
-                        color = NetflixColors.TextSecondary,
+                        color = colors.textSecondary,
                         fontSize = 13.sp
                     )
                 }
@@ -123,15 +124,15 @@ fun RequestsContent(
         Box(modifier = Modifier.fillMaxSize()) {
             when {
                 state.isLoading -> {
-                    CircularProgressIndicator(color = NetflixColors.NetflixRed, modifier = Modifier.align(Alignment.Center))
+                    CircularProgressIndicator(color = colors.accent, modifier = Modifier.align(Alignment.Center))
                 }
                 state.errorMessage != null -> {
-                    Text(state.errorMessage!!, color = NetflixColors.NetflixRed, modifier = Modifier.align(Alignment.Center))
+                    Text(state.errorMessage!!, color = colors.accent, modifier = Modifier.align(Alignment.Center))
                 }
                 state.visibleRequests.isEmpty() -> {
                     Text(
                         text = "No requests in this view yet.",
-                        color = NetflixColors.TextSecondary,
+                        color = colors.textSecondary,
                         fontSize = 15.sp,
                         modifier = Modifier.align(Alignment.Center)
                     )
@@ -163,17 +164,20 @@ private fun RequestItemCard(
     req: MediaRequestSummary,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (focused) Color(0xFF282828) else Color(0xFF1B1B1B))
+            .clip(corner)
+            .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(
-                if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
-                else Modifier.border(1.dp, Color(0x1EFFFFFF), RoundedCornerShape(8.dp))
+                if (focused) Modifier.border(2.dp, colors.focusBorder, corner)
+                else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
             )
             .onFocusChanged { focused = it.isFocused }
             .focusable()
@@ -188,7 +192,7 @@ private fun RequestItemCard(
                 .width(64.dp)
                 .aspectRatio(2f / 3f)
                 .clip(RoundedCornerShape(4.dp))
-                .background(NetflixColors.SurfaceElevated)
+                .background(colors.surfaceElevated)
         )
 
         Spacer(Modifier.width(18.dp))
@@ -200,7 +204,7 @@ private fun RequestItemCard(
             ) {
                 Text(
                     text = req.title,
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -209,12 +213,12 @@ private fun RequestItemCard(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
-                        .background(if (req.is4k) Color(0xFF3B2C0A) else Color(0xFF2A2A2A))
+                        .background(if (req.is4k) colors.pendingAmber.copy(alpha = 0.22f) else colors.surfaceElevated)
                         .padding(horizontal = 7.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = if (req.is4k) "4K" else "HD",
-                        color = if (req.is4k) NetflixColors.PendingAmber else NetflixColors.White,
+                        color = if (req.is4k) colors.pendingAmber else colors.white,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -224,17 +228,17 @@ private fun RequestItemCard(
             Spacer(Modifier.height(4.dp))
             Text(
                 text = "Requested by ${req.requestedBy} • ${if (req.mediaType == MediaType.MOVIE) "Movie" else "TV Series"}",
-                color = NetflixColors.TextSecondary,
+                color = colors.textSecondary,
                 fontSize = 12.sp
             )
 
             Spacer(Modifier.height(8.dp))
 
             val statusColor = when {
-                req.downloadProgress != null || req.mediaStatus == AvailabilityTier.PROCESSING -> NetflixColors.DownloadingBlue
-                req.mediaStatus.isInLibrary -> NetflixColors.MatchGreen
-                req.requestStatus == 3 -> NetflixColors.NetflixRed
-                else -> NetflixColors.PendingAmber
+                req.downloadProgress != null || req.mediaStatus == AvailabilityTier.PROCESSING -> colors.downloadingBlue
+                req.mediaStatus.isInLibrary -> colors.matchGreen
+                req.requestStatus == 3 -> colors.accent
+                else -> colors.pendingAmber
             }
 
             Text(
@@ -258,7 +262,7 @@ private fun RequestItemCard(
                         modifier = Modifier
                             .fillMaxWidth(frac)
                             .fillMaxHeight()
-                            .background(NetflixColors.NetflixRed)
+                            .background(colors.progressFill)
                     )
                 }
             }
@@ -272,18 +276,19 @@ private fun FilterChip(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
             .background(
                 when {
-                    selected -> NetflixColors.White
-                    focused -> Color(0xFF3A3A3A)
-                    else -> Color(0xFF232323)
+                    selected -> colors.white
+                    focused -> colors.surfaceElevated
+                    else -> colors.surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(20.dp)) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(20.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick)
@@ -291,7 +296,7 @@ private fun FilterChip(
     ) {
         Text(
             text = label,
-            color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+            color = if (selected) colors.deepBlack else colors.white,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold
         )
@@ -304,18 +309,19 @@ private fun FocusIconButton(
     description: String,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .size(44.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(if (focused) Color(0xFF3A3A3A) else Color(0xFF232323))
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(22.dp)) else Modifier)
+            .background(if (focused) colors.surfaceElevated else colors.surface)
+            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(22.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = description, tint = NetflixColors.White)
+        Icon(icon, contentDescription = description, tint = colors.white)
     }
 }

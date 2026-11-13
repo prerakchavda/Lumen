@@ -67,7 +67,7 @@ import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.components.NetflixPosterCard
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
 fun DetailsScreen(
@@ -123,15 +123,16 @@ fun DetailsContent(
     onRequestCollectionItem: (UnifiedMediaItem) -> Unit = {},
     onRequestAllMissingInCollection: () -> Unit = {}
 ) {
+    val colors = SeerflixTokens.colors
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(NetflixColors.Background)
+            .background(colors.background)
     ) {
         when {
             state.isLoading -> {
                 CircularProgressIndicator(
-                    color = NetflixColors.NetflixRed,
+                    color = colors.accent,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
@@ -140,7 +141,7 @@ fun DetailsContent(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(state.errorMessage ?: "Title not found", color = NetflixColors.NetflixRed, fontSize = 16.sp)
+                    Text(state.errorMessage ?: "Title not found", color = colors.accent, fontSize = 16.sp)
                     Spacer(Modifier.height(16.dp))
                     HeroPillButton("Go Back", Icons.AutoMirrored.Filled.ArrowBack, isPrimary = true, onClick = onBack)
                 }
@@ -183,7 +184,7 @@ fun DetailsContent(
                             Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 12.dp)) {
                                 Text(
                                     text = "Seasons & Episodes",
-                                    color = NetflixColors.White,
+                                    color = colors.white,
                                     fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -209,7 +210,7 @@ fun DetailsContent(
                                         .padding(24.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    CircularProgressIndicator(color = NetflixColors.NetflixRed, modifier = Modifier.size(28.dp))
+                                    CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(28.dp))
                                 }
                             }
                         } else {
@@ -235,7 +236,7 @@ fun DetailsContent(
                             Column(modifier = Modifier.padding(top = 24.dp)) {
                                 Text(
                                     text = "Trailers & More",
-                                    color = NetflixColors.White,
+                                    color = colors.white,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
@@ -264,7 +265,7 @@ fun DetailsContent(
                             Column(modifier = Modifier.padding(top = 24.dp)) {
                                 Text(
                                     text = "Cast",
-                                    color = NetflixColors.White,
+                                    color = colors.white,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
@@ -279,9 +280,9 @@ fun DetailsContent(
                                             modifier = Modifier
                                                 .width(108.dp)
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .background(if (castFocused) Color(0xFF242424) else Color.Transparent)
+                                                .background(if (castFocused) colors.surfaceElevated else Color.Transparent)
                                                 .then(
-                                                    if (castFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
+                                                    if (castFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp))
                                                     else Modifier
                                                 )
                                                 .onFocusChanged { castFocused = it.isFocused }
@@ -297,12 +298,12 @@ fun DetailsContent(
                                                 modifier = Modifier
                                                     .size(84.dp)
                                                     .clip(RoundedCornerShape(42.dp))
-                                                    .background(NetflixColors.SurfaceElevated)
+                                                    .background(colors.surfaceElevated)
                                             )
                                             Spacer(Modifier.height(6.dp))
                                             Text(
                                                 text = member.name,
-                                                color = if (castFocused) NetflixColors.White else NetflixColors.TextPrimary,
+                                                color = if (castFocused) colors.white else colors.textPrimary,
                                                 fontSize = 12.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 maxLines = 1,
@@ -311,7 +312,7 @@ fun DetailsContent(
                                             if (member.role.isNotBlank()) {
                                                 Text(
                                                     text = member.role,
-                                                    color = NetflixColors.TextMuted,
+                                                    color = colors.textMuted,
                                                     fontSize = 11.sp,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
@@ -344,20 +345,20 @@ fun DetailsContent(
                                     ) {
                                         Text(
                                             text = "Part of ${saga.name}",
-                                            color = NetflixColors.White,
+                                            color = colors.white,
                                             fontSize = 18.sp,
                                             fontWeight = FontWeight.Bold
                                         )
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0xFF242428))
-                                                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(4.dp))
+                                                .background(colors.secondaryButtonBg)
+                                                .border(1.dp, colors.badgeBorder, RoundedCornerShape(4.dp))
                                                 .padding(horizontal = 8.dp, vertical = 3.dp)
                                         ) {
                                             Text(
                                                 text = saga.completionLabel,
-                                                color = NetflixColors.MatchGreen,
+                                                color = colors.matchGreen,
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
@@ -399,7 +400,7 @@ fun DetailsContent(
                             Column(modifier = Modifier.padding(top = 28.dp)) {
                                 Text(
                                     text = "More Like This",
-                                    color = NetflixColors.White,
+                                    color = colors.white,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
@@ -441,6 +442,9 @@ private fun RelatedVideoCard(
     fallbackBackdropUrl: String?,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
@@ -453,11 +457,11 @@ private fun RelatedVideoCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(6.dp))
-                .background(NetflixColors.SurfaceElevated)
+                .clip(corner)
+                .background(colors.surfaceElevated)
                 .then(
-                    if (focused) Modifier.border(2.5.dp, NetflixColors.White, RoundedCornerShape(6.dp))
-                    else Modifier.border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(6.dp))
+                    if (focused) Modifier.border(2.5.dp, colors.focusBorder, corner)
+                    else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.45f), corner)
                 )
         ) {
             AsyncImage(
@@ -469,12 +473,12 @@ private fun RelatedVideoCard(
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
                 contentDescription = "Play Trailer",
-                tint = NetflixColors.White,
+                tint = colors.white,
                 modifier = Modifier
                     .size(36.dp)
                     .align(Alignment.Center)
                     .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xAA000000))
+                    .background(colors.deepBlack.copy(alpha = 0.72f))
                     .padding(6.dp)
             )
             Box(
@@ -482,16 +486,16 @@ private fun RelatedVideoCard(
                     .align(Alignment.TopStart)
                     .padding(6.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xBB0A0A0A))
+                    .background(colors.deepBlack.copy(alpha = 0.78f))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
-                Text(video.type, color = NetflixColors.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Text(video.type, color = colors.white, fontSize = 10.sp, fontWeight = FontWeight.Bold)
             }
         }
         Spacer(Modifier.height(6.dp))
         Text(
             text = video.title,
-            color = if (focused) NetflixColors.White else NetflixColors.TextSecondary,
+            color = if (focused) colors.white else colors.textSecondary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
@@ -514,6 +518,10 @@ private fun DetailsHeaderSection(
     onRemoveFromContinueWatching: () -> Unit,
     onCancelRequest: (Int) -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val backCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -531,9 +539,9 @@ private fun DetailsHeaderSection(
                 .background(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.0f to Color(0xFA141414),
-                            0.45f to Color(0xD8141414),
-                            1.0f to Color(0x33141414)
+                            0.0f to colors.background.copy(alpha = 0.98f),
+                            0.45f to colors.background.copy(alpha = 0.85f),
+                            1.0f to colors.background.copy(alpha = 0.2f)
                         )
                     )
                 )
@@ -544,9 +552,9 @@ private fun DetailsHeaderSection(
                 .background(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
-                            0.0f to Color(0x660A0A0A),
+                            0.0f to colors.deepBlack.copy(alpha = 0.4f),
                             0.60f to Color.Transparent,
-                            1.0f to NetflixColors.Background
+                            1.0f to colors.background
                         )
                     )
                 )
@@ -559,17 +567,17 @@ private fun DetailsHeaderSection(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(start = 48.dp, top = 28.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(if (backFocused) Color(0xCC333333) else Color(0x88141414))
-                .then(if (backFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+                .clip(backCorner)
+                .background(if (backFocused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
+                .then(if (backFocused) Modifier.border(2.dp, colors.focusBorder, backCorner) else Modifier)
                 .onFocusChanged { backFocused = it.isFocused }
                 .focusable()
                 .clickable(onClick = onBack)
                 .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = NetflixColors.White, modifier = Modifier.size(18.dp))
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.white, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text("Back", color = NetflixColors.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Back", color = colors.white, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
 
         Column(
@@ -588,11 +596,11 @@ private fun DetailsHeaderSection(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xAA1F1F1F))
-                            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(4.dp))
+                            .background(colors.surface.copy(alpha = 0.78f))
+                            .border(1.dp, colors.badgeBorder, RoundedCornerShape(4.dp))
                             .padding(horizontal = 7.dp, vertical = 3.dp)
                     ) {
-                        Text(text = badge, color = NetflixColors.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Text(text = badge, color = colors.white, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -612,7 +620,7 @@ private fun DetailsHeaderSection(
             } else {
                 Text(
                     text = item.title,
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 38.sp,
                     fontWeight = FontWeight.Black,
                     maxLines = 2,
@@ -627,25 +635,25 @@ private fun DetailsHeaderSection(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item.matchPercent?.let {
-                    Text("$it% Match", color = NetflixColors.MatchGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text("$it% Match", color = colors.matchGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
                 item.releaseYear?.let {
-                    Text(it, color = NetflixColors.TextSecondary, fontSize = 14.sp)
+                    Text(it, color = colors.textSecondary, fontSize = 14.sp)
                 }
                 item.maturityRating?.let {
                     Box(
                         modifier = Modifier
-                            .border(1.dp, NetflixColors.TextMuted, RoundedCornerShape(2.dp))
+                            .border(1.dp, colors.textMuted, RoundedCornerShape(2.dp))
                             .padding(horizontal = 6.dp, vertical = 1.dp)
                     ) {
-                        Text(it, color = NetflixColors.TextSecondary, fontSize = 11.sp)
+                        Text(it, color = colors.textSecondary, fontSize = 11.sp)
                     }
                 }
                 item.formattedRuntime?.let {
-                    Text(it, color = NetflixColors.TextSecondary, fontSize = 14.sp)
+                    Text(it, color = colors.textSecondary, fontSize = 14.sp)
                 }
                 if (item.genres.isNotEmpty()) {
-                    Text(item.genres.take(3).joinToString(" • "), color = NetflixColors.TextSecondary, fontSize = 13.sp)
+                    Text(item.genres.take(3).joinToString(" • "), color = colors.textSecondary, fontSize = 13.sp)
                 }
             }
 
@@ -653,7 +661,7 @@ private fun DetailsHeaderSection(
                 Spacer(Modifier.height(10.dp))
                 Text(
                     text = item.overview,
-                    color = NetflixColors.TextPrimary,
+                    color = colors.textPrimary,
                     fontSize = 14.sp,
                     lineHeight = 20.sp,
                     maxLines = 3,
@@ -673,7 +681,7 @@ private fun DetailsHeaderSection(
 
             feedbackBanner?.let { msg ->
                 Spacer(Modifier.height(8.dp))
-                Text(msg, color = NetflixColors.MatchGreen, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(msg, color = colors.matchGreen, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
 
             Spacer(Modifier.height(16.dp))
@@ -751,17 +759,18 @@ private fun DetailsHeaderSection(
 
 @Composable
 private fun TierPill(tierName: String, status: AvailabilityTier) {
+    val colors = SeerflixTokens.colors
     val (label, color) = when (status) {
-        AvailabilityTier.AVAILABLE -> "$tierName Available" to NetflixColors.MatchGreen
-        AvailabilityTier.PARTIALLY_AVAILABLE -> "$tierName Partial" to NetflixColors.PendingAmber
-        AvailabilityTier.PROCESSING -> "$tierName Downloading" to NetflixColors.DownloadingBlue
-        AvailabilityTier.PENDING -> "$tierName Requested" to NetflixColors.PendingAmber
-        else -> "$tierName Not in Library" to NetflixColors.TextMuted
+        AvailabilityTier.AVAILABLE -> "$tierName Available" to colors.matchGreen
+        AvailabilityTier.PARTIALLY_AVAILABLE -> "$tierName Partial" to colors.pendingAmber
+        AvailabilityTier.PROCESSING -> "$tierName Downloading" to colors.downloadingBlue
+        AvailabilityTier.PENDING -> "$tierName Requested" to colors.pendingAmber
+        else -> "$tierName Not in Library" to colors.textMuted
     }
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(Color(0xAA1F1F1F))
+            .background(colors.surface.copy(alpha = 0.78f))
             .border(1.dp, color.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
             .padding(horizontal = 8.dp, vertical = 3.dp)
     ) {
@@ -771,12 +780,15 @@ private fun TierPill(tierName: String, status: AvailabilityTier) {
 
 @Composable
 private fun DownloadProgressCard(dl: DownloadProgressInfo) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth(0.7f)
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xCC1E1E1E))
-            .border(1.dp, NetflixColors.DownloadingBlue.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+            .clip(corner)
+            .background(colors.surface.copy(alpha = 0.88f))
+            .border(1.dp, colors.downloadingBlue.copy(alpha = 0.6f), corner)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Row(
@@ -786,14 +798,14 @@ private fun DownloadProgressCard(dl: DownloadProgressInfo) {
         ) {
             Text(
                 text = dl.label,
-                color = NetflixColors.White,
+                color = colors.white,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Bold
             )
             dl.title?.let {
                 Text(
                     text = it,
-                    color = NetflixColors.TextSecondary,
+                    color = colors.textSecondary,
                     fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -814,7 +826,7 @@ private fun DownloadProgressCard(dl: DownloadProgressInfo) {
                 modifier = Modifier
                     .fillMaxWidth(frac)
                     .fillMaxHeight()
-                    .background(NetflixColors.NetflixRed)
+                    .background(colors.progressFill)
             )
         }
     }
@@ -827,20 +839,23 @@ private fun SeasonTabChip(
     isAvailable: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
+            .clip(corner)
             .background(
                 when {
-                    isSelected -> NetflixColors.White
-                    focused -> Color(0xFF3A3A3A)
-                    else -> Color(0xFF232323)
+                    isSelected -> colors.white
+                    focused -> colors.surfaceElevated
+                    else -> colors.surface
                 }
             )
             .then(
-                if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp))
+                if (focused) Modifier.border(2.dp, colors.accent, corner)
                 else Modifier
             )
             .onFocusChanged { focused = it.isFocused }
@@ -850,7 +865,7 @@ private fun SeasonTabChip(
     ) {
         Text(
             text = label,
-            color = if (isSelected) NetflixColors.DeepBlack else NetflixColors.White,
+            color = if (isSelected) colors.deepBlack else colors.white,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold
         )
@@ -859,7 +874,7 @@ private fun SeasonTabChip(
             Icon(
                 imageVector = Icons.Filled.Check,
                 contentDescription = null,
-                tint = if (isSelected) NetflixColors.DeepBlack else NetflixColors.MatchGreen,
+                tint = if (isSelected) colors.deepBlack else colors.matchGreen,
                 modifier = Modifier.size(14.dp)
             )
         }
@@ -872,17 +887,20 @@ private fun EpisodeRowCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (focused) Color(0xFF2A2A2A) else Color(0xFF1A1A1A))
+            .clip(corner)
+            .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(
-                if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
-                else Modifier.border(1.dp, Color(0x18FFFFFF), RoundedCornerShape(8.dp))
+                if (focused) Modifier.border(2.dp, colors.focusBorder, corner)
+                else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
             )
             .onFocusChanged { focused = it.isFocused }
             .focusable()
@@ -891,7 +909,7 @@ private fun EpisodeRowCard(
     ) {
         Text(
             text = "${episode.episodeNumber}",
-            color = NetflixColors.TextSecondary,
+            color = colors.textSecondary,
             fontSize = 20.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.width(36.dp)
@@ -902,7 +920,7 @@ private fun EpisodeRowCard(
                 .width(168.dp)
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(6.dp))
-                .background(NetflixColors.SurfaceElevated)
+                .background(colors.surfaceElevated)
         ) {
             AsyncImage(
                 model = episode.stillUrl,
@@ -914,12 +932,12 @@ private fun EpisodeRowCard(
                 Icon(
                     imageVector = Icons.Filled.PlayArrow,
                     contentDescription = "Play",
-                    tint = NetflixColors.White,
+                    tint = colors.white,
                     modifier = Modifier
                         .size(34.dp)
                         .align(Alignment.Center)
                         .clip(RoundedCornerShape(17.dp))
-                        .background(Color(0x99000000))
+                        .background(colors.deepBlack.copy(alpha = 0.65f))
                         .padding(4.dp)
                 )
             }
@@ -935,7 +953,7 @@ private fun EpisodeRowCard(
                         modifier = Modifier
                             .fillMaxWidth(episode.progressFraction)
                             .fillMaxHeight()
-                            .background(NetflixColors.NetflixRed)
+                            .background(colors.progressFill)
                     )
                 }
             }
@@ -950,7 +968,7 @@ private fun EpisodeRowCard(
             ) {
                 Text(
                     text = episode.name,
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -959,7 +977,7 @@ private fun EpisodeRowCard(
                 if (episode.runtimeMinutes > 0) {
                     Text(
                         text = "${episode.runtimeMinutes}m",
-                        color = NetflixColors.TextSecondary,
+                        color = colors.textSecondary,
                         fontSize = 12.sp
                     )
                 }
@@ -967,10 +985,10 @@ private fun EpisodeRowCard(
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xFF333333))
+                            .background(colors.surfaceElevated)
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text("Not on Server", color = NetflixColors.PendingAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Text("Not on Server", color = colors.pendingAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -978,7 +996,7 @@ private fun EpisodeRowCard(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = episode.overview,
-                    color = NetflixColors.TextSecondary,
+                    color = colors.textSecondary,
                     fontSize = 13.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -996,6 +1014,10 @@ private fun RequestQualityModal(
     onDismiss: () -> Unit,
     onSubmit: (requestHd: Boolean, request4k: Boolean, seasons: List<Int>?) -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+
     var requestHd by remember { mutableStateOf(!item.hasHd) }
     var request4k by remember { mutableStateOf(item.hasHd && !item.has4k && has4kServer) }
 
@@ -1010,15 +1032,15 @@ private fun RequestQualityModal(
         Column(
             modifier = Modifier
                 .width(500.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF1A1A1A))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .clip(dialogCorner)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogCorner)
                 .padding(28.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Text(
                 text = "Request \"${item.title}\"",
-                color = NetflixColors.White,
+                color = colors.white,
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
@@ -1027,7 +1049,7 @@ private fun RequestQualityModal(
 
             Text(
                 text = "Choose quality tier(s) to send to Seerr:",
-                color = NetflixColors.TextSecondary,
+                color = colors.textSecondary,
                 fontSize = 14.sp
             )
 
@@ -1054,7 +1076,7 @@ private fun RequestQualityModal(
             if (item.mediaType == MediaType.SERIES && item.seasons.isNotEmpty()) {
                 Text(
                     text = "Select Seasons (${selectedSeasons.size} selected):",
-                    color = NetflixColors.TextPrimary,
+                    color = colors.textPrimary,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -1110,14 +1132,17 @@ private fun QualityToggleRow(
     enabled: Boolean,
     onToggle: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (focused) Color(0xFF2D2D2D) else Color(0xFF222222))
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp)) else Modifier)
+            .clip(corner)
+            .background(if (focused) colors.surfaceElevated else colors.surface)
+            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, corner) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable(enabled = enabled)
             .clickable(enabled = enabled, onClick = onToggle)
@@ -1128,14 +1153,14 @@ private fun QualityToggleRow(
             onCheckedChange = if (enabled) { { onToggle() } } else null,
             enabled = enabled,
             colors = CheckboxDefaults.colors(
-                checkedColor = NetflixColors.NetflixRed,
-                uncheckedColor = NetflixColors.TextSecondary
+                checkedColor = colors.accent,
+                uncheckedColor = colors.textSecondary
             )
         )
         Spacer(Modifier.width(10.dp))
         Column {
-            Text(title, color = if (enabled) NetflixColors.White else NetflixColors.TextMuted, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Text(subtitle, color = NetflixColors.TextSecondary, fontSize = 12.sp)
+            Text(title, color = if (enabled) colors.white else colors.textMuted, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text(subtitle, color = colors.textSecondary, fontSize = 12.sp)
         }
     }
 }

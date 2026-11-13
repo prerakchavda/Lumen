@@ -11,6 +11,7 @@ import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.RowStyle
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.core.player.ResolvedPreviewStream
@@ -55,6 +56,7 @@ data class HomeUiState(
     val has4kTvServer: Boolean = true,
     val continueWatchingMenuTarget: UnifiedMediaItem? = null,
     val posterMenuTarget: UnifiedMediaItem? = null,
+    val showAppearanceDialog: Boolean = false,
     val actionFeedbackMessage: String? = null,
     val isLoading: Boolean = true,
     val errorMessage: String? = null
@@ -75,7 +77,30 @@ class HomeViewModel @Inject constructor(
     private var feedbackJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            authRepository.activeProfileFlow.collect { active ->
+                if (active != null) {
+                    _uiState.update { it.copy(profile = active) }
+                }
+            }
+        }
         loadCatalog(HomeTab.HOME, GenreFilterOption.ALL_GENRES.first(), AvailabilityFilter.ALL)
+    }
+
+    fun openAppearanceDialog() {
+        _uiState.update { it.copy(showAppearanceDialog = true) }
+    }
+
+    fun dismissAppearanceDialog() {
+        _uiState.update { it.copy(showAppearanceDialog = false) }
+    }
+
+    fun selectUiPreset(preset: UiPreset) {
+        _uiState.update { it.copy(showAppearanceDialog = false) }
+        viewModelScope.launch {
+            authRepository.updateActiveUiPreset(preset)
+            showActionFeedback("Switched UI preset to ${preset.displayName}")
+        }
     }
 
     fun selectTab(tab: HomeTab) {

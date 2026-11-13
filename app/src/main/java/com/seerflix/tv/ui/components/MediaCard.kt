@@ -51,8 +51,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.model.AvailabilityTier
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.CardPresentationStyle
+import com.seerflix.tv.ui.theme.SeerflixTokens
+import com.seerflix.tv.ui.theme.Top10Style
 import kotlin.math.roundToInt
 
 @Composable
@@ -61,6 +64,7 @@ fun AvailabilityBadge(
     modifier: Modifier = Modifier,
     compact: Boolean = false
 ) {
+    val colors = SeerflixTokens.colors
     val activeDownload = item.activeDownload
     val isRequestableBadge = activeDownload == null &&
         item.overallAvailability == AvailabilityTier.UNKNOWN &&
@@ -74,25 +78,25 @@ fun AvailabilityBadge(
             } else {
                 activeDownload.label
             }
-            Triple(label, NetflixColors.DownloadingBlue.copy(alpha = 0.92f), NetflixColors.White)
+            Triple(label, colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PROCESSING -> {
-            Triple(if (compact) "DL..." else "Downloading...", NetflixColors.DownloadingBlue.copy(alpha = 0.92f), NetflixColors.White)
+            Triple(if (compact) "DL..." else "Downloading...", colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PENDING -> {
-            Triple("Requested", NetflixColors.PendingAmber.copy(alpha = 0.92f), NetflixColors.DeepBlack)
+            Triple("Requested", colors.pendingAmber.copy(alpha = 0.92f), colors.deepBlack)
         }
         item.has4k -> {
-            Triple(if (compact) "4K" else "4K Available", NetflixColors.MatchGreen.copy(alpha = 0.9f), NetflixColors.DeepBlack)
+            Triple(if (compact) "4K" else "4K Available", colors.matchGreen.copy(alpha = 0.9f), colors.deepBlack)
         }
         item.hasHd -> {
-            Triple(if (compact) "PLAY" else "In Library", NetflixColors.NetflixRed.copy(alpha = 0.92f), NetflixColors.White)
+            Triple(if (compact) "PLAY" else "In Library", colors.accent.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PARTIALLY_AVAILABLE -> {
-            Triple("Partial", NetflixColors.PendingAmber.copy(alpha = 0.9f), NetflixColors.DeepBlack)
+            Triple("Partial", colors.pendingAmber.copy(alpha = 0.9f), colors.deepBlack)
         }
         item.canRequestHd -> {
-            Triple(if (compact) "+ REQ" else "Requestable", Color(0xCC1B1B1E), NetflixColors.White)
+            Triple(if (compact) "+ REQ" else "Requestable", colors.surfaceElevated.copy(alpha = 0.88f), colors.white)
         }
         else -> return
     }
@@ -102,7 +106,7 @@ fun AvailabilityBadge(
             .clip(RoundedCornerShape(4.dp))
             .background(bgColor)
             .then(
-                if (isRequestableBadge) Modifier.border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(4.dp))
+                if (isRequestableBadge) Modifier.border(1.dp, colors.badgeBorder, RoundedCornerShape(4.dp))
                 else Modifier
             )
             .padding(horizontal = if (compact) 6.dp else 9.dp, vertical = if (compact) 2.dp else 4.dp)
@@ -124,14 +128,127 @@ fun NetflixPosterCard(
     onFocus: () -> Unit,
     onClick: () -> Unit,
     onOptionsMenu: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    forcePortrait: Boolean = false
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val isWidescreen = !forcePortrait && spec.cardStyle == CardPresentationStyle.WIDESCREEN_16_9
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
+
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.07f else 1f, label = "posterScale")
 
+    if (isWidescreen) {
+        Column(
+            modifier = modifier
+                .width(224.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .onFocusChanged {
+                    focused = it.isFocused
+                    if (it.isFocused) onFocus()
+                }
+                .onPreviewKeyEvent { keyEvent ->
+                    if (onOptionsMenu != null &&
+                        keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                        keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                    ) {
+                        onOptionsMenu()
+                        true
+                    } else false
+                }
+                .focusable()
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = onOptionsMenu
+                )
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(corner)
+                    .background(colors.surface)
+                    .then(
+                        if (focused) {
+                            Modifier.border(2.5.dp, colors.focusBorder, corner)
+                        } else {
+                            Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.45f), corner)
+                        }
+                    )
+            ) {
+                AsyncImage(
+                    model = item.backdropUrl ?: item.posterUrl,
+                    contentDescription = item.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(
+                            Brush.verticalGradient(listOf(Color.Transparent, colors.deepBlack.copy(alpha = 0.85f)))
+                        )
+                )
+                AvailabilityBadge(
+                    item = item,
+                    compact = true,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(8.dp)
+                )
+                if (item.watchProgressFraction > 0f) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                            .align(Alignment.BottomCenter)
+                            .background(Color(0x55FFFFFF))
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(item.watchProgressFraction)
+                                .fillMaxHeight()
+                                .background(colors.progressFill)
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = item.title,
+                color = if (focused) colors.white else colors.textPrimary,
+                fontSize = 13.sp,
+                fontWeight = if (focused) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            val meta = listOfNotNull(
+                item.releaseYear,
+                if (item.mediaType.name == "MOVIE") "Movie" else "Series"
+            ).joinToString(" • ")
+            if (meta.isNotEmpty()) {
+                Text(
+                    text = meta,
+                    color = colors.textMuted,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        return
+    }
+
+    val cardWidth = if (spec.preset == UiPreset.DISNEY_PLUS) 142.dp else 136.dp
     Box(
         modifier = modifier
-            .width(136.dp)
+            .width(cardWidth)
             .aspectRatio(2f / 3f)
             .graphicsLayer {
                 scaleX = scale
@@ -155,13 +272,13 @@ fun NetflixPosterCard(
                 onClick = onClick,
                 onLongClick = onOptionsMenu
             )
-            .clip(RoundedCornerShape(6.dp))
-            .background(NetflixColors.Surface)
+            .clip(corner)
+            .background(colors.surface)
             .then(
                 if (focused) {
-                    Modifier.border(2.5.dp, NetflixColors.White, RoundedCornerShape(6.dp))
+                    Modifier.border(2.5.dp, colors.focusBorder, corner)
                 } else {
-                    Modifier.border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(6.dp))
+                    Modifier.border(1.dp, Color(0x22FFFFFF), corner)
                 }
             )
     ) {
@@ -180,7 +297,7 @@ fun NetflixPosterCard(
                 .align(Alignment.BottomCenter)
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color.Transparent, Color(0xCC0A0A0A))
+                        listOf(Color.Transparent, colors.deepBlack.copy(alpha = 0.82f))
                     )
                 )
         )
@@ -192,13 +309,13 @@ fun NetflixPosterCard(
                     .align(Alignment.TopStart)
                     .padding(6.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xDD1F1F1F))
-                    .border(1.dp, Color(0x55FFFFFF), RoundedCornerShape(4.dp))
+                    .background(colors.navBarBackground)
+                    .border(1.dp, colors.badgeBorder, RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
                     text = "COLLECTION",
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -226,7 +343,7 @@ fun NetflixPosterCard(
                 if (hasBottomTitle) {
                     Text(
                         text = item.title,
-                        color = NetflixColors.White,
+                        color = colors.white,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 2,
@@ -242,19 +359,19 @@ fun NetflixPosterCard(
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
                             .background(
-                                if (isHighlight) NetflixColors.NetflixRed.copy(alpha = 0.92f)
-                                else Color(0xDD111114)
+                                if (isHighlight) colors.accent.copy(alpha = 0.92f)
+                                else colors.navBarBackground
                             )
                             .border(
                                 1.dp,
-                                if (isHighlight) Color.Transparent else Color(0x44FFFFFF),
+                                if (isHighlight) Color.Transparent else colors.badgeBorder,
                                 RoundedCornerShape(4.dp)
                             )
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
                             text = item.upcomingBadgeLabel!!,
-                            color = NetflixColors.White,
+                            color = colors.white,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -277,7 +394,7 @@ fun NetflixPosterCard(
                     modifier = Modifier
                         .fillMaxWidth(item.watchProgressFraction)
                         .fillMaxHeight()
-                        .background(NetflixColors.NetflixRed)
+                        .background(colors.progressFill)
                 )
             }
         }
@@ -294,97 +411,247 @@ fun Top10PosterCard(
     onOptionsMenu: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "top10Scale")
 
-    Box(
-        modifier = modifier
-            .width(198.dp)
-            .height(196.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocus()
-            }
-            .onPreviewKeyEvent { keyEvent ->
-                if (onOptionsMenu != null &&
-                    keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
-                    keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
-                ) {
-                    onOptionsMenu()
-                    true
-                } else false
-            }
-            .focusable()
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onOptionsMenu
-            )
-    ) {
-        // Giant outlined Netflix Top-10 rank numeral on the left
-        Canvas(
-            modifier = Modifier
-                .width(92.dp)
-                .fillMaxHeight()
-                .align(Alignment.BottomStart)
-        ) {
-            val text = rank.toString()
-            drawIntoCanvas { canvas ->
-                val strokePaint = android.graphics.Paint().apply {
-                    isAntiAlias = true
-                    style = android.graphics.Paint.Style.STROKE
-                    strokeWidth = 6f
-                    color = Color(0xFF707070).toArgb()
-                    textSize = if (rank >= 10) size.height * 0.78f else size.height * 0.92f
-                    typeface = android.graphics.Typeface.create(
-                        android.graphics.Typeface.SANS_SERIF,
-                        android.graphics.Typeface.BOLD
+    when (spec.top10Style) {
+        Top10Style.CORNER_PILL_BADGE -> {
+            Column(
+                modifier = modifier
+                    .width(232.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .onFocusChanged {
+                        focused = it.isFocused
+                        if (it.isFocused) onFocus()
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (onOptionsMenu != null &&
+                            keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                            keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                        ) {
+                            onOptionsMenu()
+                            true
+                        } else false
+                    }
+                    .focusable()
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onOptionsMenu
                     )
-                    letterSpacing = -0.1f
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(corner)
+                        .background(colors.surface)
+                        .then(
+                            if (focused) Modifier.border(2.5.dp, colors.focusBorder, corner)
+                            else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.45f), corner)
+                        )
+                ) {
+                    AsyncImage(
+                        model = item.backdropUrl ?: item.posterUrl,
+                        contentDescription = item.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(colors.deepBlack.copy(alpha = 0.82f))
+                            .border(1.dp, colors.badgeBorder, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = "#$rank",
+                            color = colors.white,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                    }
+                    AvailabilityBadge(
+                        item = item,
+                        compact = true,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp)
+                    )
                 }
-                val fillPaint = android.graphics.Paint(strokePaint).apply {
-                    style = android.graphics.Paint.Style.FILL
-                    color = NetflixColors.DeepBlack.toArgb()
-                }
-                val y = size.height * 0.92f
-                val x = if (rank >= 10) -6f else 6f
-                canvas.nativeCanvas.drawText(text, x, y, fillPaint)
-                canvas.nativeCanvas.drawText(text, x, y, strokePaint)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = item.title,
+                    color = if (focused) colors.white else colors.textPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = if (focused) FontWeight.Bold else FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
-
-        // Poster tucked neatly over the right side of the rank number
-        Box(
-            modifier = Modifier
-                .width(126.dp)
-                .fillMaxHeight()
-                .align(Alignment.CenterEnd)
-                .clip(RoundedCornerShape(6.dp))
-                .background(NetflixColors.Surface)
-                .then(
-                    if (focused) {
-                        Modifier.border(2.5.dp, NetflixColors.White, RoundedCornerShape(6.dp))
-                    } else {
-                        Modifier.border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(6.dp))
+        Top10Style.SAPPHIRE_BADGE -> {
+            Box(
+                modifier = modifier
+                    .width(146.dp)
+                    .aspectRatio(2f / 3f)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
                     }
+                    .onFocusChanged {
+                        focused = it.isFocused
+                        if (it.isFocused) onFocus()
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (onOptionsMenu != null &&
+                            keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                            keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                        ) {
+                            onOptionsMenu()
+                            true
+                        } else false
+                    }
+                    .focusable()
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onOptionsMenu
+                    )
+                    .clip(corner)
+                    .background(colors.surface)
+                    .then(
+                        if (focused) Modifier.border(2.5.dp, colors.focusBorder, corner)
+                        else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
+                    )
+            ) {
+                AsyncImage(
+                    model = item.posterUrl ?: item.backdropUrl,
+                    contentDescription = item.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
                 )
-        ) {
-            AsyncImage(
-                model = item.posterUrl ?: item.backdropUrl,
-                contentDescription = item.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-            AvailabilityBadge(
-                item = item,
-                compact = true,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(6.dp)
-            )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(colors.accent.copy(alpha = 0.95f))
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = "TOP $rank",
+                        color = colors.white,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
+                AvailabilityBadge(
+                    item = item,
+                    compact = true,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                )
+            }
+        }
+        Top10Style.OUTLINED_NUMERAL -> {
+            Box(
+                modifier = modifier
+                    .width(198.dp)
+                    .height(196.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .onFocusChanged {
+                        focused = it.isFocused
+                        if (it.isFocused) onFocus()
+                    }
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (onOptionsMenu != null &&
+                            keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                            keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                        ) {
+                            onOptionsMenu()
+                            true
+                        } else false
+                    }
+                    .focusable()
+                    .combinedClickable(
+                        onClick = onClick,
+                        onLongClick = onOptionsMenu
+                    )
+            ) {
+                // Giant outlined Netflix Top-10 rank numeral on the left
+                Canvas(
+                    modifier = Modifier
+                        .width(92.dp)
+                        .fillMaxHeight()
+                        .align(Alignment.BottomStart)
+                ) {
+                    val text = rank.toString()
+                    drawIntoCanvas { canvas ->
+                        val strokePaint = android.graphics.Paint().apply {
+                            isAntiAlias = true
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 6f
+                            color = Color(0xFF707070).toArgb()
+                            textSize = if (rank >= 10) size.height * 0.78f else size.height * 0.92f
+                            typeface = android.graphics.Typeface.create(
+                                android.graphics.Typeface.SANS_SERIF,
+                                android.graphics.Typeface.BOLD
+                            )
+                            letterSpacing = -0.1f
+                        }
+                        val fillPaint = android.graphics.Paint(strokePaint).apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = colors.deepBlack.toArgb()
+                        }
+                        val y = size.height * 0.92f
+                        val x = if (rank >= 10) -6f else 6f
+                        canvas.nativeCanvas.drawText(text, x, y, fillPaint)
+                        canvas.nativeCanvas.drawText(text, x, y, strokePaint)
+                    }
+                }
+
+                // Poster tucked neatly over the right side of the rank number
+                Box(
+                    modifier = Modifier
+                        .width(126.dp)
+                        .fillMaxHeight()
+                        .align(Alignment.CenterEnd)
+                        .clip(corner)
+                        .background(colors.surface)
+                        .then(
+                            if (focused) {
+                                Modifier.border(2.5.dp, colors.focusBorder, corner)
+                            } else {
+                                Modifier.border(1.dp, Color(0x22FFFFFF), corner)
+                            }
+                        )
+                ) {
+                    AsyncImage(
+                        model = item.posterUrl ?: item.backdropUrl,
+                        contentDescription = item.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    AvailabilityBadge(
+                        item = item,
+                        compact = true,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                    )
+                }
+            }
         }
     }
 }
@@ -398,12 +665,16 @@ fun ContinueWatchingCard(
     onOptionsMenu: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
+    val cardWidth = if (spec.preset == UiPreset.APPLE_TV) 228.dp else 212.dp
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "cwScale")
 
     Column(
         modifier = modifier
-            .width(212.dp)
+            .width(cardWidth)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -431,13 +702,13 @@ fun ContinueWatchingCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(6.dp))
-                .background(NetflixColors.Surface)
+                .clip(corner)
+                .background(colors.surface)
                 .then(
                     if (focused) {
-                        Modifier.border(2.5.dp, NetflixColors.White, RoundedCornerShape(6.dp))
+                        Modifier.border(2.5.dp, colors.focusBorder, corner)
                     } else {
-                        Modifier.border(1.dp, Color(0x22FFFFFF), RoundedCornerShape(6.dp))
+                        Modifier.border(1.dp, Color(0x22FFFFFF), corner)
                     }
                 )
         ) {
@@ -454,7 +725,7 @@ fun ContinueWatchingCard(
                     .height(48.dp)
                     .align(Alignment.BottomCenter)
                     .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC0A0A0A)))
+                        Brush.verticalGradient(listOf(Color.Transparent, colors.deepBlack.copy(alpha = 0.85f)))
                     )
             )
 
@@ -464,12 +735,12 @@ fun ContinueWatchingCard(
                         .align(Alignment.TopStart)
                         .padding(8.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xBB0A0A0A))
+                        .background(colors.deepBlack.copy(alpha = 0.78f))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = item.episodeLabel,
-                        color = NetflixColors.White,
+                        color = colors.white,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -482,19 +753,19 @@ fun ContinueWatchingCard(
                         .align(Alignment.TopEnd)
                         .padding(6.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xBB0A0A0A))
+                        .background(colors.deepBlack.copy(alpha = 0.78f))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
                         text = "Hold OK",
-                        color = NetflixColors.TextSecondary,
+                        color = colors.textSecondary,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
             }
 
-            // Netflix Red progress bar
+            // Progress bar
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -506,7 +777,7 @@ fun ContinueWatchingCard(
                     modifier = Modifier
                         .fillMaxWidth(item.watchProgressFraction.coerceAtLeast(0.05f))
                         .fillMaxHeight()
-                        .background(NetflixColors.NetflixRed)
+                        .background(colors.progressFill)
                 )
             }
         }
@@ -514,7 +785,7 @@ fun ContinueWatchingCard(
         Spacer(Modifier.height(6.dp))
         Text(
             text = item.title,
-            color = if (focused) NetflixColors.White else NetflixColors.TextSecondary,
+            color = if (focused) colors.white else colors.textSecondary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,

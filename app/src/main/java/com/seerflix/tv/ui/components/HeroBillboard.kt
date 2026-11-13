@@ -70,9 +70,11 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.model.AvailabilityTier
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.player.ResolvedPreviewStream
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.NavLayoutStyle
+import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -86,6 +88,8 @@ fun HeroBillboard(
     onToggleMyList: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
     var isVideoReady by remember(item.id, previewStream?.videoUrl) { mutableStateOf(false) }
 
     // Subtle Ken Burns motion when showing static backdrop
@@ -103,8 +107,8 @@ fun HeroBillboard(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(285.dp)
-            .background(NetflixColors.Background)
+            .height(spec.heroHeightDp.dp)
+            .background(colors.background)
     ) {
         // Backdrop image (always rendered beneath, animated with subtle Ken Burns)
         AsyncImage(
@@ -128,16 +132,16 @@ fun HeroBillboard(
             )
         }
 
-        // Authentic Netflix left-to-right & bottom-to-top cinematic gradients
+        // Preset-aware horizontal & vertical cinematic gradients
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.0f to Color(0xF5141414),
-                            0.38f to Color(0xCC141414),
-                            0.70f to Color(0x44141414),
+                            0.0f to colors.background.copy(alpha = 0.96f),
+                            0.38f to colors.background.copy(alpha = 0.78f),
+                            0.72f to colors.background.copy(alpha = 0.25f),
                             1.0f to Color.Transparent
                         )
                     )
@@ -149,9 +153,14 @@ fun HeroBillboard(
                 .background(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
-                            0.0f to Color(0x550A0A0A),
-                            0.55f to Color.Transparent,
-                            1.0f to NetflixColors.Background
+                            0.0f to if (spec.navStyle != NavLayoutStyle.LEFT_RAIL) {
+                                colors.deepBlack.copy(alpha = 0.72f)
+                            } else {
+                                colors.deepBlack.copy(alpha = 0.34f)
+                            },
+                            0.32f to Color.Transparent,
+                            0.60f to Color.Transparent,
+                            1.0f to colors.background
                         )
                     )
                 )
@@ -161,26 +170,57 @@ fun HeroBillboard(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 24.dp, bottom = 24.dp, end = 340.dp)
+                .padding(
+                    start = spec.contentStartPaddingDp.dp,
+                    bottom = if (spec.preset == UiPreset.APPLE_TV) 28.dp else 24.dp,
+                    end = 340.dp
+                )
         ) {
-            // Netflix-style "S SERIES" / "S FILM" micro-header
+            // Preset-aware micro-header
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    text = "S",
-                    color = NetflixColors.NetflixRed,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Black
-                )
-                Text(
-                    text = if (item.mediaType.name == "MOVIE") "FILM" else "SERIES",
-                    color = NetflixColors.TextSecondary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 3.sp
-                )
+                if (spec.showBrandMicroMark) {
+                    Text(
+                        text = "S",
+                        color = colors.accent,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                    Text(
+                        text = if (item.mediaType.name == "MOVIE") "FILM" else "SERIES",
+                        color = colors.textSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 3.sp
+                    )
+                } else {
+                    val tagText = when (spec.preset) {
+                        UiPreset.APPLE_TV -> if (item.mediaType.name == "MOVIE") "APPLE TV+ • FILM" else "APPLE TV+ • SERIES"
+                        UiPreset.DISNEY_PLUS -> if (item.mediaType.name == "MOVIE") "FEATURED FILM" else "FEATURED SERIES"
+                        UiPreset.NETFLIX -> if (item.mediaType.name == "MOVIE") "FILM" else "SERIES"
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(if (spec.preset == UiPreset.APPLE_TV) 12.dp else 4.dp))
+                            .background(colors.surfaceElevated.copy(alpha = 0.85f))
+                            .border(
+                                1.dp,
+                                colors.badgeBorder,
+                                RoundedCornerShape(if (spec.preset == UiPreset.APPLE_TV) 12.dp else 4.dp)
+                            )
+                            .padding(horizontal = 9.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            text = tagText,
+                            color = colors.textPrimary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.4.sp
+                        )
+                    }
+                }
                 AvailabilityBadge(item = item)
             }
 
@@ -193,18 +233,18 @@ fun HeroBillboard(
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.CenterStart,
                     modifier = Modifier
-                        .height(68.dp)
+                        .height(if (spec.preset == UiPreset.APPLE_TV) 74.dp else 68.dp)
                         .fillMaxWidth(0.75f)
                 )
             } else {
                 Text(
                     text = item.title,
-                    color = NetflixColors.White,
-                    fontSize = 36.sp,
+                    color = colors.white,
+                    fontSize = if (spec.preset == UiPreset.APPLE_TV) 40.sp else 36.sp,
                     fontWeight = FontWeight.Black,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
-                    lineHeight = 40.sp
+                    lineHeight = 42.sp
                 )
             }
 
@@ -218,35 +258,35 @@ fun HeroBillboard(
                 item.matchPercent?.let { match ->
                     Text(
                         text = "$match% Match",
-                        color = NetflixColors.MatchGreen,
+                        color = colors.matchGreen,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 item.releaseYear?.let { year ->
-                    Text(text = year, color = NetflixColors.TextSecondary, fontSize = 13.sp)
+                    Text(text = year, color = colors.textSecondary, fontSize = 13.sp)
                 }
                 item.maturityRating?.let { rating ->
                     Box(
                         modifier = Modifier
-                            .border(1.dp, NetflixColors.TextMuted, RoundedCornerShape(2.dp))
+                            .border(1.dp, colors.textMuted, RoundedCornerShape(3.dp))
                             .padding(horizontal = 5.dp, vertical = 1.dp)
                     ) {
-                        Text(text = rating, color = NetflixColors.TextSecondary, fontSize = 11.sp)
+                        Text(text = rating, color = colors.textSecondary, fontSize = 11.sp)
                     }
                 }
                 item.formattedRuntime?.let { rt ->
-                    Text(text = rt, color = NetflixColors.TextSecondary, fontSize = 13.sp)
+                    Text(text = rt, color = colors.textSecondary, fontSize = 13.sp)
                 }
                 if (item.has4k) {
                     Box(
                         modifier = Modifier
-                            .border(1.dp, NetflixColors.TextSecondary, RoundedCornerShape(2.dp))
+                            .border(1.dp, colors.textSecondary, RoundedCornerShape(3.dp))
                             .padding(horizontal = 5.dp, vertical = 1.dp)
                     ) {
                         Text(
                             text = "4K UHD",
-                            color = NetflixColors.White,
+                            color = colors.white,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -255,12 +295,12 @@ fun HeroBillboard(
                 item.mediaBadges.filter { it != "4K" && it != "HD" }.take(2).forEach { badge ->
                     Box(
                         modifier = Modifier
-                            .border(1.dp, NetflixColors.TextMuted, RoundedCornerShape(2.dp))
+                            .border(1.dp, colors.textMuted, RoundedCornerShape(3.dp))
                             .padding(horizontal = 5.dp, vertical = 1.dp)
                     ) {
                         Text(
                             text = badge,
-                            color = NetflixColors.TextPrimary,
+                            color = colors.textPrimary,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -272,7 +312,7 @@ fun HeroBillboard(
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = item.overview,
-                    color = NetflixColors.TextPrimary,
+                    color = colors.textPrimary,
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
                     maxLines = 2,
@@ -309,7 +349,7 @@ fun HeroBillboard(
                 )
                 if (onToggleMyList != null) {
                     HeroPillButton(
-                        text = if (item.isInMyList) "My List" else "My List",
+                        text = "My List",
                         icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
                         isPrimary = false,
                         onClick = onToggleMyList
@@ -327,10 +367,10 @@ fun HeroBillboard(
                     .padding(end = 36.dp, bottom = 28.dp)
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(Color(0x99141414))
+                    .background(colors.background.copy(alpha = 0.72f))
                     .border(
                         width = if (muteFocused) 2.dp else 1.dp,
-                        color = if (muteFocused) NetflixColors.White else Color(0x77FFFFFF),
+                        color = if (muteFocused) colors.focusBorder else colors.badgeBorder,
                         shape = CircleShape
                     )
                     .onFocusChanged { muteFocused = it.isFocused }
@@ -341,7 +381,7 @@ fun HeroBillboard(
                 Icon(
                     imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                     contentDescription = "Toggle preview audio",
-                    tint = NetflixColors.White,
+                    tint = colors.white,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -357,15 +397,18 @@ fun HeroPillButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.05f else 1f, label = "pillScale")
 
     val bg = when {
-        isPrimary -> NetflixColors.White
-        focused -> Color(0xCC555555)
-        else -> Color(0x99383838)
+        isPrimary -> colors.primaryButtonBg
+        focused -> colors.secondaryButtonFocusedBg
+        else -> colors.secondaryButtonBg
     }
-    val fg = if (isPrimary) NetflixColors.DeepBlack else NetflixColors.White
+    val fg = if (isPrimary) colors.primaryButtonFg else colors.white
+    val shape = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -374,17 +417,26 @@ fun HeroPillButton(
                 scaleX = scale
                 scaleY = scale
             }
-            .clip(RoundedCornerShape(4.dp))
+            .clip(shape)
             .background(bg)
             .then(
                 if (focused) {
-                    Modifier.border(2.dp, if (isPrimary) NetflixColors.NetflixRed else NetflixColors.White, RoundedCornerShape(4.dp))
+                    Modifier.border(
+                        2.dp,
+                        if (isPrimary) colors.primaryButtonFocusBorder else colors.focusBorder,
+                        shape
+                    )
+                } else if (!isPrimary && spec.preset == UiPreset.APPLE_TV) {
+                    Modifier.border(1.dp, colors.badgeBorder, shape)
                 } else Modifier
             )
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick)
-            .padding(horizontal = 20.dp, vertical = 10.dp)
+            .padding(
+                horizontal = if (spec.preset == UiPreset.APPLE_TV) 22.dp else 20.dp,
+                vertical = 10.dp
+            )
     ) {
         Icon(
             imageVector = icon,

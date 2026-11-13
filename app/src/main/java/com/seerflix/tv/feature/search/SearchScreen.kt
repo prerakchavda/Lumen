@@ -59,7 +59,8 @@ import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.NetflixPosterCard
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.CardPresentationStyle
+import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
 fun SearchScreen(
@@ -110,10 +111,14 @@ fun SearchContent(
     onClearFilter: () -> Unit,
     onOpenDetails: (UnifiedMediaItem) -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val gridMinWidth = if (spec.cardStyle == CardPresentationStyle.WIDESCREEN_16_9) 224.dp else 148.dp
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(NetflixColors.Background)
+            .background(colors.background)
             .padding(horizontal = 48.dp, vertical = 28.dp)
     ) {
         Row(
@@ -131,13 +136,13 @@ fun SearchContent(
                 value = state.query,
                 onValueChange = onQueryChange,
                 placeholder = { Text("Search movies, TV shows, or cast (Library + Seerr)...") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = NetflixColors.TextSecondary) },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = colors.textSecondary) },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = NetflixColors.White,
-                    unfocusedTextColor = NetflixColors.TextPrimary,
-                    focusedBorderColor = NetflixColors.NetflixRed,
-                    unfocusedBorderColor = Color(0x44FFFFFF)
+                    focusedTextColor = colors.white,
+                    unfocusedTextColor = colors.textPrimary,
+                    focusedBorderColor = colors.accent,
+                    unfocusedBorderColor = colors.badgeBorder
                 ),
                 modifier = Modifier.weight(1f)
             )
@@ -164,14 +169,14 @@ fun SearchContent(
                         .clip(RoundedCornerShape(18.dp))
                         .background(
                             when {
-                                selected -> NetflixColors.White
-                                focused -> Color(0xFF3E3E3E)
-                                else -> Color(0xFF232323)
+                                selected -> colors.white
+                                focused -> colors.surfaceElevated
+                                else -> colors.surface
                             }
                         )
                         .then(
-                            if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(18.dp))
-                            else Modifier.border(1.dp, Color(0x28FFFFFF), RoundedCornerShape(18.dp))
+                            if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(18.dp))
+                            else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.5f), RoundedCornerShape(18.dp))
                         )
                         .onFocusChanged { focused = it.isFocused }
                         .focusable()
@@ -180,7 +185,7 @@ fun SearchContent(
                 ) {
                     Text(
                         text = genre.label,
-                        color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+                        color = if (selected) colors.deepBlack else colors.white,
                         fontSize = 12.sp,
                         fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
                     )
@@ -204,7 +209,7 @@ fun SearchContent(
             ) {
                 Text(
                     text = activeFilterLabel,
-                    color = NetflixColors.White,
+                    color = colors.white,
                     fontSize = 19.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -213,16 +218,16 @@ fun SearchContent(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (clearFocused) Color(0xFF3E3E3E) else Color(0xFF262626))
-                        .then(if (clearFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(16.dp)) else Modifier)
+                        .background(if (clearFocused) colors.surfaceElevated else colors.surface)
+                        .then(if (clearFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(16.dp)) else Modifier)
                         .onFocusChanged { clearFocused = it.isFocused }
                         .focusable()
                         .clickable(onClick = onClearFilter)
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = NetflixColors.White, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = colors.white, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Clear", color = NetflixColors.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Clear", color = colors.white, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -232,7 +237,7 @@ fun SearchContent(
             when {
                 state.isSearching -> {
                     CircularProgressIndicator(
-                        color = NetflixColors.NetflixRed,
+                        color = colors.accent,
                         modifier = Modifier.align(Alignment.Center)
                     )
                 }
@@ -240,26 +245,26 @@ fun SearchContent(
                     Column(modifier = Modifier.fillMaxSize()) {
                         Text(
                             text = "Top Searches",
-                            color = NetflixColors.White,
+                            color = colors.white,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(bottom = 12.dp)
                         )
                         if (state.isLoadingSuggestions && state.trendingItems.isEmpty()) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = NetflixColors.NetflixRed)
+                                CircularProgressIndicator(color = colors.accent)
                             }
                         } else if (state.trendingItems.isEmpty()) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
                                     text = "Type a movie, TV show, or actor name to search.",
-                                    color = NetflixColors.TextSecondary,
+                                    color = colors.textSecondary,
                                     fontSize = 15.sp
                                 )
                             }
                         } else {
                             LazyVerticalGrid(
-                                columns = GridCells.Adaptive(minSize = 148.dp),
+                                columns = GridCells.Adaptive(minSize = gridMinWidth),
                                 contentPadding = PaddingValues(bottom = 32.dp),
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(20.dp)
@@ -278,7 +283,7 @@ fun SearchContent(
                 state.results.isEmpty() && state.personResults.isEmpty() -> {
                     Text(
                         text = if (hasActiveFilter) "No matching titles found." else "No results found for \"${state.query}\"",
-                        color = NetflixColors.TextSecondary,
+                        color = colors.textSecondary,
                         fontSize = 16.sp,
                         modifier = Modifier.align(Alignment.Center)
                     )
@@ -288,7 +293,7 @@ fun SearchContent(
                         if (state.personResults.isNotEmpty()) {
                             Text(
                                 text = "People",
-                                color = NetflixColors.White,
+                                color = colors.white,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(bottom = 10.dp)
@@ -304,8 +309,8 @@ fun SearchContent(
                                         modifier = Modifier
                                             .width(96.dp)
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(if (focused) Color(0xFF282828) else Color.Transparent)
-                                            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp)) else Modifier)
+                                            .background(if (focused) colors.surfaceElevated else Color.Transparent)
+                                            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp)) else Modifier)
                                             .onFocusChanged { focused = it.isFocused }
                                             .focusable()
                                             .clickable { onSelectPerson(person) }
@@ -318,12 +323,12 @@ fun SearchContent(
                                             modifier = Modifier
                                                 .size(64.dp)
                                                 .clip(RoundedCornerShape(32.dp))
-                                                .background(NetflixColors.SurfaceElevated)
+                                                .background(colors.surfaceElevated)
                                         )
                                         Spacer(Modifier.height(6.dp))
                                         Text(
                                             text = person.name,
-                                            color = if (focused) NetflixColors.White else NetflixColors.TextPrimary,
+                                            color = if (focused) colors.white else colors.textPrimary,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             maxLines = 1,
@@ -336,7 +341,7 @@ fun SearchContent(
 
                         if (state.results.isNotEmpty()) {
                             LazyVerticalGrid(
-                                columns = GridCells.Adaptive(minSize = 148.dp),
+                                columns = GridCells.Adaptive(minSize = gridMinWidth),
                                 contentPadding = PaddingValues(bottom = 32.dp),
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(20.dp)
@@ -363,19 +368,20 @@ private fun SearchIconCircleButton(
     contentDescription: String,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .size(44.dp)
             .clip(RoundedCornerShape(22.dp))
-            .background(if (focused) Color(0xFF3A3A3A) else Color(0xFF232323))
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(22.dp)) else Modifier)
+            .background(if (focused) colors.surfaceElevated else colors.surface)
+            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(22.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = contentDescription, tint = NetflixColors.White)
+        Icon(icon, contentDescription = contentDescription, tint = colors.white)
     }
 }
 

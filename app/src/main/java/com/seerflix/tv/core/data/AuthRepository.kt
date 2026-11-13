@@ -1,6 +1,7 @@
 package com.seerflix.tv.core.data
 
 import com.seerflix.tv.core.model.ServerConfig
+import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinAuthRequest
@@ -139,6 +140,10 @@ class AuthRepository @Inject constructor(
         frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null
     ) {
         prefs.updatePlaybackPreferences(autoSkipIntro, autoSkipRecap, frameRateMatchMode)
+    }
+
+    suspend fun updateActiveUiPreset(preset: UiPreset) {
+        prefs.updateActiveUiPreset(preset)
     }
 
     fun verifyProfilePin(profile: UserProfile, enteredPin: String): Boolean {

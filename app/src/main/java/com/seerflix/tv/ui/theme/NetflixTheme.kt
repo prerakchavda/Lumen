@@ -7,9 +7,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.ExperimentalTvMaterial3Api
-import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Typography
-import androidx.tv.material3.darkColorScheme
+import com.seerflix.tv.core.model.UiPreset
 
 object NetflixColors {
     val Background = Color(0xFF141414)
@@ -30,21 +29,7 @@ object NetflixColors {
 }
 
 @OptIn(ExperimentalTvMaterial3Api::class)
-private val NetflixDarkColorScheme = darkColorScheme(
-    primary = NetflixColors.NetflixRed,
-    onPrimary = NetflixColors.White,
-    secondary = NetflixColors.White,
-    onSecondary = NetflixColors.DeepBlack,
-    background = NetflixColors.Background,
-    onBackground = NetflixColors.TextPrimary,
-    surface = NetflixColors.Surface,
-    onSurface = NetflixColors.TextPrimary,
-    surfaceVariant = NetflixColors.SurfaceElevated,
-    onSurfaceVariant = NetflixColors.TextSecondary
-)
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-private val NetflixTypography = Typography(
+val SeerflixTypography = Typography(
     displayLarge = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Black,
@@ -102,12 +87,10 @@ private val NetflixTypography = Typography(
     )
 )
 
-@OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-fun SeerflixTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = NetflixDarkColorScheme,
-        typography = NetflixTypography,
-        content = content
-    )
+fun SeerflixTheme(
+    preset: UiPreset = UiPreset.NETFLIX,
+    content: @Composable () -> Unit
+) {
+    SeerflixPresetTheme(preset = preset, content = content)
 }

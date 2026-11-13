@@ -35,7 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
 fun SetupScreen(
@@ -58,13 +58,17 @@ fun SetupContent(
     onSeerrUrlChange: (String) -> Unit,
     onConnectClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val buttonCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(
                 Brush.radialGradient(
-                    colors = listOf(Color(0xFF2B0609), NetflixColors.Background),
+                    colors = listOf(colors.backgroundGlow, colors.background),
                     radius = 1200f
                 )
             ),
@@ -73,16 +77,16 @@ fun SetupContent(
         Column(
             modifier = Modifier
                 .width(560.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xE61A1A1A))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(12.dp))
+                .clip(dialogCorner)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogCorner)
                 .padding(36.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "SEERFLIX",
-                    color = NetflixColors.NetflixRed,
+                    color = colors.accent,
                     fontSize = 30.sp,
                     fontWeight = FontWeight.Black,
                     letterSpacing = 2.sp
@@ -90,15 +94,15 @@ fun SetupContent(
                 Spacer(Modifier.width(12.dp))
                 Text(
                     text = "Google TV Setup",
-                    color = NetflixColors.TextSecondary,
+                    color = colors.textSecondary,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Medium
                 )
             }
 
             Text(
-                text = "Connect your Jellyfin media server and Seerr v3+ request server. Both will work together seamlessly from one Netflix-style interface.",
-                color = NetflixColors.TextSecondary,
+                text = "Connect your Jellyfin media server and Seerr v3+ request server. Both will work together seamlessly from one unified TV interface.",
+                color = colors.textSecondary,
                 fontSize = 14.sp,
                 lineHeight = 20.sp
             )
@@ -110,12 +114,12 @@ fun SetupContent(
                 placeholder = { Text("http://192.168.1.100:8096") },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = NetflixColors.White,
-                    unfocusedTextColor = NetflixColors.TextPrimary,
-                    focusedBorderColor = NetflixColors.NetflixRed,
-                    unfocusedBorderColor = Color(0x55FFFFFF),
-                    focusedLabelColor = NetflixColors.White,
-                    unfocusedLabelColor = NetflixColors.TextSecondary
+                    focusedTextColor = colors.white,
+                    unfocusedTextColor = colors.textPrimary,
+                    focusedBorderColor = colors.accent,
+                    unfocusedBorderColor = colors.badgeBorder,
+                    focusedLabelColor = colors.white,
+                    unfocusedLabelColor = colors.textSecondary
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -127,12 +131,12 @@ fun SetupContent(
                 placeholder = { Text("http://192.168.1.100:5055") },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = NetflixColors.White,
-                    unfocusedTextColor = NetflixColors.TextPrimary,
-                    focusedBorderColor = NetflixColors.NetflixRed,
-                    unfocusedBorderColor = Color(0x55FFFFFF),
-                    focusedLabelColor = NetflixColors.White,
-                    unfocusedLabelColor = NetflixColors.TextSecondary
+                    focusedTextColor = colors.white,
+                    unfocusedTextColor = colors.textPrimary,
+                    focusedBorderColor = colors.accent,
+                    unfocusedBorderColor = colors.badgeBorder,
+                    focusedLabelColor = colors.white,
+                    unfocusedLabelColor = colors.textSecondary
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -140,7 +144,7 @@ fun SetupContent(
             state.errorMessage?.let { err ->
                 Text(
                     text = err,
-                    color = NetflixColors.NetflixRed,
+                    color = colors.accent,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -149,7 +153,7 @@ fun SetupContent(
             state.statusMessage?.let { msg ->
                 Text(
                     text = msg,
-                    color = NetflixColors.MatchGreen,
+                    color = colors.matchGreen,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -162,9 +166,9 @@ fun SetupContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (btnFocused) Color(0xFFFF1F2B) else NetflixColors.NetflixRed)
-                    .then(if (btnFocused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+                    .clip(buttonCorner)
+                    .background(if (btnFocused) colors.accentDark else colors.accent)
+                    .then(if (btnFocused) Modifier.border(2.dp, colors.focusBorder, buttonCorner) else Modifier)
                     .onFocusChanged { btnFocused = it.isFocused }
                     .focusable()
                     .clickable(enabled = !state.isTesting, onClick = onConnectClick),
@@ -172,14 +176,14 @@ fun SetupContent(
             ) {
                 if (state.isTesting) {
                     CircularProgressIndicator(
-                        color = NetflixColors.White,
+                        color = colors.white,
                         strokeWidth = 2.5.dp,
                         modifier = Modifier.height(22.dp).width(22.dp)
                     )
                 } else {
                     Text(
                         text = "Connect & Continue",
-                        color = NetflixColors.White,
+                        color = colors.white,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
                     )

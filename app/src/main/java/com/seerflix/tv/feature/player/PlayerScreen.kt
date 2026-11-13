@@ -113,7 +113,7 @@ import com.seerflix.tv.core.player.FrameRateMatcher
 import com.seerflix.tv.core.player.OffsetSubtitleParserFactory
 import com.seerflix.tv.core.player.SkipSegmentType
 import com.seerflix.tv.ui.components.HeroPillButton
-import com.seerflix.tv.ui.theme.NetflixColors
+import com.seerflix.tv.ui.theme.SeerflixTokens
 import kotlinx.coroutines.delay
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -124,6 +124,7 @@ fun PlayerScreen(
     onBack: () -> Unit,
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
+    val colors = SeerflixTokens.colors
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val activity = remember(context) { FrameRateMatcher.findActivity(context) }
@@ -450,7 +451,7 @@ fun PlayerScreen(
         when {
             state.isLoading -> {
                 CircularProgressIndicator(
-                    color = NetflixColors.NetflixRed,
+                    color = colors.accent,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
@@ -459,7 +460,7 @@ fun PlayerScreen(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(state.errorMessage!!, color = NetflixColors.NetflixRed, fontSize = 16.sp)
+                    Text(state.errorMessage!!, color = colors.accent, fontSize = 16.sp)
                     Spacer(Modifier.height(16.dp))
                     HeroPillButton("Back", Icons.AutoMirrored.Filled.ArrowBack, isPrimary = true, onClick = onBack)
                 }
@@ -513,13 +514,13 @@ fun PlayerScreen(
                             .align(Alignment.TopCenter)
                             .padding(top = 28.dp)
                             .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xD9161616))
-                            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(6.dp))
+                            .background(colors.navBarBackground)
+                            .border(1.dp, colors.badgeBorder, RoundedCornerShape(6.dp))
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                     ) {
                         Text(
                             text = hudText,
-                            color = NetflixColors.White,
+                            color = colors.white,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -580,7 +581,7 @@ fun PlayerScreen(
                     )
                 }
 
-                // Netflix OSD Overlay
+                // OSD Overlay
                 AnimatedVisibility(
                     visible = osdVisible && !showEpisodesDrawer,
                     enter = fadeIn(),
@@ -602,12 +603,12 @@ fun PlayerScreen(
                             Column {
                                 Text(
                                     text = session?.title.orEmpty(),
-                                    color = NetflixColors.White,
+                                    color = colors.white,
                                     fontSize = 22.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 session?.subtitle?.let { sub ->
-                                    Text(text = sub, color = NetflixColors.TextSecondary, fontSize = 14.sp)
+                                    Text(text = sub, color = colors.textSecondary, fontSize = 14.sp)
                                 }
                             }
                         }
@@ -655,8 +656,8 @@ fun PlayerScreen(
                                     scrubPreviewMs = null
                                 },
                                 colors = SliderDefaults.colors(
-                                    thumbColor = NetflixColors.NetflixRed,
-                                    activeTrackColor = NetflixColors.NetflixRed,
+                                    thumbColor = colors.accent,
+                                    activeTrackColor = colors.accent,
                                     inactiveTrackColor = Color(0x55FFFFFF)
                                 )
                             )
@@ -688,7 +689,7 @@ fun PlayerScreen(
                                     Spacer(Modifier.width(12.dp))
                                     Text(
                                         text = "${formatMs(currentPosMs)} / ${formatMs(durationMs)}",
-                                        color = NetflixColors.TextSecondary,
+                                        color = colors.textSecondary,
                                         fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
@@ -696,10 +697,10 @@ fun PlayerScreen(
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0xFF303030))
+                                                .background(colors.surfaceElevated)
                                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
-                                            Text("${state.selectedSpeed}x", color = NetflixColors.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            Text("${state.selectedSpeed}x", color = colors.white, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                         }
                                     }
                                 }
@@ -811,27 +812,30 @@ fun StreamInfoOverlay(
     playbackSpeed: Float,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xCC121212))
-            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(8.dp))
+            .clip(corner)
+            .background(colors.dialogSurface)
+            .border(1.dp, colors.badgeBorder, corner)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         val videoParts = listOfNotNull(session.resolutionLabel, session.hdrFormat, session.videoCodec)
         Text(
             text = videoParts.joinToString(" • ").ifBlank { "Video Stream" },
-            color = NetflixColors.White,
+            color = colors.white,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
         session.audioCodec?.let {
-            Text(text = "Audio: $it", color = NetflixColors.TextSecondary, fontSize = 11.sp)
+            Text(text = "Audio: $it", color = colors.textSecondary, fontSize = 11.sp)
         }
         Text(
             text = "Quality: ${selectedQuality.label} • ${playbackSpeed}x",
-            color = NetflixColors.TextSecondary,
+            color = colors.textSecondary,
             fontSize = 11.sp
         )
     }
@@ -846,24 +850,27 @@ fun NextEpisodeOverlayCard(
     onWatchCredits: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     Column(
         modifier = modifier
             .width(340.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xE6181818))
-            .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(8.dp))
+            .clip(corner)
+            .background(colors.dialogSurface)
+            .border(1.dp, colors.badgeBorder, corner)
             .padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
             text = if (autoplayEnabled) "Next Episode in ${countdownSeconds}s" else "Up Next",
-            color = if (autoplayEnabled) NetflixColors.NetflixRed else NetflixColors.TextSecondary,
+            color = if (autoplayEnabled) colors.accent else colors.textSecondary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
         Text(
             text = nextEpisodeTitle,
-            color = NetflixColors.White,
+            color = colors.white,
             fontSize = 16.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
@@ -894,6 +901,7 @@ private fun TrickplayPreviewCard(
     crop: TrickplayCrop?,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
     val context = LocalContext.current
     var croppedBitmap by remember(crop?.tileUrl, crop?.x, crop?.y) { mutableStateOf<ImageBitmap?>(null) }
 
@@ -928,7 +936,7 @@ private fun TrickplayPreviewCard(
                     .width(176.dp)
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(6.dp))
-                    .border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp))
+                    .border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp))
                     .background(Color.Black)
             ) {
                 Image(
@@ -943,12 +951,12 @@ private fun TrickplayPreviewCard(
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(4.dp))
-                .background(Color(0xCC141414))
+                .background(colors.dialogSurface)
                 .padding(horizontal = 8.dp, vertical = 3.dp)
         ) {
             Text(
                 text = formatMs(positionMs),
-                color = NetflixColors.White,
+                color = colors.white,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -968,6 +976,10 @@ fun EpisodesDrawerOverlay(
     onSelectEpisode: (EpisodeSummary) -> Unit,
     onClose: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val cardCorner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -978,8 +990,8 @@ fun EpisodesDrawerOverlay(
                 .align(Alignment.CenterEnd)
                 .width(520.dp)
                 .fillMaxHeight()
-                .background(Color(0xF5141414))
-                .border(1.dp, Color(0x28FFFFFF))
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder)
                 .padding(24.dp)
         ) {
             Row(
@@ -990,13 +1002,13 @@ fun EpisodesDrawerOverlay(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = seriesTitle.ifBlank { "Episodes" },
-                        color = NetflixColors.White,
+                        color = colors.white,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("Select an episode to play", color = NetflixColors.TextSecondary, fontSize = 12.sp)
+                    Text("Select an episode to play", color = colors.textSecondary, fontSize = 12.sp)
                 }
                 PlayerControlIcon(Icons.Filled.Close, "Close", onClick = onClose)
             }
@@ -1007,18 +1019,19 @@ fun EpisodesDrawerOverlay(
                     items(seasons, key = { it.seasonNumber }) { season ->
                         var focused by remember { mutableStateOf(false) }
                         val selected = season.seasonNumber == selectedSeason
+                        val tabCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(tabCorner)
                                 .background(
                                     when {
-                                        selected -> NetflixColors.White
-                                        focused -> Color(0xFF3A3A3A)
-                                        else -> Color(0xFF232323)
+                                        selected -> colors.white
+                                        focused -> colors.surfaceElevated
+                                        else -> colors.surface
                                     }
                                 )
                                 .then(
-                                    if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp))
+                                    if (focused) Modifier.border(2.dp, colors.accent, tabCorner)
                                     else Modifier
                                 )
                                 .onFocusChanged { focused = it.isFocused }
@@ -1028,7 +1041,7 @@ fun EpisodesDrawerOverlay(
                         ) {
                             Text(
                                 text = season.name,
-                                color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+                                color = if (selected) colors.deepBlack else colors.white,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold
                             )
@@ -1041,7 +1054,7 @@ fun EpisodesDrawerOverlay(
 
             if (isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = NetflixColors.NetflixRed)
+                    CircularProgressIndicator(color = colors.accent)
                 }
             } else {
                 LazyColumn(
@@ -1055,17 +1068,17 @@ fun EpisodesDrawerOverlay(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(cardCorner)
                                 .background(
                                     when {
-                                        focused -> Color(0xFF323232)
-                                        isCurrent -> Color(0xFF242424)
-                                        else -> Color(0xFF1A1A1A)
+                                        focused -> colors.surfaceElevated
+                                        isCurrent -> colors.surfaceElevated.copy(alpha = 0.7f)
+                                        else -> colors.surface
                                     }
                                 )
                                 .then(
-                                    if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(8.dp))
-                                    else if (isCurrent) Modifier.border(1.dp, NetflixColors.NetflixRed, RoundedCornerShape(8.dp))
+                                    if (focused) Modifier.border(2.dp, colors.focusBorder, cardCorner)
+                                    else if (isCurrent) Modifier.border(1.dp, colors.accent, cardCorner)
                                     else Modifier
                                 )
                                 .onFocusChanged { focused = it.isFocused }
@@ -1078,7 +1091,7 @@ fun EpisodesDrawerOverlay(
                                     .width(120.dp)
                                     .aspectRatio(16f / 9f)
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(NetflixColors.SurfaceElevated)
+                                    .background(colors.surfaceElevated)
                             ) {
                                 AsyncImage(
                                     model = ep.stillUrl,
@@ -1091,7 +1104,7 @@ fun EpisodesDrawerOverlay(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = "${ep.episodeNumber}. ${ep.name}",
-                                    color = NetflixColors.White,
+                                    color = colors.white,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
@@ -1102,7 +1115,7 @@ fun EpisodesDrawerOverlay(
                                     text = if (!ep.isAvailableInJellyfin) "Not available on Jellyfin"
                                     else if (isCurrent) "Now Playing"
                                     else ep.overview.ifBlank { "${ep.runtimeMinutes}m" },
-                                    color = if (isCurrent) NetflixColors.NetflixRed else NetflixColors.TextSecondary,
+                                    color = if (isCurrent) colors.accent else colors.textSecondary,
                                     fontSize = 12.sp,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
@@ -1122,13 +1135,14 @@ private fun PlayerControlIcon(
     label: String,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .size(46.dp)
             .clip(RoundedCornerShape(23.dp))
-            .background(if (focused) NetflixColors.White else Color(0x66222222))
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(23.dp)) else Modifier)
+            .background(if (focused) colors.white else colors.surface.copy(alpha = 0.72f))
+            .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(23.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick),
@@ -1137,7 +1151,7 @@ private fun PlayerControlIcon(
         Icon(
             imageVector = icon,
             contentDescription = label,
-            tint = if (focused) NetflixColors.DeepBlack else NetflixColors.White,
+            tint = if (focused) colors.deepBlack else colors.white,
             modifier = Modifier.size(24.dp)
         )
     }
@@ -1174,6 +1188,9 @@ private fun PlayerSettingsDialog(
     onToggleStreamInfo: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val groups = player.currentTracks.groups
     val audioGroups = groups.filter { it.type == C.TRACK_TYPE_AUDIO }
     val textGroups = groups.filter { it.type == C.TRACK_TYPE_TEXT }
@@ -1192,17 +1209,17 @@ private fun PlayerSettingsDialog(
         Column(
             modifier = Modifier
                 .width(560.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF181818))
-                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .clip(dialogCorner)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogCorner)
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Playback Settings", color = NetflixColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("Playback Settings", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
             if (audioGroups.isNotEmpty()) {
-                Text("Audio Tracks", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Audio Tracks", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 audioGroups.forEachIndexed { idx, group ->
                     val format = group.getTrackFormat(0)
                     val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { "Audio ${idx + 1}" }
@@ -1221,7 +1238,7 @@ private fun PlayerSettingsDialog(
             }
 
             if (textGroups.isNotEmpty()) {
-                Text("Subtitles", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Subtitles", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 TrackChoiceRow(
                     label = "Off",
                     selected = textGroups.none { it.isSelected },
@@ -1257,7 +1274,7 @@ private fun PlayerSettingsDialog(
                 val offsetLabel = String.format(Locale.US, "%+.2fs", offsetSec)
                 Text(
                     text = "Subtitle Sync ($offsetLabel)",
-                    color = NetflixColors.TextSecondary,
+                    color = colors.textSecondary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
@@ -1277,7 +1294,7 @@ private fun PlayerSettingsDialog(
                 }
 
                 // On-Demand Jellyfin Remote Subtitle Search / Download
-                Text("Search / Download Subtitles", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Search / Download Subtitles", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("eng" to "EN", "spa" to "ES", "fra" to "FR", "jpn" to "JP").forEach { (code, label) ->
                         SettingChip(
@@ -1295,7 +1312,7 @@ private fun PlayerSettingsDialog(
                     )
                 }
                 subtitleSearchMessage?.let { msg ->
-                    Text(msg, color = NetflixColors.TextSecondary, fontSize = 12.sp)
+                    Text(msg, color = colors.textSecondary, fontSize = 12.sp)
                 }
                 if (remoteSubtitles.isNotEmpty()) {
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1317,7 +1334,7 @@ private fun PlayerSettingsDialog(
             }
 
             // Playback Speed
-            Text("Playback Speed", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Playback Speed", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEach { spd ->
                     SettingChip(
@@ -1331,7 +1348,7 @@ private fun PlayerSettingsDialog(
 
             // Quality / Bitrate Cap
             if (!isTrailer) {
-                Text("Video Quality", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Video Quality", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 QualityPreset.entries.forEach { preset ->
                     TrackChoiceRow(
                         label = preset.label,
@@ -1343,7 +1360,7 @@ private fun PlayerSettingsDialog(
 
             // Auto-Skip & 24fps Frame-Rate Matching
             if (!isTrailer) {
-                Text("Automation & Display", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("Automation & Display", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 TrackChoiceRow(
                     label = "Auto-Skip Intro",
                     selected = autoSkipIntro,
@@ -1354,7 +1371,7 @@ private fun PlayerSettingsDialog(
                     selected = autoSkipRecap,
                     onClick = onToggleAutoSkipRecap
                 )
-                Text("24fps Frame-Rate Matching", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text("24fps Frame-Rate Matching", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FrameRateMatchMode.entries.forEach { mode ->
                         SettingChip(
@@ -1368,7 +1385,7 @@ private fun PlayerSettingsDialog(
             }
 
             // Subtitle Size & Background
-            Text("Subtitle Size", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Subtitle Size", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("Small" to 0.8f, "Medium" to 1.0f, "Large" to 1.3f).forEach { (label, scale) ->
                     SettingChip(
@@ -1380,7 +1397,7 @@ private fun PlayerSettingsDialog(
                 }
             }
 
-            Text("Subtitle Background", color = NetflixColors.TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Subtitle Background", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("None" to 0f, "50%" to 0.5f, "80%" to 0.8f).forEach { (label, alpha) ->
                     SettingChip(
@@ -1409,19 +1426,22 @@ private fun SettingChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
+            .clip(corner)
             .background(
                 when {
-                    selected -> NetflixColors.White
-                    focused -> Color(0xFF3E3E3E)
-                    else -> Color(0xFF242424)
+                    selected -> colors.white
+                    focused -> colors.surfaceElevated
+                    else -> colors.surface
                 }
             )
             .then(
-                if (focused) Modifier.border(2.dp, NetflixColors.NetflixRed, RoundedCornerShape(6.dp))
+                if (focused) Modifier.border(2.dp, colors.accent, corner)
                 else Modifier
             )
             .onFocusChanged { focused = it.isFocused }
@@ -1432,7 +1452,7 @@ private fun SettingChip(
     ) {
         Text(
             text = label,
-            color = if (selected) NetflixColors.DeepBlack else NetflixColors.White,
+            color = if (selected) colors.deepBlack else colors.white,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
@@ -1445,28 +1465,31 @@ private fun TrackChoiceRow(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
+            .clip(corner)
             .background(
                 when {
-                    focused -> Color(0xFF3A3A3A)
-                    selected -> Color(0xFF282828)
-                    else -> Color(0xFF202020)
+                    focused -> colors.surfaceElevated
+                    selected -> colors.surfaceElevated.copy(alpha = 0.7f)
+                    else -> colors.surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(6.dp)) else Modifier)
+            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, corner) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .focusable()
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, color = NetflixColors.White, fontSize = 14.sp)
+        Text(label, color = colors.white, fontSize = 14.sp)
         if (selected) {
-            Text("Active", color = NetflixColors.NetflixRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text("Active", color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
