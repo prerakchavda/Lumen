@@ -62,6 +62,10 @@ fun AvailabilityBadge(
     compact: Boolean = false
 ) {
     val activeDownload = item.activeDownload
+    val isRequestableBadge = activeDownload == null &&
+        item.overallAvailability == AvailabilityTier.UNKNOWN &&
+        item.canRequestHd
+
     val (text, bgColor, textColor) = when {
         activeDownload != null -> {
             val pct = activeDownload.percentage.roundToInt()
@@ -87,6 +91,9 @@ fun AvailabilityBadge(
         item.overallAvailability == AvailabilityTier.PARTIALLY_AVAILABLE -> {
             Triple("Partial", NetflixColors.PendingAmber.copy(alpha = 0.9f), NetflixColors.DeepBlack)
         }
+        item.canRequestHd -> {
+            Triple(if (compact) "+ REQ" else "Requestable", Color(0xCC1B1B1E), NetflixColors.White)
+        }
         else -> return
     }
 
@@ -94,6 +101,10 @@ fun AvailabilityBadge(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
             .background(bgColor)
+            .then(
+                if (isRequestableBadge) Modifier.border(1.dp, Color(0x66FFFFFF), RoundedCornerShape(4.dp))
+                else Modifier
+            )
             .padding(horizontal = if (compact) 6.dp else 9.dp, vertical = if (compact) 2.dp else 4.dp)
     ) {
         Text(
@@ -106,11 +117,13 @@ fun AvailabilityBadge(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NetflixPosterCard(
     item: UnifiedMediaItem,
     onFocus: () -> Unit,
     onClick: () -> Unit,
+    onOptionsMenu: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -128,8 +141,20 @@ fun NetflixPosterCard(
                 focused = it.isFocused
                 if (it.isFocused) onFocus()
             }
+            .onPreviewKeyEvent { keyEvent ->
+                if (onOptionsMenu != null &&
+                    keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                ) {
+                    onOptionsMenu()
+                    true
+                } else false
+            }
             .focusable()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onOptionsMenu
+            )
             .clip(RoundedCornerShape(6.dp))
             .background(NetflixColors.Surface)
             .then(
@@ -203,12 +228,14 @@ fun NetflixPosterCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Top10PosterCard(
     rank: Int,
     item: UnifiedMediaItem,
     onFocus: () -> Unit,
     onClick: () -> Unit,
+    onOptionsMenu: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var focused by remember { mutableStateOf(false) }
@@ -226,8 +253,20 @@ fun Top10PosterCard(
                 focused = it.isFocused
                 if (it.isFocused) onFocus()
             }
+            .onPreviewKeyEvent { keyEvent ->
+                if (onOptionsMenu != null &&
+                    keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MENU
+                ) {
+                    onOptionsMenu()
+                    true
+                } else false
+            }
             .focusable()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onOptionsMenu
+            )
     ) {
         // Giant outlined Netflix Top-10 rank numeral on the left
         Canvas(

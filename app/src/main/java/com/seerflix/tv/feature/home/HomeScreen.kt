@@ -25,9 +25,12 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Hd
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Movie
@@ -58,8 +61,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.seerflix.tv.core.model.AvailabilityFilter
 import com.seerflix.tv.core.model.CatalogRow
 import com.seerflix.tv.core.model.GenreFilterOption
+import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.RowStyle
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.ContinueWatchingCard
@@ -89,13 +94,18 @@ fun HomeScreen(
         onOpenSettings = onOpenSettings,
         onSelectTab = viewModel::selectTab,
         onSelectGenre = viewModel::selectGenre,
+        onSelectAvailabilityFilter = viewModel::selectAvailabilityFilter,
         onRefresh = viewModel::refresh,
         onTogglePreviewMute = viewModel::togglePreviewMute,
         onToggleFeaturedMyList = viewModel::toggleFeaturedMyList,
         onItemFocused = viewModel::onItemFocused,
         onOpenContinueWatchingOptions = viewModel::openContinueWatchingOptions,
         onDismissContinueWatchingOptions = viewModel::dismissContinueWatchingOptions,
-        onRemoveFromContinueWatching = viewModel::removeFromContinueWatching
+        onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
+        onOpenPosterOptions = viewModel::openPosterOptions,
+        onDismissPosterOptions = viewModel::dismissPosterOptions,
+        onQuickRequest = viewModel::quickRequestItem,
+        onTogglePosterMyList = viewModel::togglePosterMyList
     )
 }
 
@@ -113,10 +123,15 @@ fun HomeContent(
     onTogglePreviewMute: () -> Unit,
     onItemFocused: (UnifiedMediaItem) -> Unit,
     onSelectGenre: (GenreFilterOption) -> Unit = {},
+    onSelectAvailabilityFilter: (AvailabilityFilter) -> Unit = {},
     onToggleFeaturedMyList: () -> Unit = {},
     onOpenContinueWatchingOptions: (UnifiedMediaItem) -> Unit = {},
     onDismissContinueWatchingOptions: () -> Unit = {},
-    onRemoveFromContinueWatching: (UnifiedMediaItem) -> Unit = {}
+    onRemoveFromContinueWatching: (UnifiedMediaItem) -> Unit = {},
+    onOpenPosterOptions: (UnifiedMediaItem) -> Unit = {},
+    onDismissPosterOptions: () -> Unit = {},
+    onQuickRequest: (UnifiedMediaItem, Boolean) -> Unit = { _, _ -> },
+    onTogglePosterMyList: (UnifiedMediaItem) -> Unit = {}
 ) {
     var railExpanded by remember { mutableStateOf(false) }
 
@@ -220,12 +235,45 @@ fun HomeContent(
                             }
                         }
 
+                        if (state.activeTab != HomeTab.MY_LIST) {
+                            item(key = "availability_filter_bar") {
+                                AvailabilityFilterBar(
+                                    selectedFilter = state.availabilityFilter,
+                                    onSelectFilter = onSelectAvailabilityFilter
+                                )
+                            }
+                        }
+
                         if (state.activeTab == HomeTab.SHOWS || state.activeTab == HomeTab.MOVIES) {
                             item(key = "genre_filter_bar") {
                                 GenreFilterBar(
                                     selectedGenre = state.selectedGenre,
                                     onSelectGenre = onSelectGenre
                                 )
+                            }
+                        }
+
+                        if (state.rows.isEmpty() && !state.isLoading) {
+                            item(key = "empty_filtered_state") {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 48.dp, vertical = 48.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "No titles match \"${state.availabilityFilter.label}\"",
+                                        color = NetflixColors.White,
+                                        fontSize = 18.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        text = "Switch back to All or pick another genre to keep browsing.",
+                                        color = NetflixColors.TextSecondary,
+                                        fontSize = 13.sp
+                                    )
+                                }
                             }
                         }
 
@@ -240,10 +288,30 @@ fun HomeContent(
                                         onOpenDetails(item)
                                     }
                                 },
-                                onContinueWatchingOptions = onOpenContinueWatchingOptions
+                                onContinueWatchingOptions = onOpenContinueWatchingOptions,
+                                onPosterOptions = onOpenPosterOptions
                             )
                         }
                     }
+                }
+            }
+
+            state.actionFeedbackMessage?.let { message ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(24.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xEE1F1F1F))
+                        .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 18.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        text = message,
+                        color = NetflixColors.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }
@@ -264,6 +332,70 @@ fun HomeContent(
             onDismiss = onDismissContinueWatchingOptions
         )
     }
+
+    state.posterMenuTarget?.let { target ->
+        val has4k = if (target.mediaType == MediaType.MOVIE) state.has4kMovieServer else state.has4kTvServer
+        PosterOptionsDialog(
+            item = target,
+            has4kServer = has4k,
+            onPlay = {
+                onDismissPosterOptions()
+                target.jellyfinId?.let(onPlayDirect)
+            },
+            onRequestHd = { onQuickRequest(target, false) },
+            onRequest4k = { onQuickRequest(target, true) },
+            onToggleMyList = { onTogglePosterMyList(target) },
+            onViewDetails = {
+                onDismissPosterOptions()
+                onOpenDetails(target)
+            },
+            onDismiss = onDismissPosterOptions
+        )
+    }
+}
+
+@Composable
+private fun AvailabilityFilterBar(
+    selectedFilter: AvailabilityFilter,
+    onSelectFilter: (AvailabilityFilter) -> Unit
+) {
+    Row(
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 10.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AvailabilityFilter.entries.forEach { filter ->
+            var focused by remember { mutableStateOf(false) }
+            val selected = selectedFilter == filter
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(
+                        when {
+                            selected && filter == AvailabilityFilter.REQUESTABLE -> NetflixColors.NetflixRed
+                            selected -> NetflixColors.White
+                            focused -> Color(0xFF3E3E3E)
+                            else -> Color(0xFF1E1E22)
+                        }
+                    )
+                    .then(
+                        if (focused) Modifier.border(2.dp, NetflixColors.White, RoundedCornerShape(20.dp))
+                        else Modifier.border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(20.dp))
+                    )
+                    .onFocusChanged { focused = it.isFocused }
+                    .focusable()
+                    .clickable { onSelectFilter(filter) }
+                    .padding(horizontal = 14.dp, vertical = 7.dp)
+            ) {
+                Text(
+                    text = filter.label,
+                    color = if (selected && filter != AvailabilityFilter.REQUESTABLE) NetflixColors.DeepBlack else NetflixColors.White,
+                    fontSize = 12.sp,
+                    fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -272,7 +404,7 @@ private fun GenreFilterBar(
     onSelectGenre: (GenreFilterOption) -> Unit
 ) {
     LazyRow(
-        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 10.dp),
+        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(GenreFilterOption.ALL_GENRES, key = { it.id }) { genre ->
@@ -304,6 +436,63 @@ private fun GenreFilterBar(
                     fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun PosterOptionsDialog(
+    item: UnifiedMediaItem,
+    has4kServer: Boolean,
+    onPlay: () -> Unit,
+    onRequestHd: () -> Unit,
+    onRequest4k: () -> Unit,
+    onToggleMyList: () -> Unit,
+    onViewDetails: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(400.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF1A1A1A))
+                .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(10.dp))
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = item.title,
+                color = NetflixColors.White,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold
+            )
+            val subtitle = buildList {
+                item.releaseYear?.let(::add)
+                add(if (item.mediaType == MediaType.MOVIE) "Movie" else "TV Series")
+                when {
+                    item.isPlayable -> add("In Library")
+                    item.overallAvailability.isRequestedOrDownloading -> add("Requested / Downloading")
+                    item.canRequestHd -> add("Available to Request")
+                }
+            }.joinToString(" • ")
+            Text(subtitle, color = NetflixColors.TextSecondary, fontSize = 13.sp)
+            Spacer(Modifier.height(4.dp))
+            if (item.isPlayable && item.jellyfinId != null) {
+                ContextActionRow(Icons.Filled.PlayArrow, "Play Now", onPlay)
+            }
+            if (item.canRequestHd) {
+                ContextActionRow(Icons.Filled.CloudDownload, "Request HD (Seerr)", onRequestHd)
+            }
+            if (item.canRequest4k && has4kServer) {
+                ContextActionRow(Icons.Filled.Hd, "Request 4K (Seerr)", onRequest4k)
+            }
+            ContextActionRow(
+                icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                label = if (item.isInMyList) "Remove from My List" else "Add to My List",
+                onClick = onToggleMyList
+            )
+            ContextActionRow(Icons.Filled.Info, "Details, Cast & Trailers", onViewDetails)
         }
     }
 }
@@ -373,7 +562,8 @@ private fun CatalogRowSection(
     row: CatalogRow,
     onItemFocus: (UnifiedMediaItem) -> Unit,
     onItemClick: (UnifiedMediaItem) -> Unit,
-    onContinueWatchingOptions: (UnifiedMediaItem) -> Unit
+    onContinueWatchingOptions: (UnifiedMediaItem) -> Unit,
+    onPosterOptions: (UnifiedMediaItem) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -409,7 +599,8 @@ private fun CatalogRowSection(
                             rank = idx + 1,
                             item = item,
                             onFocus = { onItemFocus(item) },
-                            onClick = { onItemClick(item) }
+                            onClick = { onItemClick(item) },
+                            onOptionsMenu = { onPosterOptions(item) }
                         )
                     }
                 }
@@ -418,7 +609,8 @@ private fun CatalogRowSection(
                         NetflixPosterCard(
                             item = item,
                             onFocus = { onItemFocus(item) },
-                            onClick = { onItemClick(item) }
+                            onClick = { onItemClick(item) },
+                            onOptionsMenu = { onPosterOptions(item) }
                         )
                     }
                 }

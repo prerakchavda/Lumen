@@ -155,6 +155,18 @@ data class TrickplayInfo(
     }
 }
 
+enum class AvailabilityFilter(val label: String) {
+    ALL("All"),
+    WATCH_NOW("Watch Now"),
+    REQUESTABLE("Requestable");
+
+    fun matches(item: UnifiedMediaItem): Boolean = when (this) {
+        ALL -> true
+        WATCH_NOW -> item.isPlayable
+        REQUESTABLE -> !item.isPlayable && item.canRequestHd
+    }
+}
+
 data class GenreFilterOption(
     val id: String,
     val label: String,
@@ -169,6 +181,8 @@ data class GenreFilterOption(
             GenreFilterOption("scifi", "Sci-Fi", 878, 10765),
             GenreFilterOption("horror", "Horror & Mystery", 27, 9648),
             GenreFilterOption("drama", "Drama", 18, 18),
+            GenreFilterOption("crime", "Crime", 80, 80),
+            GenreFilterOption("thriller", "Thriller", 53, 9648),
             GenreFilterOption("documentary", "Documentary", 99, 99),
             GenreFilterOption("animation", "Animation", 16, 16)
         )

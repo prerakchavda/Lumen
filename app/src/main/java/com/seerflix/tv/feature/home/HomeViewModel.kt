@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.model.AvailabilityFilter
+import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CatalogRow
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.MediaType
@@ -15,6 +17,8 @@ import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import com.seerflix.tv.core.tv.TvChannelSyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,13 +39,18 @@ enum class HomeTab(val label: String, val filter: MediaType?) {
 data class HomeUiState(
     val activeTab: HomeTab = HomeTab.HOME,
     val selectedGenre: GenreFilterOption = GenreFilterOption.ALL_GENRES.first(),
+    val availabilityFilter: AvailabilityFilter = AvailabilityFilter.ALL,
     val profile: UserProfile? = null,
     val rows: List<CatalogRow> = emptyList(),
     val featuredItem: UnifiedMediaItem? = null,
     val previewStream: ResolvedPreviewStream? = null,
     val isPreviewMuted: Boolean = true,
     val activeDownloadCount: Int = 0,
+    val has4kMovieServer: Boolean = true,
+    val has4kTvServer: Boolean = true,
     val continueWatchingMenuTarget: UnifiedMediaItem? = null,
+    val posterMenuTarget: UnifiedMediaItem? = null,
+    val actionFeedbackMessage: String? = null,
     val isLoading: Boolean = true,
     val errorMessage: String? = null
 )
@@ -58,25 +67,31 @@ class HomeViewModel @Inject constructor(
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     private var focusPreviewJob: Job? = null
+    private var feedbackJob: Job? = null
 
     init {
-        loadCatalog(HomeTab.HOME, GenreFilterOption.ALL_GENRES.first())
+        loadCatalog(HomeTab.HOME, GenreFilterOption.ALL_GENRES.first(), AvailabilityFilter.ALL)
     }
 
     fun selectTab(tab: HomeTab) {
         if (_uiState.value.activeTab == tab && _uiState.value.rows.isNotEmpty()) return
-        loadCatalog(tab, GenreFilterOption.ALL_GENRES.first())
+        loadCatalog(tab, GenreFilterOption.ALL_GENRES.first(), _uiState.value.availabilityFilter)
     }
 
     fun selectGenre(genre: GenreFilterOption) {
         val currentTab = _uiState.value.activeTab
         if (currentTab != HomeTab.SHOWS && currentTab != HomeTab.MOVIES) return
         if (_uiState.value.selectedGenre.id == genre.id) return
-        loadCatalog(currentTab, genre)
+        loadCatalog(currentTab, genre, _uiState.value.availabilityFilter)
+    }
+
+    fun selectAvailabilityFilter(filter: AvailabilityFilter) {
+        if (_uiState.value.availabilityFilter == filter) return
+        loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre, filter)
     }
 
     fun refresh() {
-        loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre)
+        loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre, _uiState.value.availabilityFilter)
     }
 
     fun togglePreviewMute() {
@@ -84,28 +99,37 @@ class HomeViewModel @Inject constructor(
     }
 
     fun toggleFeaturedMyList() {
-        val profile = _uiState.value.profile ?: return
         val featured = _uiState.value.featuredItem ?: return
+        toggleMyListForItem(featured)
+    }
+
+    fun togglePosterMyList(item: UnifiedMediaItem) {
+        _uiState.update { it.copy(posterMenuTarget = null) }
+        toggleMyListForItem(item)
+    }
+
+    private fun toggleMyListForItem(target: UnifiedMediaItem) {
+        val profile = _uiState.value.profile ?: return
         viewModelScope.launch {
-            catalogRepository.toggleMyList(profile.jellyfinUserId, featured)
+            catalogRepository.toggleMyList(profile.jellyfinUserId, target)
                 .onSuccess { inList ->
                     _uiState.update { state ->
-                        val updatedFeatured = if (state.featuredItem?.id == featured.id) {
+                        val updatedFeatured = if (state.featuredItem?.id == target.id) {
                             state.featuredItem.copy(isInMyList = inList)
                         } else state.featuredItem
 
                         val updatedRows = state.rows.map { row ->
                             if (row.id == "my_list" || row.id == "my_list_page") {
                                 val nextItems = if (inList) {
-                                    (listOf(featured.copy(isInMyList = true)) + row.items).distinctBy { it.id }
+                                    (listOf(target.copy(isInMyList = true)) + row.items).distinctBy { it.id }
                                 } else {
-                                    row.items.filterNot { it.id == featured.id }
+                                    row.items.filterNot { it.id == target.id }
                                 }
                                 row.copy(items = nextItems)
                             } else {
                                 row.copy(
                                     items = row.items.map {
-                                        if (it.id == featured.id) it.copy(isInMyList = inList) else it
+                                        if (it.id == target.id) it.copy(isInMyList = inList) else it
                                     }
                                 )
                             }
@@ -113,6 +137,10 @@ class HomeViewModel @Inject constructor(
 
                         state.copy(featuredItem = updatedFeatured, rows = updatedRows)
                     }
+                    showActionFeedback(
+                        if (inList) "Added \"${target.title}\" to My List"
+                        else "Removed \"${target.title}\" from My List"
+                    )
                 }
         }
     }
@@ -123,6 +151,62 @@ class HomeViewModel @Inject constructor(
 
     fun dismissContinueWatchingOptions() {
         _uiState.update { it.copy(continueWatchingMenuTarget = null) }
+    }
+
+    fun openPosterOptions(item: UnifiedMediaItem) {
+        _uiState.update { it.copy(posterMenuTarget = item) }
+    }
+
+    fun dismissPosterOptions() {
+        _uiState.update { it.copy(posterMenuTarget = null) }
+    }
+
+    fun dismissActionFeedback() {
+        feedbackJob?.cancel()
+        _uiState.update { it.copy(actionFeedbackMessage = null) }
+    }
+
+    fun quickRequestItem(item: UnifiedMediaItem, is4k: Boolean) {
+        val tmdbId = item.tmdbId ?: return
+        _uiState.update { it.copy(posterMenuTarget = null) }
+        viewModelScope.launch {
+            val seasons = if (item.mediaType == MediaType.SERIES) {
+                item.seasons.map { it.seasonNumber }.filter { it > 0 }.ifEmpty { null }
+            } else null
+
+            catalogRepository.submitRequest(
+                tmdbId = tmdbId,
+                mediaType = item.mediaType,
+                is4k = is4k,
+                seasons = seasons
+            ).onSuccess {
+                _uiState.update { state ->
+                    val applyStatus: (UnifiedMediaItem) -> UnifiedMediaItem = { current ->
+                        if (current.id == item.id || (current.tmdbId == tmdbId && current.mediaType == item.mediaType)) {
+                            if (is4k) current.copy(uhdStatus = AvailabilityTier.PENDING)
+                            else current.copy(hdStatus = AvailabilityTier.PENDING)
+                        } else current
+                    }
+                    state.copy(
+                        featuredItem = state.featuredItem?.let(applyStatus),
+                        rows = state.rows.map { row -> row.copy(items = row.items.map(applyStatus)) },
+                        activeDownloadCount = state.activeDownloadCount + 1
+                    )
+                }
+                showActionFeedback("Requested \"${item.title}\" (${if (is4k) "4K" else "HD"})")
+            }.onFailure { err ->
+                showActionFeedback("Request failed: ${err.message ?: "Unknown error"}")
+            }
+        }
+    }
+
+    private fun showActionFeedback(message: String) {
+        feedbackJob?.cancel()
+        _uiState.update { it.copy(actionFeedbackMessage = message) }
+        feedbackJob = viewModelScope.launch {
+            delay(3500L)
+            _uiState.update { it.copy(actionFeedbackMessage = null) }
+        }
     }
 
     fun removeFromContinueWatching(item: UnifiedMediaItem) {
@@ -188,12 +272,17 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun loadCatalog(tab: HomeTab, genre: GenreFilterOption) {
+    private fun loadCatalog(
+        tab: HomeTab,
+        genre: GenreFilterOption,
+        availabilityFilter: AvailabilityFilter
+    ) {
         viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     activeTab = tab,
                     selectedGenre = genre,
+                    availabilityFilter = availabilityFilter,
                     isLoading = true,
                     errorMessage = null,
                     previewStream = null
@@ -207,64 +296,91 @@ class HomeViewModel @Inject constructor(
             _uiState.update { it.copy(profile = profile) }
 
             runCatching {
-                val rows = when (tab) {
-                    HomeTab.NEW_AND_POPULAR -> catalogRepository.loadNewAndPopular(profile.jellyfinUserId)
-                    HomeTab.MY_LIST -> {
-                        val listItems = catalogRepository.loadMyList(profile.jellyfinUserId)
-                        if (listItems.isEmpty()) {
-                            emptyList()
-                        } else {
-                            val movies = listItems.filter { it.mediaType == MediaType.MOVIE }
-                            val shows = listItems.filter { it.mediaType != MediaType.MOVIE }
-                            buildList {
-                                add(
-                                    CatalogRow(
-                                        id = "my_list_page",
-                                        title = "My List",
-                                        style = RowStyle.POSTER,
-                                        items = listItems
-                                    )
-                                )
-                                if (shows.isNotEmpty() && movies.isNotEmpty()) {
-                                    add(CatalogRow("my_list_shows", "Saved TV Shows", RowStyle.POSTER, shows))
-                                    add(CatalogRow("my_list_movies", "Saved Movies", RowStyle.POSTER, movies))
+                coroutineScope {
+                    val rowsDeferred = async {
+                        when (tab) {
+                            HomeTab.NEW_AND_POPULAR -> catalogRepository.loadNewAndPopular(
+                                userId = profile.jellyfinUserId,
+                                availabilityFilter = availabilityFilter
+                            )
+                            HomeTab.MY_LIST -> {
+                                val listItems = catalogRepository.loadMyList(profile.jellyfinUserId)
+                                if (listItems.isEmpty()) {
+                                    emptyList()
+                                } else {
+                                    val movies = listItems.filter { it.mediaType == MediaType.MOVIE }
+                                    val shows = listItems.filter { it.mediaType != MediaType.MOVIE }
+                                    buildList {
+                                        add(
+                                            CatalogRow(
+                                                id = "my_list_page",
+                                                title = "My List",
+                                                style = RowStyle.POSTER,
+                                                items = listItems
+                                            )
+                                        )
+                                        if (shows.isNotEmpty() && movies.isNotEmpty()) {
+                                            add(CatalogRow("my_list_shows", "Saved TV Shows", RowStyle.POSTER, shows))
+                                            add(CatalogRow("my_list_movies", "Saved Movies", RowStyle.POSTER, movies))
+                                        }
+                                    }
                                 }
+                            }
+                            HomeTab.HOME, HomeTab.SHOWS, HomeTab.MOVIES -> {
+                                val activeGenre = if (genre.movieGenreId == null && genre.tvGenreId == null) null else genre
+                                catalogRepository.loadHomeRows(
+                                    userId = profile.jellyfinUserId,
+                                    filterType = tab.filter,
+                                    genreFilter = activeGenre,
+                                    availabilityFilter = availabilityFilter
+                                )
                             }
                         }
                     }
-                    HomeTab.HOME, HomeTab.SHOWS, HomeTab.MOVIES -> {
-                        val activeGenre = if (genre.movieGenreId == null && genre.tvGenreId == null) null else genre
-                        catalogRepository.loadHomeRows(
-                            userId = profile.jellyfinUserId,
-                            filterType = tab.filter,
-                            genreFilter = activeGenre
-                        )
+                    val requestsDeferred = async {
+                        catalogRepository.loadRequestsHub().getOrDefault(emptyList())
                     }
+                    val has4kMovieDeferred = async {
+                        catalogRepository.has4kServerConfigured(MediaType.MOVIE)
+                    }
+                    val has4kTvDeferred = async {
+                        catalogRepository.has4kServerConfigured(MediaType.SERIES)
+                    }
+
+                    val rows = rowsDeferred.await()
+                    val requests = requestsDeferred.await()
+                    val activeDownloads = requests.count {
+                        it.downloadProgress != null || it.mediaStatus.isRequestedOrDownloading
+                    }
+                    val initialFeatured = rows.firstOrNull { it.id != "continue_watching" }?.items?.firstOrNull()
+                        ?: rows.firstOrNull()?.items?.firstOrNull()
+                    CatalogLoadBundle(
+                        rows = rows,
+                        featured = initialFeatured,
+                        activeDownloads = activeDownloads,
+                        has4kMovie = has4kMovieDeferred.await(),
+                        has4kTv = has4kTvDeferred.await()
+                    )
                 }
-                val requests = catalogRepository.loadRequestsHub().getOrDefault(emptyList())
-                val activeDownloads = requests.count {
-                    it.downloadProgress != null || it.mediaStatus.isRequestedOrDownloading
-                }
-                val initialFeatured = rows.firstOrNull { it.id != "continue_watching" }?.items?.firstOrNull()
-                    ?: rows.firstOrNull()?.items?.firstOrNull()
-                Triple(rows, initialFeatured, activeDownloads)
-            }.onSuccess { (rows, featured, dlCount) ->
+            }.onSuccess { bundle ->
                 _uiState.update {
                     it.copy(
-                        rows = rows,
-                        featuredItem = featured,
-                        activeDownloadCount = dlCount,
+                        rows = bundle.rows,
+                        featuredItem = bundle.featured,
+                        activeDownloadCount = bundle.activeDownloads,
+                        has4kMovieServer = bundle.has4kMovie,
+                        has4kTvServer = bundle.has4kTv,
                         isLoading = false
                     )
                 }
-                if (featured != null) {
-                    onItemFocused(featured)
+                if (bundle.featured != null) {
+                    onItemFocused(bundle.featured)
                 }
-                if (tab == HomeTab.HOME) {
+                if (tab == HomeTab.HOME && availabilityFilter == AvailabilityFilter.ALL) {
                     launch {
-                        val continueItems = rows.firstOrNull { it.id == "continue_watching" }?.items.orEmpty()
-                        val channelItems = rows.firstOrNull { it.id == "trending_now" }?.items
-                            ?: rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
+                        val continueItems = bundle.rows.firstOrNull { it.id == "continue_watching" }?.items.orEmpty()
+                        val channelItems = bundle.rows.firstOrNull { it.id == "trending_now" }?.items
+                            ?: bundle.rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
                         tvChannelSyncManager.syncHomeChannels(continueItems, channelItems)
                     }
                 }
@@ -278,5 +394,13 @@ class HomeViewModel @Inject constructor(
             }
         }
     }
+
+    private data class CatalogLoadBundle(
+        val rows: List<CatalogRow>,
+        val featured: UnifiedMediaItem?,
+        val activeDownloads: Int,
+        val has4kMovie: Boolean,
+        val has4kTv: Boolean
+    )
 }
 

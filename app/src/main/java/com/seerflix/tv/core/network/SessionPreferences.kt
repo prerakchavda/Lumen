@@ -2,6 +2,7 @@ package com.seerflix.tv.core.network
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -17,6 +18,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 import javax.inject.Inject
@@ -51,10 +53,24 @@ data class LocalMyListEntry(
 }
 
 @Singleton
-class SessionPreferences @Inject constructor(
-    @ApplicationContext private val context: Context,
+class SessionPreferences private constructor(
+    private val dataStore: DataStore<Preferences>,
     private val json: Json
 ) {
+    @Inject
+    constructor(
+        @ApplicationContext context: Context,
+        json: Json
+    ) : this(context.dataStore, json)
+
+    internal constructor(
+        testFile: File,
+        json: Json
+    ) : this(
+        PreferenceDataStoreFactory.create(produceFile = { testFile }),
+        json
+    )
+
     private object Keys {
         val JELLYFIN_URL = stringPreferencesKey("jellyfin_url")
         val SEERR_URL = stringPreferencesKey("seerr_url")
@@ -86,7 +102,7 @@ class SessionPreferences @Inject constructor(
     var cachedSeerrCookie: String? = null
         private set
 
-    val serverConfigFlow: Flow<ServerConfig> = context.dataStore.data.map { prefs ->
+    val serverConfigFlow: Flow<ServerConfig> = dataStore.data.map { prefs ->
         val deviceId = prefs[Keys.DEVICE_ID] ?: UUID.randomUUID().toString()
         val config = ServerConfig(
             jellyfinUrl = prefs[Keys.JELLYFIN_URL].orEmpty(),
@@ -99,12 +115,12 @@ class SessionPreferences @Inject constructor(
         config
     }
 
-    val profilesFlow: Flow<List<UserProfile>> = context.dataStore.data.map { prefs ->
+    val profilesFlow: Flow<List<UserProfile>> = dataStore.data.map { prefs ->
         val raw = prefs[Keys.PROFILES_JSON] ?: return@map emptyList()
         runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
     }
 
-    val activeProfileFlow: Flow<UserProfile?> = context.dataStore.data.map { prefs ->
+    val activeProfileFlow: Flow<UserProfile?> = dataStore.data.map { prefs ->
         val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@map null
         val raw = prefs[Keys.PROFILES_JSON] ?: return@map null
         val list = runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
@@ -117,7 +133,7 @@ class SessionPreferences @Inject constructor(
     suspend fun warmup() {
         serverConfigFlow.first()
         activeProfileFlow.first()
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             if (prefs[Keys.DEVICE_ID].isNullOrBlank()) {
                 prefs[Keys.DEVICE_ID] = cachedDeviceId
             }
@@ -129,7 +145,7 @@ class SessionPreferences @Inject constructor(
         val cleanSeerr = normalizeUrl(seerrUrl)
         cachedJellyfinUrl = cleanJf
         cachedSeerrUrl = cleanSeerr
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             prefs[Keys.JELLYFIN_URL] = cleanJf
             prefs[Keys.SEERR_URL] = cleanSeerr
             if (prefs[Keys.DEVICE_ID].isNullOrBlank()) {
@@ -139,7 +155,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun upsertAndActivateProfile(profile: UserProfile) {
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
@@ -164,7 +180,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun updateProfilePreferences(updatedProfile: UserProfile) {
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
@@ -176,7 +192,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun updateSubtitleAppearance(fontScale: Float, backgroundAlpha: Float) {
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
@@ -194,7 +210,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun setActiveProfile(profileId: String?) {
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             if (profileId == null) {
                 prefs.remove(Keys.ACTIVE_PROFILE_ID)
                 cachedToken = null
@@ -213,7 +229,7 @@ class SessionPreferences @Inject constructor(
 
     suspend fun updateActiveSeerrCookie(cookie: String) {
         cachedSeerrCookie = cookie
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
@@ -226,7 +242,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun removeProfile(profileId: String) {
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
@@ -243,7 +259,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun getLocalMyList(profileId: String): List<LocalMyListEntry> {
-        val raw = context.dataStore.data.first()[Keys.localMyList(profileId)] ?: return emptyList()
+        val raw = dataStore.data.first()[Keys.localMyList(profileId)] ?: return emptyList()
         return runCatching { json.decodeFromString<List<LocalMyListEntry>>(raw) }.getOrDefault(emptyList())
     }
 
@@ -254,7 +270,7 @@ class SessionPreferences @Inject constructor(
     suspend fun toggleLocalMyList(profileId: String, item: UnifiedMediaItem): Boolean {
         val tmdbId = item.tmdbId ?: return false
         var added = false
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val key = Keys.localMyList(profileId)
             val current = prefs[key]?.let {
                 runCatching { json.decodeFromString<List<LocalMyListEntry>>(it) }.getOrDefault(emptyList())
@@ -283,7 +299,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun removeFromLocalMyList(profileId: String, tmdbId: Int, mediaType: MediaType) {
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val key = Keys.localMyList(profileId)
             val current = prefs[key]?.let {
                 runCatching { json.decodeFromString<List<LocalMyListEntry>>(it) }.getOrDefault(emptyList())
@@ -294,7 +310,7 @@ class SessionPreferences @Inject constructor(
     }
 
     suspend fun getReminders(profileId: String): Set<String> {
-        val raw = context.dataStore.data.first()[Keys.reminders(profileId)] ?: return emptySet()
+        val raw = dataStore.data.first()[Keys.reminders(profileId)] ?: return emptySet()
         return runCatching { json.decodeFromString<Set<String>>(raw) }.getOrDefault(emptySet())
     }
 
@@ -305,7 +321,7 @@ class SessionPreferences @Inject constructor(
     suspend fun toggleReminder(profileId: String, tmdbId: Int, mediaType: MediaType): Boolean {
         val target = reminderKey(tmdbId, mediaType)
         var enabled = false
-        context.dataStore.edit { prefs ->
+        dataStore.edit { prefs ->
             val key = Keys.reminders(profileId)
             val current = prefs[key]?.let {
                 runCatching { json.decodeFromString<Set<String>>(it) }.getOrDefault(emptySet())

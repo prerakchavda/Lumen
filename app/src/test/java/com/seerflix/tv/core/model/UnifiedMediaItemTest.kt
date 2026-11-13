@@ -114,4 +114,66 @@ class UnifiedMediaItemTest {
         val locked = unlocked.copy(pinHash = "hashed")
         assertTrue(locked.hasPin)
     }
+
+    @Test
+    fun `AvailabilityFilter matches ALL WATCH_NOW and REQUESTABLE accurately`() {
+        val playable = UnifiedMediaItem(
+            id = "jf_1",
+            tmdbId = 1,
+            jellyfinId = "jf-1",
+            mediaType = MediaType.MOVIE,
+            title = "In Library",
+            hdStatus = AvailabilityTier.AVAILABLE
+        )
+        val requestable = UnifiedMediaItem(
+            id = "tmdb_MOVIE_2",
+            tmdbId = 2,
+            jellyfinId = null,
+            mediaType = MediaType.MOVIE,
+            title = "Requestable Title",
+            hdStatus = AvailabilityTier.UNKNOWN,
+            uhdStatus = AvailabilityTier.UNKNOWN
+        )
+        val downloading = UnifiedMediaItem(
+            id = "tmdb_MOVIE_3",
+            tmdbId = 3,
+            jellyfinId = null,
+            mediaType = MediaType.MOVIE,
+            title = "Pending Download",
+            hdStatus = AvailabilityTier.PROCESSING
+        )
+        val playableWith4kUnknown = UnifiedMediaItem(
+            id = "jf_4",
+            tmdbId = 4,
+            jellyfinId = "jf-4",
+            mediaType = MediaType.MOVIE,
+            title = "HD In Library",
+            hdStatus = AvailabilityTier.AVAILABLE,
+            uhdStatus = AvailabilityTier.UNKNOWN
+        )
+
+        assertTrue(AvailabilityFilter.ALL.matches(playable))
+        assertTrue(AvailabilityFilter.ALL.matches(requestable))
+        assertTrue(AvailabilityFilter.ALL.matches(downloading))
+
+        assertTrue(AvailabilityFilter.WATCH_NOW.matches(playable))
+        assertTrue(AvailabilityFilter.WATCH_NOW.matches(playableWith4kUnknown))
+        assertFalse(AvailabilityFilter.WATCH_NOW.matches(requestable))
+        assertFalse(AvailabilityFilter.WATCH_NOW.matches(downloading))
+
+        assertTrue(AvailabilityFilter.REQUESTABLE.matches(requestable))
+        assertFalse(AvailabilityFilter.REQUESTABLE.matches(playable))
+        assertFalse(AvailabilityFilter.REQUESTABLE.matches(playableWith4kUnknown))
+        assertFalse(AvailabilityFilter.REQUESTABLE.matches(downloading))
+    }
+
+    @Test
+    fun `GenreFilterOption includes Crime and Thriller options`() {
+        val ids = GenreFilterOption.ALL_GENRES.map { it.id }
+        assertTrue("crime" in ids)
+        assertTrue("thriller" in ids)
+        val crime = GenreFilterOption.ALL_GENRES.first { it.id == "crime" }
+        assertEquals(80, crime.movieGenreId)
+        assertEquals(80, crime.tvGenreId)
+    }
 }

@@ -41,13 +41,23 @@ interface SeerrApi {
     @GET("api/v1/discover/movies")
     suspend fun getDiscoverMovies(
         @Query("page") page: Int = 1,
-        @Query("language") language: String = "en"
+        @Query("language") language: String = "en",
+        @Query("sortBy") sortBy: String? = null,
+        @Query("genre") genre: String? = null,
+        @Query("primaryReleaseDateGte") primaryReleaseDateGte: String? = null,
+        @Query("primaryReleaseDateLte") primaryReleaseDateLte: String? = null,
+        @Query("voteCountGte") voteCountGte: Int? = null
     ): SeerrDiscoverPageDto
 
     @GET("api/v1/discover/tv")
     suspend fun getDiscoverTv(
         @Query("page") page: Int = 1,
-        @Query("language") language: String = "en"
+        @Query("language") language: String = "en",
+        @Query("sortBy") sortBy: String? = null,
+        @Query("genre") genre: String? = null,
+        @Query("firstAirDateGte") firstAirDateGte: String? = null,
+        @Query("firstAirDateLte") firstAirDateLte: String? = null,
+        @Query("voteCountGte") voteCountGte: Int? = null
     ): SeerrDiscoverPageDto
 
     @GET("api/v1/discover/movies/upcoming")
