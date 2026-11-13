@@ -183,7 +183,7 @@ fun HeroBillboard(
             ) {
                 if (spec.showBrandMicroMark) {
                     Text(
-                        text = "S",
+                        text = "L",
                         color = colors.accent,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Black

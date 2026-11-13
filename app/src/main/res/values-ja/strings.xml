@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Seerflix</string>
-    <string name="search_hint">Seerflixで映画やTV番組を検索</string>
+    <string name="app_name">Lumen</string>
+    <string name="search_hint">Lumenで映画やTV番組を検索</string>
     <string name="search_settings_description">JellyfinとSeerrの映画・TV番組</string>
 </resources>

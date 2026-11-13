@@ -167,7 +167,7 @@ class ScreenshotGeneratorTest {
                 ),
                 CatalogRow(
                     id = "top_10_movies",
-                    title = "Top 10 Movies on Seerflix Today",
+                    title = "Top 10 Movies on Lumen Today",
                     style = RowStyle.TOP_10,
                     items = listOf(
                         dune,
@@ -733,7 +733,7 @@ class ScreenshotGeneratorTest {
             rows = listOf(
                 CatalogRow(
                     id = "top_10_movies",
-                    title = "Top 10 Movies on Seerflix Today",
+                    title = "Top 10 Movies on Lumen Today",
                     style = RowStyle.TOP_10,
                     items = listOf(
                         sampleDune(),
@@ -966,7 +966,7 @@ class ScreenshotGeneratorTest {
                 ),
                 CatalogRow(
                     id = "top_10_movies",
-                    title = "Top 10 Movies on Seerflix Today",
+                    title = "Top 10 Movies on Lumen Today",
                     style = RowStyle.TOP_10,
                     items = listOf(
                         dune,
@@ -1083,7 +1083,7 @@ class ScreenshotGeneratorTest {
     private fun renderSyntheticArtwork(uri: String): Bitmap {
         val parts = uri.removePrefix("art://").split("/")
         val kind = parts.getOrElse(0) { "poster" }
-        val label = parts.getOrElse(2) { "SEERFLIX" }
+        val label = parts.getOrElse(2) { "LUMEN" }
         val primary = parts.getOrNull(3)?.removePrefix("0x")?.toLongOrNull(16)?.toInt() ?: 0xFF1F2937.toInt()
         val accent = parts.getOrNull(4)?.removePrefix("0x")?.toLongOrNull(16)?.toInt() ?: 0xFFE50914.toInt()
 

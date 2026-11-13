@@ -155,7 +155,7 @@ class SetupCompanionServer {
         <html lang="en">
         <head>
           <meta name="viewport" content="width=device-width,initial-scale=1"/>
-          <title>Seerflix TV Setup</title>
+          <title>Lumen TV Setup</title>
           <style>
             body{background:#111;color:#fff;font-family:system-ui,-apple-system,sans-serif;padding:20px;max-width:480px;margin:0 auto;}
             h1{color:#e50914;font-size:24px;margin-bottom:8px;}
@@ -167,7 +167,7 @@ class SetupCompanionServer {
           </style>
         </head>
         <body>
-          <h1>Seerflix TV Companion</h1>
+          <h1>Lumen TV Companion</h1>
           <p>Paste your server URLs from your phone to send them straight to your TV.</p>
           <form method="POST" action="/save">
             <label>Jellyfin URL (Remote or Primary)</label>
@@ -200,7 +200,7 @@ class SetupCompanionServer {
           </style>
         </head>
         <body>
-          <h1>Sent to Seerflix TV!</h1>
+          <h1>Sent to Lumen TV!</h1>
           <p>Check your TV screen and click Test &amp; Continue.</p>
         </body>
         </html>

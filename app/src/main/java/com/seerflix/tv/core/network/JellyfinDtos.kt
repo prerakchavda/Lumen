@@ -198,7 +198,7 @@ data class JellyfinPlaybackInfoRequest(
 
 @Serializable
 data class JellyfinDeviceProfileDto(
-    @SerialName("Name") val name: String = "Seerflix Google TV",
+    @SerialName("Name") val name: String = "Lumen Google TV",
     @SerialName("MaxStreamingBitrate") val maxStreamingBitrate: Long = 120_000_000L,
     @SerialName("DirectPlayProfiles") val directPlayProfiles: List<JellyfinDirectPlayProfileDto> = listOf(
         JellyfinDirectPlayProfileDto(

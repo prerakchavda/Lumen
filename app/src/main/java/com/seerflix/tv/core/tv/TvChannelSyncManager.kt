@@ -172,7 +172,7 @@ class TvChannelSyncManager @Inject constructor(
     }
 
     companion object {
-        private const val CHANNEL_NAME = "Seerflix"
+        private const val CHANNEL_NAME = "Lumen"
 
         fun buildPlayerDeepLink(jellyfinId: String): Uri =
             Uri.parse("seerflix://player/$jellyfinId")

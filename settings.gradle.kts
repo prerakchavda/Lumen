@@ -28,5 +28,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Seerflix"
+rootProject.name = "Lumen"
 include(":app")

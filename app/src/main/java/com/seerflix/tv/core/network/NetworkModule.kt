@@ -92,7 +92,7 @@ private class JellyfinAuthInterceptor(
         val token = prefs.cachedToken
         val deviceId = prefs.cachedDeviceId
         val authHeader = buildString {
-            append("""MediaBrowser Client="Seerflix", Device="Google TV", DeviceId="$deviceId", Version="${BuildConfig.VERSION_NAME}"""")
+            append("""MediaBrowser Client="Lumen", Device="Google TV", DeviceId="$deviceId", Version="${BuildConfig.VERSION_NAME}"""")
             if (!token.isNullOrBlank()) {
                 append(""", Token="$token"""")
             }

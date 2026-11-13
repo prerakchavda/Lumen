@@ -126,7 +126,7 @@ fun SetupContent(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = "SEERFLIX",
+                            text = "LUMEN",
                             color = colors.accent,
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Black,

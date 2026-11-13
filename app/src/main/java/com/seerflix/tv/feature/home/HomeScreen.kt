@@ -748,7 +748,7 @@ private fun AppleTvTopGlassBar(
                 fontWeight = FontWeight.Black
             )
             Text(
-                text = "Seerflix",
+                text = "Lumen",
                 color = colors.white,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold
@@ -843,7 +843,7 @@ private fun DisneyTopHeaderBar(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "SEERFLIX+",
+                text = "LUMEN+",
                 color = colors.white,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Black,
@@ -1384,7 +1384,7 @@ private fun NetflixNavRail(
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Text(
-                    text = "S",
+                    text = "L",
                     color = colors.accent,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Black
@@ -1392,7 +1392,7 @@ private fun NetflixNavRail(
                 if (expanded) {
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = "SEERFLIX",
+                        text = "LUMEN",
                         color = colors.accent,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Black,
@@ -2586,7 +2586,7 @@ private fun AppUpdateDialog(
                 Icon(Icons.Filled.SystemUpdate, contentDescription = null, tint = colors.matchGreen, modifier = Modifier.size(24.dp))
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = "Seerflix ${updateInfo.latestVersion} Available",
+                    text = "Lumen ${updateInfo.latestVersion} Available",
                     color = colors.white,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold

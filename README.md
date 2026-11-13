@@ -1,4 +1,4 @@
-# Seerflix — Customizable Google TV Client for Jellyfin + Seerr v3+
+# Lumen — Customizable Google TV Client for Jellyfin + Seerr v3+
 
 A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose for TV**, and **Jetpack Media3** that unifies your **Jellyfin** library and **Seerr v3+** (or Jellyseerr) into a living room streaming experience with **per-user UI Presets** (Netflix, Apple TV+, and Disney+ / Max) — with no extra middleware server required.
 
