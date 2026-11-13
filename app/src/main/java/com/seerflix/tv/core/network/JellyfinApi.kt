@@ -1,0 +1,132 @@
+package com.seerflix.tv.core.network
+
+import retrofit2.http.Body
+import retrofit2.http.GET
+import retrofit2.http.POST
+import retrofit2.http.Path
+import retrofit2.http.Query
+
+interface JellyfinApi {
+    @GET("System/Info/Public")
+    suspend fun getPublicSystemInfo(): JellyfinPublicSystemInfo
+
+    @GET("Users/Public")
+    suspend fun getPublicUsers(): List<JellyfinUserDto>
+
+    @POST("Users/AuthenticateByName")
+    suspend fun authenticateByName(
+        @Body body: JellyfinAuthRequest
+    ): JellyfinAuthResult
+
+    @POST("QuickConnect/Initiate")
+    suspend fun initiateQuickConnect(): JellyfinQuickConnectState
+
+    @GET("QuickConnect/Connect")
+    suspend fun checkQuickConnect(
+        @Query("secret") secret: String
+    ): JellyfinQuickConnectState
+
+    @POST("Users/AuthenticateWithQuickConnect")
+    suspend fun authenticateWithQuickConnect(
+        @Body body: JellyfinQuickConnectAuthRequest
+    ): JellyfinAuthResult
+
+    @GET("Users/{userId}/Items/Resume")
+    suspend fun getResumeItems(
+        @Path("userId") userId: String,
+        @Query("Limit") limit: Int = 20,
+        @Query("Fields") fields: String = "PrimaryImageAspectRatio,BasicSyncInfo,Overview,Genres,ProviderIds,UserData,RunTimeTicks",
+        @Query("MediaTypes") mediaTypes: String = "Video"
+    ): JellyfinItemsResponse
+
+    @GET("Users/{userId}/Items/Latest")
+    suspend fun getLatestItems(
+        @Path("userId") userId: String,
+        @Query("Limit") limit: Int = 24,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
+        @Query("Fields") fields: String = "PrimaryImageAspectRatio,Overview,Genres,ProviderIds,UserData,RunTimeTicks,RemoteTrailers"
+    ): List<JellyfinItemDto>
+
+    @GET("Users/{userId}/Items")
+    suspend fun getLibraryItems(
+        @Path("userId") userId: String,
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
+        @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating,RemoteTrailers",
+        @Query("SortBy") sortBy: String = "DateCreated,SortName",
+        @Query("SortOrder") sortOrder: String = "Descending",
+        @Query("Limit") limit: Int = 500
+    ): JellyfinItemsResponse
+
+    @GET("Users/{userId}/Items")
+    suspend fun searchItems(
+        @Path("userId") userId: String,
+        @Query("SearchTerm") searchTerm: String,
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
+        @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating",
+        @Query("Limit") limit: Int = 30
+    ): JellyfinItemsResponse
+
+    @GET("Users/{userId}/Items/{itemId}")
+    suspend fun getItemDetails(
+        @Path("userId") userId: String,
+        @Path("itemId") itemId: String
+    ): JellyfinItemDto
+
+    @GET("Shows/{seriesId}/Seasons")
+    suspend fun getSeasons(
+        @Path("seriesId") seriesId: String,
+        @Query("UserId") userId: String,
+        @Query("Fields") fields: String = "ItemCounts,Overview"
+    ): JellyfinItemsResponse
+
+    @GET("Shows/{seriesId}/Episodes")
+    suspend fun getEpisodes(
+        @Path("seriesId") seriesId: String,
+        @Query("UserId") userId: String,
+        @Query("SeasonId") seasonId: String? = null,
+        @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData"
+    ): JellyfinItemsResponse
+
+    @GET("Items/{itemId}/Similar")
+    suspend fun getSimilarItems(
+        @Path("itemId") itemId: String,
+        @Query("UserId") userId: String,
+        @Query("Limit") limit: Int = 15,
+        @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData"
+    ): JellyfinItemsResponse
+
+    @GET("Items/{itemId}/LocalTrailers")
+    suspend fun getLocalTrailers(
+        @Path("itemId") itemId: String,
+        @Query("UserId") userId: String
+    ): List<JellyfinItemDto>
+
+    @POST("Items/{itemId}/PlaybackInfo")
+    suspend fun getPlaybackInfo(
+        @Path("itemId") itemId: String,
+        @Query("UserId") userId: String,
+        @Body body: JellyfinPlaybackInfoRequest
+    ): JellyfinPlaybackInfoResponse
+
+    @GET("MediaSegments/{itemId}")
+    suspend fun getMediaSegments(
+        @Path("itemId") itemId: String
+    ): JellyfinMediaSegmentsResponse
+
+    @POST("Sessions/Playing")
+    suspend fun reportPlaybackStart(
+        @Body body: JellyfinPlaybackProgressRequest
+    )
+
+    @POST("Sessions/Playing/Progress")
+    suspend fun reportPlaybackProgress(
+        @Body body: JellyfinPlaybackProgressRequest
+    )
+
+    @POST("Sessions/Playing/Stopped")
+    suspend fun reportPlaybackStopped(
+        @Body body: JellyfinPlaybackProgressRequest
+    )
+}
