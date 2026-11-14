@@ -2,6 +2,7 @@ package com.seerflix.tv.ui.components
 
 import android.view.KeyEvent
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -9,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.focusable
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -137,7 +137,11 @@ fun NetflixPosterCard(
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
 
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.07f else 1f, label = "posterScale")
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.07f else 1f,
+        animationSpec = tween(durationMillis = 120),
+        label = "posterScale"
+    )
 
     if (isWidescreen) {
         Column(
@@ -148,8 +152,9 @@ fun NetflixPosterCard(
                     scaleY = scale
                 }
                 .onFocusChanged {
-                    focused = it.isFocused
-                    if (it.isFocused) onFocus()
+                    val isNowFocused = it.isFocused || it.hasFocus
+                    focused = isNowFocused
+                    if (isNowFocused) onFocus()
                 }
                 .onPreviewKeyEvent { keyEvent ->
                     if (onOptionsMenu != null &&
@@ -160,7 +165,6 @@ fun NetflixPosterCard(
                         true
                     } else false
                 }
-                .focusable()
                 .combinedClickable(
                     onClick = onClick,
                     onLongClick = onOptionsMenu
@@ -255,8 +259,9 @@ fun NetflixPosterCard(
                 scaleY = scale
             }
             .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocus()
+                val isNowFocused = it.isFocused || it.hasFocus
+                focused = isNowFocused
+                if (isNowFocused) onFocus()
             }
             .onPreviewKeyEvent { keyEvent ->
                 if (onOptionsMenu != null &&
@@ -267,7 +272,6 @@ fun NetflixPosterCard(
                     true
                 } else false
             }
-            .focusable()
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onOptionsMenu
@@ -415,7 +419,11 @@ fun Top10PosterCard(
     val spec = SeerflixTokens.spec
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "top10Scale")
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.06f else 1f,
+        animationSpec = tween(durationMillis = 120),
+        label = "top10Scale"
+    )
 
     when (spec.top10Style) {
         Top10Style.CORNER_PILL_BADGE -> {
@@ -427,8 +435,9 @@ fun Top10PosterCard(
                         scaleY = scale
                     }
                     .onFocusChanged {
-                        focused = it.isFocused
-                        if (it.isFocused) onFocus()
+                        val isNowFocused = it.isFocused || it.hasFocus
+                        focused = isNowFocused
+                        if (isNowFocused) onFocus()
                     }
                     .onPreviewKeyEvent { keyEvent ->
                         if (onOptionsMenu != null &&
@@ -439,7 +448,6 @@ fun Top10PosterCard(
                             true
                         } else false
                     }
-                    .focusable()
                     .combinedClickable(
                         onClick = onClick,
                         onLongClick = onOptionsMenu
@@ -507,8 +515,9 @@ fun Top10PosterCard(
                         scaleY = scale
                     }
                     .onFocusChanged {
-                        focused = it.isFocused
-                        if (it.isFocused) onFocus()
+                        val isNowFocused = it.isFocused || it.hasFocus
+                        focused = isNowFocused
+                        if (isNowFocused) onFocus()
                     }
                     .onPreviewKeyEvent { keyEvent ->
                         if (onOptionsMenu != null &&
@@ -519,7 +528,6 @@ fun Top10PosterCard(
                             true
                         } else false
                     }
-                    .focusable()
                     .combinedClickable(
                         onClick = onClick,
                         onLongClick = onOptionsMenu
@@ -562,6 +570,26 @@ fun Top10PosterCard(
             }
         }
         Top10Style.OUTLINED_NUMERAL -> {
+            val rankText = remember(rank) { rank.toString() }
+            val (strokePaint, fillPaint) = remember(rank, colors.deepBlack) {
+                val boldSans = android.graphics.Typeface.create(
+                    android.graphics.Typeface.SANS_SERIF,
+                    android.graphics.Typeface.BOLD
+                )
+                val sp = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 6f
+                    color = Color(0xFF707070).toArgb()
+                    typeface = boldSans
+                    letterSpacing = -0.1f
+                }
+                val fp = android.graphics.Paint(sp).apply {
+                    style = android.graphics.Paint.Style.FILL
+                    color = colors.deepBlack.toArgb()
+                }
+                sp to fp
+            }
             Box(
                 modifier = modifier
                     .width(198.dp)
@@ -571,8 +599,9 @@ fun Top10PosterCard(
                         scaleY = scale
                     }
                     .onFocusChanged {
-                        focused = it.isFocused
-                        if (it.isFocused) onFocus()
+                        val isNowFocused = it.isFocused || it.hasFocus
+                        focused = isNowFocused
+                        if (isNowFocused) onFocus()
                     }
                     .onPreviewKeyEvent { keyEvent ->
                         if (onOptionsMenu != null &&
@@ -583,7 +612,6 @@ fun Top10PosterCard(
                             true
                         } else false
                     }
-                    .focusable()
                     .combinedClickable(
                         onClick = onClick,
                         onLongClick = onOptionsMenu
@@ -596,28 +624,14 @@ fun Top10PosterCard(
                         .fillMaxHeight()
                         .align(Alignment.BottomStart)
                 ) {
-                    val text = rank.toString()
+                    val targetTextSize = if (rank >= 10) size.height * 0.78f else size.height * 0.92f
+                    strokePaint.textSize = targetTextSize
+                    fillPaint.textSize = targetTextSize
                     drawIntoCanvas { canvas ->
-                        val strokePaint = android.graphics.Paint().apply {
-                            isAntiAlias = true
-                            style = android.graphics.Paint.Style.STROKE
-                            strokeWidth = 6f
-                            color = Color(0xFF707070).toArgb()
-                            textSize = if (rank >= 10) size.height * 0.78f else size.height * 0.92f
-                            typeface = android.graphics.Typeface.create(
-                                android.graphics.Typeface.SANS_SERIF,
-                                android.graphics.Typeface.BOLD
-                            )
-                            letterSpacing = -0.1f
-                        }
-                        val fillPaint = android.graphics.Paint(strokePaint).apply {
-                            style = android.graphics.Paint.Style.FILL
-                            color = colors.deepBlack.toArgb()
-                        }
                         val y = size.height * 0.92f
                         val x = if (rank >= 10) -6f else 6f
-                        canvas.nativeCanvas.drawText(text, x, y, fillPaint)
-                        canvas.nativeCanvas.drawText(text, x, y, strokePaint)
+                        canvas.nativeCanvas.drawText(rankText, x, y, fillPaint)
+                        canvas.nativeCanvas.drawText(rankText, x, y, strokePaint)
                     }
                 }
 
@@ -670,7 +684,11 @@ fun ContinueWatchingCard(
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     val cardWidth = if (spec.preset == UiPreset.APPLE_TV) 228.dp else 212.dp
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.06f else 1f, label = "cwScale")
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.06f else 1f,
+        animationSpec = tween(durationMillis = 120),
+        label = "cwScale"
+    )
 
     Column(
         modifier = modifier
@@ -680,8 +698,9 @@ fun ContinueWatchingCard(
                 scaleY = scale
             }
             .onFocusChanged {
-                focused = it.isFocused
-                if (it.isFocused) onFocus()
+                val isNowFocused = it.isFocused || it.hasFocus
+                focused = isNowFocused
+                if (isNowFocused) onFocus()
             }
             .onPreviewKeyEvent { keyEvent ->
                 if (onOptionsMenu != null &&
@@ -692,7 +711,6 @@ fun ContinueWatchingCard(
                     true
                 } else false
             }
-            .focusable()
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onOptionsMenu

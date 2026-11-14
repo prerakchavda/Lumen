@@ -4,7 +4,6 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +60,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -70,6 +70,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -580,7 +582,7 @@ private fun HomeMainCanvas(
                     contentPadding = PaddingValues(bottom = 48.dp)
                 ) {
                     state.featuredItem?.let { hero ->
-                        item(key = "hero_billboard") {
+                        item(key = "hero_billboard", contentType = "hero") {
                             HeroBillboard(
                                 item = hero,
                                 previewStream = state.previewStream,
@@ -608,7 +610,7 @@ private fun HomeMainCanvas(
                     }
 
                     if (state.readyAlerts.isNotEmpty()) {
-                        item(key = "ready_alerts_banner") {
+                        item(key = "ready_alerts_banner", contentType = "alerts") {
                             ReadyRequestAlertsBanner(
                                 alerts = state.readyAlerts,
                                 onPlayAlert = onPlayReadyAlert,
@@ -618,7 +620,7 @@ private fun HomeMainCanvas(
                     }
 
                     if (state.activeTab != HomeTab.MY_LIST) {
-                        item(key = "availability_filter_bar") {
+                        item(key = "availability_filter_bar", contentType = "filter_bar") {
                             AvailabilityFilterBar(
                                 selectedFilter = state.availabilityFilter,
                                 isSeerrConfigured = state.isSeerrConfigured,
@@ -630,7 +632,7 @@ private fun HomeMainCanvas(
                     }
 
                     if (state.activeTab == HomeTab.SHOWS || state.activeTab == HomeTab.MOVIES) {
-                        item(key = "genre_filter_bar") {
+                        item(key = "genre_filter_bar", contentType = "genre_bar") {
                             GenreFilterBar(
                                 selectedGenre = state.selectedGenre,
                                 onSelectGenre = onSelectGenre
@@ -639,7 +641,7 @@ private fun HomeMainCanvas(
                     }
 
                     if (state.rows.isEmpty() && !state.isLoading) {
-                        item(key = "empty_filtered_state") {
+                        item(key = "empty_filtered_state", contentType = "empty") {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -662,7 +664,11 @@ private fun HomeMainCanvas(
                         }
                     }
 
-                    items(state.rows, key = { it.id }) { row ->
+                    items(
+                        items = state.rows,
+                        key = { it.id },
+                        contentType = { it.style }
+                    ) { row ->
                         CatalogRowSection(
                             row = row,
                             onItemFocus = onItemFocused,
@@ -922,8 +928,7 @@ private fun TopNavTabPill(
                 if (focused) Modifier.border(2.dp, colors.focusBorder, corner)
                 else Modifier
             )
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 5.dp)
     ) {
@@ -968,8 +973,7 @@ private fun TopBarUtilityIcon(
                 },
                 shape = CircleShape
             )
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -1043,8 +1047,7 @@ private fun AvailabilityFilterBar(
                             if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(20.dp))
                             else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.6f), RoundedCornerShape(20.dp))
                         )
-                        .onFocusChanged { focused = it.isFocused }
-                        .focusable()
+                        .onFocusChanged { focused = it.isFocused || it.hasFocus }
                         .clickable { onSelectFilter(filter) }
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) {
@@ -1119,8 +1122,7 @@ private fun GenreFilterBar(
                         if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(20.dp))
                         else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
                     )
-                    .onFocusChanged { focused = it.isFocused }
-                    .focusable()
+                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .clickable { onSelectGenre(genre) }
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
@@ -1153,6 +1155,10 @@ private fun PosterOptionsDialog(
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val firstActionFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { firstActionFocusRequester.requestFocus() }
+    }
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -1180,8 +1186,15 @@ private fun PosterOptionsDialog(
             }.joinToString(" • ")
             Text(subtitle, color = colors.textSecondary, fontSize = 13.sp)
             Spacer(Modifier.height(4.dp))
+            var assignedFirst = false
+            fun firstModifier(): Modifier = if (!assignedFirst) {
+                assignedFirst = true
+                Modifier.focusRequester(firstActionFocusRequester)
+            } else {
+                Modifier
+            }
             if (item.isPlayable && item.jellyfinId != null) {
-                ContextActionRow(Icons.Filled.PlayArrow, strings.actionPlay, onPlay)
+                ContextActionRow(Icons.Filled.PlayArrow, strings.actionPlay, onPlay, modifier = firstModifier())
                 ContextActionRow(
                     icon = if (item.isWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
                     label = if (item.isWatched) strings.actionMarkUnwatched else strings.actionMarkWatched,
@@ -1189,10 +1202,10 @@ private fun PosterOptionsDialog(
                 )
             }
             if (item.canRequestHd && canSubmitRequests) {
-                ContextActionRow(Icons.Filled.CloudDownload, strings.actionRequestHd, onRequestHd)
+                ContextActionRow(Icons.Filled.CloudDownload, strings.actionRequestHd, onRequestHd, modifier = firstModifier())
             }
             if (item.canRequest4k && has4kServer && canSubmitRequests) {
-                ContextActionRow(Icons.Filled.Hd, strings.actionRequest4k, onRequest4k)
+                ContextActionRow(Icons.Filled.Hd, strings.actionRequest4k, onRequest4k, modifier = firstModifier())
             }
             if (isKidsLocked && (item.canRequestHd || item.canRequest4k)) {
                 Row(
@@ -1207,7 +1220,8 @@ private fun PosterOptionsDialog(
             ContextActionRow(
                 icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
                 label = if (item.isInMyList) "Remove from My List" else "Add to My List",
-                onClick = onToggleMyList
+                onClick = onToggleMyList,
+                modifier = firstModifier()
             )
             ContextActionRow(Icons.Filled.Info, "Details, Cast & Trailers", onViewDetails)
         }
@@ -1225,6 +1239,10 @@ private fun ContinueWatchingOptionsDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val firstActionFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { firstActionFocusRequester.requestFocus() }
+    }
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -1245,7 +1263,12 @@ private fun ContinueWatchingOptionsDialog(
                 Text(it, color = colors.textSecondary, fontSize = 13.sp)
             }
             Spacer(Modifier.height(4.dp))
-            ContextActionRow(Icons.Filled.PlayArrow, "Resume Playing", onResume)
+            ContextActionRow(
+                icon = Icons.Filled.PlayArrow,
+                label = "Resume Playing",
+                onClick = onResume,
+                modifier = Modifier.focusRequester(firstActionFocusRequester)
+            )
             ContextActionRow(Icons.Filled.Info, "More Details", onViewDetails)
             ContextActionRow(Icons.Filled.DeleteOutline, "Remove from Continue Watching", onRemove)
         }
@@ -1256,19 +1279,19 @@ private fun ContinueWatchingOptionsDialog(
 private fun ContextActionRow(
     icon: ImageVector,
     label: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp)
     ) {
@@ -1308,7 +1331,11 @@ private fun CatalogRowSection(
         ) {
             when (row.style) {
                 RowStyle.CONTINUE_WATCHING -> {
-                    items(row.items, key = { "${row.id}_${it.id}" }) { item ->
+                    items(
+                        items = row.items,
+                        key = { "${row.id}_${it.id}" },
+                        contentType = { "cw_card" }
+                    ) { item ->
                         ContinueWatchingCard(
                             item = item,
                             onFocus = { onItemFocus(item) },
@@ -1318,7 +1345,11 @@ private fun CatalogRowSection(
                     }
                 }
                 RowStyle.TOP_10 -> {
-                    itemsIndexed(row.items, key = { idx, it -> "${row.id}_${idx}_${it.id}" }) { idx, item ->
+                    itemsIndexed(
+                        items = row.items,
+                        key = { idx, it -> "${row.id}_${idx}_${it.id}" },
+                        contentType = { _, _ -> "top10_card" }
+                    ) { idx, item ->
                         Top10PosterCard(
                             rank = idx + 1,
                             item = item,
@@ -1329,7 +1360,11 @@ private fun CatalogRowSection(
                     }
                 }
                 else -> {
-                    items(row.items, key = { "${row.id}_${it.id}" }) { item ->
+                    items(
+                        items = row.items,
+                        key = { "${row.id}_${it.id}" },
+                        contentType = { "poster_card" }
+                    ) { item ->
                         NetflixPosterCard(
                             item = item,
                             onFocus = { onItemFocus(item) },
@@ -1370,7 +1405,6 @@ private fun NetflixNavRail(
         modifier = Modifier
             .fillMaxHeight()
             .width(if (expanded) 216.dp else 68.dp)
-            .animateContentSize()
             .background(colors.navBarBackground)
             .onFocusChanged { focusState ->
                 onRailFocusChange(focusState.hasFocus)
@@ -1554,8 +1588,7 @@ private fun NavRailItem(
                 if (focused) Modifier.border(1.5.dp, colors.focusBorder, RoundedCornerShape(6.dp))
                 else Modifier
             )
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp)
     ) {
@@ -1675,8 +1708,7 @@ private fun CollectionsHubContent(
                                 if (focused) Modifier.border(2.dp, colors.focusBorder, cardCorner)
                                 else Modifier.border(1.dp, colors.badgeBorder, cardCorner)
                             )
-                            .onFocusChanged { focused = it.isFocused }
-                            .focusable()
+                            .onFocusChanged { focused = it.isFocused || it.hasFocus }
                             .clickable { onOpenCollection(col) }
                             .padding(10.dp)
                     ) {
@@ -1785,8 +1817,7 @@ private fun CollectionDetailsDialog(
                                 .clip(buttonCorner)
                                 .background(if (reqAllFocused) colors.accent else colors.accentDark)
                                 .then(if (reqAllFocused) Modifier.border(2.dp, colors.focusBorder, buttonCorner) else Modifier)
-                                .onFocusChanged { reqAllFocused = it.isFocused }
-                                .focusable()
+                                .onFocusChanged { reqAllFocused = it.isFocused || it.hasFocus }
                                 .clickable(onClick = onRequestAllMissing)
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
@@ -1802,8 +1833,7 @@ private fun CollectionDetailsDialog(
                             .clip(CircleShape)
                             .background(if (closeFocused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
                             .then(if (closeFocused) Modifier.border(2.dp, colors.focusBorder, CircleShape) else Modifier)
-                            .onFocusChanged { closeFocused = it.isFocused }
-                            .focusable()
+                            .onFocusChanged { closeFocused = it.isFocused || it.hasFocus }
                             .clickable(onClick = onDismiss),
                         contentAlignment = Alignment.Center
                     ) {
@@ -1847,8 +1877,7 @@ private fun CollectionDetailsDialog(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (rowFocused) colors.surfaceElevated else colors.surface)
                                 .then(if (rowFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp)) else Modifier)
-                                .onFocusChanged { rowFocused = it.isFocused }
-                                .focusable()
+                                .onFocusChanged { rowFocused = it.isFocused || it.hasFocus }
                                 .clickable {
                                     when {
                                         part.isPlayable -> onPlayItem(part)
@@ -1984,8 +2013,7 @@ private fun ReadyRequestAlertsBanner(
                             .clip(RoundedCornerShape(6.dp))
                             .background(if (playFocused) colors.white else colors.matchGreen)
                             .then(if (playFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
-                            .onFocusChanged { playFocused = it.isFocused }
-                            .focusable()
+                            .onFocusChanged { playFocused = it.isFocused || it.hasFocus }
                             .clickable { onPlayAlert(alert) }
                             .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) {
@@ -2002,8 +2030,7 @@ private fun ReadyRequestAlertsBanner(
                             .clip(RoundedCornerShape(6.dp))
                             .background(if (dismissFocused) colors.surfaceElevated else colors.surface)
                             .then(if (dismissFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
-                            .onFocusChanged { dismissFocused = it.isFocused }
-                            .focusable()
+                            .onFocusChanged { dismissFocused = it.isFocused || it.hasFocus }
                             .clickable { onDismissAlert(alert.requestId) }
                             .padding(horizontal = 12.dp, vertical = 7.dp)
                     ) {
@@ -2089,8 +2116,7 @@ private fun LiveTvGuideContent(
                         if (focused) colors.focusBorder else colors.badgeBorder,
                         cardCorner
                     )
-                    .onFocusChanged { focused = it.isFocused }
-                    .focusable()
+                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
                     .clickable { onTuneChannel(ch.id) }
                     .padding(14.dp)
             ) {
@@ -2305,8 +2331,7 @@ private fun CustomizeHomeDialog(
                                     if (focused) colors.focusBorder else colors.badgeBorder,
                                     RoundedCornerShape(8.dp)
                                 )
-                                .onFocusChanged { focused = it.isFocused }
-                                .focusable()
+                                .onFocusChanged { focused = it.isFocused || it.hasFocus }
                                 .clickable {
                                     if (pinned) pinnedLibs.remove(lib.id) else pinnedLibs.add(lib.id)
                                 }
@@ -2338,8 +2363,7 @@ private fun CustomizeHomeDialog(
                             .clip(RoundedCornerShape(6.dp))
                             .background(if (selected) colors.white else if (focused) colors.surfaceElevated else colors.surface)
                             .border(1.dp, if (focused) colors.focusBorder else colors.badgeBorder, RoundedCornerShape(6.dp))
-                            .onFocusChanged { focused = it.isFocused }
-                            .focusable()
+                            .onFocusChanged { focused = it.isFocused || it.hasFocus }
                             .clickable { startupTab = tab }
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
@@ -2415,6 +2439,10 @@ private fun CustomizeHomeDialog(
                 }
             }
 
+            val saveLayoutFocusRequester = remember { FocusRequester() }
+            LaunchedEffect(Unit) {
+                runCatching { saveLayoutFocusRequester.requestFocus() }
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 SmallTextButton(
                     text = "Save Layout",
@@ -2427,7 +2455,7 @@ private fun CustomizeHomeDialog(
                             startupTab
                         )
                     },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).focusRequester(saveLayoutFocusRequester)
                 )
                 SmallTextButton(
                     text = "Cancel",
@@ -2454,6 +2482,10 @@ private fun SyncPlayDialog(
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     var roomName by remember { mutableStateOf("Movie Night") }
+    val createRoomFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { createRoomFocusRequester.requestFocus() }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -2519,7 +2551,7 @@ private fun SyncPlayDialog(
                 text = "Create Watch Party",
                 isPrimary = true,
                 onClick = { onCreateGroup(roomName) },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().focusRequester(createRoomFocusRequester)
             )
 
             Text("Active Jellyfin SyncPlay Rooms", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
@@ -2572,6 +2604,10 @@ private fun AppUpdateDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val closeFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { closeFocusRequester.requestFocus() }
+    }
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -2606,7 +2642,12 @@ private fun AppUpdateDialog(
                 color = colors.matchGreen,
                 fontSize = 12.sp
             )
-            SmallTextButton(text = "Close", isPrimary = true, onClick = onDismiss, modifier = Modifier.fillMaxWidth())
+            SmallTextButton(
+                text = "Close",
+                isPrimary = true,
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().focusRequester(closeFocusRequester)
+            )
         }
     }
 }
@@ -2626,8 +2667,7 @@ private fun SmallIconAction(
             .clip(RoundedCornerShape(6.dp))
             .background(if (focused) colors.surfaceElevated else colors.dialogSurface)
             .border(1.dp, if (focused) colors.focusBorder else colors.badgeBorder, RoundedCornerShape(6.dp))
-            .onFocusChanged { focused = it.isFocused }
-            .focusable(enabled = enabled)
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -2665,8 +2705,7 @@ private fun SmallTextButton(
                 if (focused) colors.focusBorder else colors.badgeBorder,
                 RoundedCornerShape(6.dp)
             )
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center

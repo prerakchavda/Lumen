@@ -23,6 +23,7 @@ data class SetupUiState(
     val jellyfinLocalUrl: String = "",
     val seerrUrl: String = "http://192.168.1.100:5055",
     val seerrLocalUrl: String = "",
+    val seerrApiKey: String = "",
     val trustSelfSignedCerts: Boolean = false,
     val jellyfinOnlyMode: Boolean = false,
     val discoveredServers: List<DiscoveredServer> = emptyList(),
@@ -56,6 +57,7 @@ class SetupViewModel @Inject constructor(
                         jellyfinLocalUrl = cfg.jellyfinLocalUrl,
                         seerrUrl = cfg.seerrUrl,
                         seerrLocalUrl = cfg.seerrLocalUrl,
+                        seerrApiKey = cfg.seerrApiKey,
                         trustSelfSignedCerts = cfg.trustSelfSignedCerts,
                         jellyfinOnlyMode = cfg.isJellyfinConfigured && !cfg.isSeerrConfigured
                     )
@@ -80,7 +82,8 @@ class SetupViewModel @Inject constructor(
                 jellyfinLocalUrl = cur.jellyfinLocalUrl,
                 seerrUrl = if (cur.jellyfinOnlyMode) "" else cur.seerrUrl,
                 seerrLocalUrl = if (cur.jellyfinOnlyMode) "" else cur.seerrLocalUrl,
-                trustSelfSigned = cur.trustSelfSignedCerts
+                trustSelfSigned = cur.trustSelfSignedCerts,
+                seerrApiKey = cur.seerrApiKey
             )
         ) { submitted ->
             val onlyJf = submitted.seerrUrl.isBlank() && submitted.seerrLocalUrl.isBlank()
@@ -90,6 +93,7 @@ class SetupViewModel @Inject constructor(
                     jellyfinLocalUrl = submitted.jellyfinLocalUrl,
                     seerrUrl = submitted.seerrUrl,
                     seerrLocalUrl = submitted.seerrLocalUrl,
+                    seerrApiKey = submitted.seerrApiKey.ifBlank { it.seerrApiKey },
                     jellyfinOnlyMode = onlyJf,
                     trustSelfSignedCerts = submitted.trustSelfSigned,
                     errorMessage = null,
@@ -119,6 +123,10 @@ class SetupViewModel @Inject constructor(
 
     fun updateSeerrLocalUrl(value: String) {
         _uiState.update { it.copy(seerrLocalUrl = value, errorMessage = null) }
+    }
+
+    fun updateSeerrApiKey(value: String) {
+        _uiState.update { it.copy(seerrApiKey = value, errorMessage = null) }
     }
 
     fun toggleTrustSelfSigned() {
@@ -194,6 +202,7 @@ class SetupViewModel @Inject constructor(
         val effectiveJfUrl = state.jellyfinUrl.ifBlank { state.jellyfinLocalUrl }
         val effectiveSeerrUrl = if (state.jellyfinOnlyMode) "" else state.seerrUrl.ifBlank { state.seerrLocalUrl }
         val effectiveSeerrLocal = if (state.jellyfinOnlyMode) "" else state.seerrLocalUrl
+        val effectiveSeerrApiKey = if (state.jellyfinOnlyMode) "" else state.seerrApiKey
 
         viewModelScope.launch {
             _uiState.update { it.copy(isTesting = true, errorMessage = null, statusMessage = "Testing server connections...") }
@@ -202,7 +211,8 @@ class SetupViewModel @Inject constructor(
                 seerrUrl = effectiveSeerrUrl,
                 jellyfinLocalUrl = state.jellyfinLocalUrl,
                 seerrLocalUrl = effectiveSeerrLocal,
-                trustSelfSignedCerts = state.trustSelfSignedCerts
+                trustSelfSignedCerts = state.trustSelfSignedCerts,
+                seerrApiKey = effectiveSeerrApiKey
             )
             result.onSuccess { (jfName, seerrVer) ->
                 _uiState.update {

@@ -34,14 +34,16 @@ class AuthRepository @Inject constructor(
         seerrUrl: String,
         jellyfinLocalUrl: String = "",
         seerrLocalUrl: String = "",
-        trustSelfSignedCerts: Boolean = false
+        trustSelfSignedCerts: Boolean = false,
+        seerrApiKey: String = ""
     ): Result<Pair<String, String>> = runCatching {
         prefs.saveServerUrls(
             jellyfinUrl = jellyfinUrl,
             seerrUrl = seerrUrl,
             jellyfinLocalUrl = jellyfinLocalUrl,
             seerrLocalUrl = seerrLocalUrl,
-            trustSelfSignedCerts = trustSelfSignedCerts
+            trustSelfSignedCerts = trustSelfSignedCerts,
+            seerrApiKey = seerrApiKey
         )
         val jfInfo = jellyfinApi.getPublicSystemInfo()
         val jfName = jfInfo.serverName ?: "Jellyfin"
@@ -59,18 +61,30 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun signInWithPassword(username: String, password: String): Result<UserProfile> = runCatching {
+        prefs.setImmediateSeerrCookie(null)
         val jfAuth = jellyfinApi.authenticateByName(
             JellyfinAuthRequest(username = username.trim(), password = password)
         )
+        val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
         if (prefs.isSeerrConfigured) {
             // Best-effort Seerr v3+ login using the same Jellyfin credentials
-            runCatching {
+            val primaryAttempt = runCatching {
                 seerrApi.loginWithJellyfin(
                     SeerrJellyfinLoginRequest(username = username.trim(), password = password)
                 )
             }
+            if (primaryAttempt.isFailure && activeJfBase.isNotBlank()) {
+                runCatching {
+                    seerrApi.loginWithJellyfin(
+                        SeerrJellyfinLoginRequest(
+                            username = username.trim(),
+                            password = password,
+                            hostname = activeJfBase
+                        )
+                    )
+                }
+            }
         }
-        val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
@@ -109,6 +123,7 @@ class AuthRepository @Inject constructor(
         val isReady = seerrCheck?.authenticated ?: jellyfinApi.checkQuickConnect(secret).authenticated
         if (!isReady) return@runCatching null
 
+        prefs.setImmediateSeerrCookie(null)
         val jfAuth = jellyfinApi.authenticateWithQuickConnect(
             JellyfinQuickConnectAuthRequest(secret = secret)
         )

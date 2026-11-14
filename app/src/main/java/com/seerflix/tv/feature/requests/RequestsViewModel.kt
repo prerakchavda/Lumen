@@ -1,5 +1,6 @@
 package com.seerflix.tv.feature.requests
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
@@ -8,6 +9,7 @@ import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +27,7 @@ enum class RequestFilter(val label: String) {
     AVAILABLE("Available")
 }
 
+@Immutable
 data class RequestsUiState(
     val filter: RequestFilter = RequestFilter.ALL,
     val allRequests: List<MediaRequestSummary> = emptyList(),
@@ -62,7 +65,7 @@ class RequestsViewModel @Inject constructor(
 
     init {
         refresh()
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(15_000L)
                 refresh(silent = true)
@@ -75,7 +78,7 @@ class RequestsViewModel @Inject constructor(
     }
 
     fun refresh(silent: Boolean = false) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val isAdmin = authRepository.activeProfileFlow.first()?.isAdmin == true
             val seerrConfigured = sessionPreferences.isSeerrConfigured
             if (!seerrConfigured) {
@@ -108,7 +111,10 @@ class RequestsViewModel @Inject constructor(
                 .onFailure { err ->
                     if (!silent) {
                         _uiState.update {
-                            it.copy(isLoading = false, errorMessage = err.message ?: "Failed to load requests")
+                            it.copy(
+                                isLoading = false,
+                                errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load requests")
+                            )
                         }
                     }
                 }
@@ -116,7 +122,7 @@ class RequestsViewModel @Inject constructor(
     }
 
     fun approveRequest(requestId: Int) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
             catalogRepository.approveRequest(requestId)
                 .onSuccess {
@@ -124,13 +130,18 @@ class RequestsViewModel @Inject constructor(
                     refresh(silent = true)
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Approve failed: ${err.message}") }
+                    _uiState.update {
+                        it.copy(
+                            busyRequestId = null,
+                            actionMessage = UnifiedCatalogRepository.formatHttpError(err, "Approve failed")
+                        )
+                    }
                 }
         }
     }
 
     fun declineRequest(requestId: Int) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
             catalogRepository.declineRequest(requestId)
                 .onSuccess {
@@ -138,8 +149,14 @@ class RequestsViewModel @Inject constructor(
                     refresh(silent = true)
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Decline failed: ${err.message}") }
+                    _uiState.update {
+                        it.copy(
+                            busyRequestId = null,
+                            actionMessage = UnifiedCatalogRepository.formatHttpError(err, "Decline failed")
+                        )
+                    }
                 }
         }
     }
 }
+

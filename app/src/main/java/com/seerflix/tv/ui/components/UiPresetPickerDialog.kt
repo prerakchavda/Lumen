@@ -3,7 +3,6 @@ package com.seerflix.tv.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +22,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +30,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -66,6 +68,10 @@ fun UiPresetPickerCard(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val selectedPresetFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { selectedPresetFocusRequester.requestFocus() }
+    }
 
     Column(
         modifier = Modifier
@@ -116,7 +122,8 @@ fun UiPresetPickerCard(
             UiPresetOptionCard(
                 preset = preset,
                 selected = preset == currentPreset,
-                onClick = { onSelectPreset(preset) }
+                onClick = { onSelectPreset(preset) },
+                modifier = if (preset == currentPreset) Modifier.focusRequester(selectedPresetFocusRequester) else Modifier
             )
         }
 
@@ -133,8 +140,7 @@ fun UiPresetPickerCard(
                     if (closeFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(spec.buttonCornerRadiusDp.dp))
                     else Modifier
                 )
-                .onFocusChanged { closeFocused = it.isFocused }
-                .focusable()
+                .onFocusChanged { closeFocused = it.isFocused || it.hasFocus }
                 .clickable(onClick = onDismiss),
             contentAlignment = Alignment.Center
         ) {
@@ -152,7 +158,8 @@ fun UiPresetPickerCard(
 private fun UiPresetOptionCard(
     preset: UiPreset,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
@@ -160,7 +167,7 @@ private fun UiPresetOptionCard(
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(corner)
             .background(
@@ -177,8 +184,7 @@ private fun UiPresetOptionCard(
                     else -> Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.3f), corner)
                 }
             )
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(12.dp)
     ) {

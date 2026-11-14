@@ -77,6 +77,7 @@ class SessionPreferences private constructor(
         val JELLYFIN_LOCAL_URL = stringPreferencesKey("jellyfin_local_url")
         val SEERR_URL = stringPreferencesKey("seerr_url")
         val SEERR_LOCAL_URL = stringPreferencesKey("seerr_local_url")
+        val SEERR_API_KEY = stringPreferencesKey("seerr_api_key")
         val TRUST_SELF_SIGNED = stringPreferencesKey("trust_self_signed")
         val DEVICE_ID = stringPreferencesKey("device_id")
         val PROFILES_JSON = stringPreferencesKey("profiles_json")
@@ -105,6 +106,10 @@ class SessionPreferences private constructor(
         private set
 
     @Volatile
+    var cachedSeerrApiKey: String = ""
+        private set
+
+    @Volatile
     var cachedResolvedJellyfinUrl: String = ""
         internal set
 
@@ -127,6 +132,10 @@ class SessionPreferences private constructor(
     @Volatile
     var cachedSeerrCookie: String? = null
         private set
+
+    fun setImmediateSeerrCookie(cookie: String?) {
+        cachedSeerrCookie = cookie
+    }
 
     @Volatile
     var cachedMetadataLanguage: String = "en"
@@ -162,12 +171,14 @@ class SessionPreferences private constructor(
             deviceId = deviceId,
             jellyfinLocalUrl = prefs[Keys.JELLYFIN_LOCAL_URL].orEmpty(),
             seerrLocalUrl = prefs[Keys.SEERR_LOCAL_URL].orEmpty(),
-            trustSelfSignedCerts = trust
+            trustSelfSignedCerts = trust,
+            seerrApiKey = prefs[Keys.SEERR_API_KEY].orEmpty()
         )
         cachedJellyfinUrl = config.jellyfinUrl
         cachedJellyfinLocalUrl = config.jellyfinLocalUrl
         cachedSeerrUrl = config.seerrUrl
         cachedSeerrLocalUrl = config.seerrLocalUrl
+        cachedSeerrApiKey = config.seerrApiKey
         cachedTrustSelfSigned = trust
         if (cachedResolvedJellyfinUrl.isBlank() || cachedResolvedJellyfinUrl !in config.jellyfinCandidates) {
             cachedResolvedJellyfinUrl = config.jellyfinCandidates.firstOrNull().orEmpty()
@@ -190,7 +201,9 @@ class SessionPreferences private constructor(
         val list = runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
         val found = list.firstOrNull { it.id == activeId }
         cachedToken = found?.jellyfinToken
-        cachedSeerrCookie = found?.seerrCookie
+        if (!found?.seerrCookie.isNullOrBlank()) {
+            cachedSeerrCookie = found?.seerrCookie
+        }
         cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
         cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
         found
@@ -218,16 +231,19 @@ class SessionPreferences private constructor(
         seerrUrl: String,
         jellyfinLocalUrl: String = "",
         seerrLocalUrl: String = "",
-        trustSelfSignedCerts: Boolean = false
+        trustSelfSignedCerts: Boolean = false,
+        seerrApiKey: String = cachedSeerrApiKey
     ) {
         val cleanJf = normalizeUrl(jellyfinUrl)
         val cleanJfLocal = normalizeUrl(jellyfinLocalUrl)
         val cleanSeerr = normalizeUrl(seerrUrl)
         val cleanSeerrLocal = normalizeUrl(seerrLocalUrl)
+        val cleanApiKey = seerrApiKey.trim()
         cachedJellyfinUrl = cleanJf
         cachedJellyfinLocalUrl = cleanJfLocal
         cachedSeerrUrl = cleanSeerr
         cachedSeerrLocalUrl = cleanSeerrLocal
+        cachedSeerrApiKey = cleanApiKey
         cachedTrustSelfSigned = trustSelfSignedCerts
         cachedResolvedJellyfinUrl = cleanJfLocal.ifBlank { cleanJf }
         cachedResolvedSeerrUrl = cleanSeerrLocal.ifBlank { cleanSeerr }
@@ -236,6 +252,7 @@ class SessionPreferences private constructor(
             prefs[Keys.JELLYFIN_LOCAL_URL] = cleanJfLocal
             prefs[Keys.SEERR_URL] = cleanSeerr
             prefs[Keys.SEERR_LOCAL_URL] = cleanSeerrLocal
+            prefs[Keys.SEERR_API_KEY] = cleanApiKey
             prefs[Keys.TRUST_SELF_SIGNED] = trustSelfSignedCerts.toString()
             if (prefs[Keys.DEVICE_ID].isNullOrBlank()) {
                 prefs[Keys.DEVICE_ID] = cachedDeviceId
@@ -244,13 +261,16 @@ class SessionPreferences private constructor(
     }
 
     suspend fun upsertAndActivateProfile(profile: UserProfile) {
+        var resolvedProfile = profile
         dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
             val existing = current.firstOrNull { it.id == profile.id }
+            val effectiveCookie = profile.seerrCookie ?: cachedSeerrCookie ?: existing?.seerrCookie
             val merged = if (existing != null) {
                 profile.copy(
+                    seerrCookie = effectiveCookie,
                     pinHash = existing.pinHash,
                     autoplayNextEpisode = existing.autoplayNextEpisode,
                     autoplayPreviews = existing.autoplayPreviews,
@@ -275,15 +295,18 @@ class SessionPreferences private constructor(
                     metadataLanguage = existing.metadataLanguage,
                     uiLanguage = existing.uiLanguage
                 )
-            } else profile
+            } else {
+                profile.copy(seerrCookie = effectiveCookie)
+            }
+            resolvedProfile = merged
             val updated = current.filterNot { it.id == profile.id } + merged
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
             prefs[Keys.ACTIVE_PROFILE_ID] = profile.id
         }
-        cachedToken = profile.jellyfinToken
-        cachedSeerrCookie = profile.seerrCookie
-        cachedMetadataLanguage = profile.metadataLanguage.ifBlank { "en" }
-        cachedUiLanguage = profile.uiLanguage.ifBlank { "en" }
+        cachedToken = resolvedProfile.jellyfinToken
+        cachedSeerrCookie = resolvedProfile.seerrCookie
+        cachedMetadataLanguage = resolvedProfile.metadataLanguage.ifBlank { "en" }
+        cachedUiLanguage = resolvedProfile.uiLanguage.ifBlank { "en" }
     }
 
     suspend fun updateProfilePreferences(updatedProfile: UserProfile) {

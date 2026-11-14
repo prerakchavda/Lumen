@@ -1,6 +1,7 @@
 package com.seerflix.tv.feature.player
 
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.view.KeyEvent
 import android.view.View
@@ -13,7 +14,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -68,6 +69,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
@@ -87,6 +90,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
@@ -166,6 +170,14 @@ fun PlayerScreen(
     var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
     var subtitleOffsetHudText by remember { mutableStateOf<String?>(null) }
     var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
+    val playPauseFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(osdVisible, showEpisodesDrawer, showTracksDialog) {
+        if (osdVisible && !showEpisodesDrawer && !showTracksDialog) {
+            delay(60L)
+            runCatching { playPauseFocusRequester.requestFocus() }
+        }
+    }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
@@ -187,6 +199,10 @@ fun PlayerScreen(
                 if (videoRate > 1f) {
                     detectedVideoFrameRate = videoRate
                 }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                viewModel.onPlaybackError(error.message, player.currentPosition.coerceAtLeast(0L))
             }
         }
         player.addListener(listener)
@@ -274,6 +290,23 @@ fun PlayerScreen(
             val mediaItemBuilder = MediaItem.Builder().setUri(session.streamUrl)
             if (session.isHls) {
                 mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+            }
+            val subConfigs = session.externalSubtitleFiles.mapNotNull { ext ->
+                val isAss = ext.codec.equals("ass", ignoreCase = true) || ext.codec.equals("ssa", ignoreCase = true)
+                if (isAss && state.assSubtitleMode != AssSubtitleMode.PLAIN) return@mapNotNull null
+                val mimeType = when (ext.codec?.lowercase()) {
+                    "vtt", "webvtt" -> MimeTypes.TEXT_VTT
+                    "ass", "ssa" -> MimeTypes.TEXT_SSA
+                    else -> MimeTypes.APPLICATION_SUBRIP
+                }
+                MediaItem.SubtitleConfiguration.Builder(Uri.parse(ext.url))
+                    .setMimeType(mimeType)
+                    .setLanguage(ext.language)
+                    .setLabel(ext.title)
+                    .build()
+            }
+            if (subConfigs.isNotEmpty()) {
+                mediaItemBuilder.setSubtitleConfigurations(subConfigs)
             }
             player.setMediaItem(mediaItemBuilder.build())
         }
@@ -420,9 +453,19 @@ fun PlayerScreen(
                                 else -> false
                             }
                         }
-                        KeyEvent.KEYCODE_DPAD_CENTER,
-                        KeyEvent.KEYCODE_ENTER,
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                            if (player.isPlaying) {
+                                player.pause()
+                                viewModel.notifySyncPlayPause()
+                            } else {
+                                player.play()
+                                viewModel.notifySyncPlayUnpause()
+                            }
+                            osdVisible = true
+                            true
+                        }
+                        KeyEvent.KEYCODE_DPAD_CENTER,
+                        KeyEvent.KEYCODE_ENTER -> {
                             if (!osdVisible) {
                                 osdVisible = true
                                 true
@@ -468,13 +511,42 @@ fun PlayerScreen(
                 )
             }
             state.errorMessage != null -> {
+                val errorRetryFocusRequester = remember { FocusRequester() }
+                LaunchedEffect(state.errorMessage) {
+                    delay(60L)
+                    runCatching { errorRetryFocusRequester.requestFocus() }
+                }
                 Column(
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 48.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(state.errorMessage!!, color = colors.accent, fontSize = 16.sp)
                     Spacer(Modifier.height(16.dp))
-                    HeroPillButton("Back", Icons.AutoMirrored.Filled.ArrowBack, isPrimary = true, onClick = onBack)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        HeroPillButton(
+                            text = "Retry",
+                            icon = Icons.Filled.Refresh,
+                            isPrimary = true,
+                            onClick = { viewModel.retryPlayback() },
+                            modifier = Modifier.focusRequester(errorRetryFocusRequester)
+                        )
+                        if (session != null && !session.isTrailer) {
+                            HeroPillButton(
+                                text = AppStrings.current.actionExternalPlayer,
+                                icon = Icons.AutoMirrored.Filled.OpenInNew,
+                                isPrimary = false,
+                                onClick = { viewModel.openInExternalPlayer(context, currentPosMs) }
+                            )
+                        }
+                        HeroPillButton(
+                            text = "Back",
+                            icon = Icons.AutoMirrored.Filled.ArrowBack,
+                            isPrimary = false,
+                            onClick = onBack
+                        )
+                    }
                 }
             }
             else -> {
@@ -775,7 +847,8 @@ fun PlayerScreen(
                                                 player.play()
                                                 viewModel.notifySyncPlayUnpause()
                                             }
-                                        }
+                                        },
+                                        modifier = Modifier.focusRequester(playPauseFocusRequester)
                                     )
                                     if (session?.isLiveTv != true) {
                                         PlayerControlIcon(
@@ -1190,7 +1263,6 @@ fun EpisodesDrawerOverlay(
                                     else Modifier
                                 )
                                 .onFocusChanged { focused = it.isFocused }
-                                .focusable()
                                 .clickable { onSelectSeason(season.seasonNumber) }
                                 .padding(horizontal = 14.dp, vertical = 7.dp)
                         ) {
@@ -1212,6 +1284,16 @@ fun EpisodesDrawerOverlay(
                     CircularProgressIndicator(color = colors.accent)
                 }
             } else {
+                val activeEpisodeFocusRequester = remember { FocusRequester() }
+                val targetFocusEpisodeId = remember(episodes, currentEpisodeId) {
+                    episodes.firstOrNull { it.id == currentEpisodeId }?.id ?: episodes.firstOrNull()?.id
+                }
+                LaunchedEffect(targetFocusEpisodeId) {
+                    if (targetFocusEpisodeId != null) {
+                        delay(60L)
+                        runCatching { activeEpisodeFocusRequester.requestFocus() }
+                    }
+                }
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 16.dp)
@@ -1219,10 +1301,12 @@ fun EpisodesDrawerOverlay(
                     items(episodes, key = { it.id }) { ep ->
                         var focused by remember { mutableStateOf(false) }
                         val isCurrent = ep.id == currentEpisodeId
+                        val isFocusTarget = ep.id == targetFocusEpisodeId
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .then(if (isFocusTarget) Modifier.focusRequester(activeEpisodeFocusRequester) else Modifier)
                                 .clip(cardCorner)
                                 .background(
                                     when {
@@ -1237,7 +1321,6 @@ fun EpisodesDrawerOverlay(
                                     else Modifier
                                 )
                                 .onFocusChanged { focused = it.isFocused }
-                                .focusable()
                                 .clickable { onSelectEpisode(ep) }
                                 .padding(10.dp)
                         ) {
@@ -1288,18 +1371,18 @@ fun EpisodesDrawerOverlay(
 private fun PlayerControlIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .size(46.dp)
             .clip(RoundedCornerShape(23.dp))
             .background(if (focused) colors.white else colors.surface.copy(alpha = 0.72f))
             .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(23.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -1359,6 +1442,11 @@ private fun PlayerSettingsDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val closeDialogFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(60L)
+        runCatching { closeDialogFocusRequester.requestFocus() }
+    }
     val groups = player.currentTracks.groups
     val audioGroups = groups.filter { it.type == C.TRACK_TYPE_AUDIO }
     val textGroups = groups.filter { it.type == C.TRACK_TYPE_TEXT }
@@ -1390,7 +1478,19 @@ private fun PlayerSettingsDialog(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Playback Settings", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Playback Settings", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                PlayerControlIcon(
+                    icon = Icons.Filled.Close,
+                    label = "Close",
+                    onClick = onDismiss,
+                    modifier = Modifier.focusRequester(closeDialogFocusRequester)
+                )
+            }
 
             // Versions & Editions (Multiple MediaSources)
             val sources = session?.mediaSources.orEmpty()
@@ -1694,7 +1794,6 @@ private fun SettingChip(
                 else Modifier
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -1731,7 +1830,6 @@ private fun TrackChoiceRow(
             )
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, corner) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween

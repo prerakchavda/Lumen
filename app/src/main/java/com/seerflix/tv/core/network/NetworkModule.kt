@@ -105,6 +105,20 @@ private class JellyfinAuthInterceptor(
     }
 }
 
+private class SeerrAuthInterceptor(
+    private val prefs: SessionPreferences
+) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
+        val builder = chain.request().newBuilder()
+            .header("Accept", "application/json")
+        val apiKey = prefs.cachedSeerrApiKey
+        if (apiKey.isNotBlank()) {
+            builder.header("X-Api-Key", apiKey)
+        }
+        return chain.proceed(builder.build())
+    }
+}
+
 private class SeerrSessionCookieJar(
     private val prefs: SessionPreferences
 ) : CookieJar {
@@ -113,6 +127,7 @@ private class SeerrSessionCookieJar(
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val sid = cookies.firstOrNull { it.name == "connect.sid" } ?: return
         val encoded = "${sid.name}=${sid.value}"
+        prefs.setImmediateSeerrCookie(encoded)
         scope.launch {
             prefs.updateActiveSeerrCookie(encoded)
         }
@@ -130,6 +145,21 @@ private class SeerrSessionCookieJar(
                 .path("/")
                 .build()
         )
+    }
+}
+
+private object UnitConverterFactory : retrofit2.Converter.Factory() {
+    override fun responseBodyConverter(
+        type: java.lang.reflect.Type,
+        annotations: Array<out Annotation>,
+        retrofit: Retrofit
+    ): retrofit2.Converter<okhttp3.ResponseBody, *>? {
+        return if (type == Unit::class.java) {
+            retrofit2.Converter<okhttp3.ResponseBody, Unit> { body ->
+                body.close()
+                Unit
+            }
+        } else null
     }
 }
 
@@ -216,6 +246,7 @@ object NetworkModule {
                     onResolvedUrl = { prefs.cachedResolvedSeerrUrl = it }
                 )
             )
+            .addInterceptor(SeerrAuthInterceptor(prefs))
             .addInterceptor(logging)
             .build()
     }
@@ -236,6 +267,7 @@ object NetworkModule {
     ): JellyfinApi = Retrofit.Builder()
         .baseUrl("http://jellyfin.local/")
         .client(okHttpClient)
+        .addConverterFactory(UnitConverterFactory)
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
         .create(JellyfinApi::class.java)
@@ -248,6 +280,7 @@ object NetworkModule {
     ): SeerrApi = Retrofit.Builder()
         .baseUrl("http://seerr.local/")
         .client(okHttpClient)
+        .addConverterFactory(UnitConverterFactory)
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
         .create(SeerrApi::class.java)

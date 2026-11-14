@@ -1,5 +1,6 @@
 package com.seerflix.tv.feature.home
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AppUpdateChecker
@@ -27,6 +28,7 @@ import com.seerflix.tv.core.player.SyncPlayManager
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import com.seerflix.tv.core.tv.TvChannelSyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -69,6 +71,7 @@ fun HomeTab.toHomeTabId(): HomeTabId = when (this) {
     HomeTab.MY_LIST -> HomeTabId.MY_LIST
 }
 
+@Immutable
 data class HomeUiState(
     val activeTab: HomeTab = HomeTab.HOME,
     val selectedGenre: GenreFilterOption = GenreFilterOption.ALL_GENRES.first(),
@@ -148,12 +151,12 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(activeSyncPlayGroup = active) }
             }
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val initialProfile = authRepository.activeProfileFlow.first()
             val startTab = initialProfile?.defaultStartupTab?.toHomeTab() ?: HomeTab.HOME
             loadCatalog(startTab, GenreFilterOption.ALL_GENRES.first(), AvailabilityFilter.ALL)
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val upd = runCatching { appUpdateChecker.checkForUpdate() }.getOrNull()
             if (upd != null) {
                 _uiState.update { it.copy(updateInfo = upd) }
@@ -171,7 +174,7 @@ class HomeViewModel @Inject constructor(
 
     fun selectUiPreset(preset: UiPreset) {
         _uiState.update { it.copy(showAppearanceDialog = false) }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             authRepository.updateActiveUiPreset(preset)
             showActionFeedback("Switched UI preset to ${preset.displayName}")
         }
@@ -181,7 +184,7 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(showCustomizeHomeDialog = true) }
         val userId = _uiState.value.profile?.jellyfinUserId ?: return
         if (_uiState.value.libraryViews.isEmpty()) {
-            viewModelScope.launch {
+            viewModelScope.launch(Dispatchers.IO) {
                 val views = catalogRepository.loadUserLibraryViews(userId)
                 _uiState.update { it.copy(libraryViews = views) }
             }
@@ -200,7 +203,7 @@ class HomeViewModel @Inject constructor(
     ) {
         val current = _uiState.value.profile ?: return
         _uiState.update { it.copy(showCustomizeHomeDialog = false) }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val updated = current.copy(
                 pinnedLibraryIds = pinnedLibraryIds,
                 hiddenHomeRowIds = hiddenRowIds,
@@ -223,13 +226,13 @@ class HomeViewModel @Inject constructor(
     }
 
     fun refreshSyncPlayGroups() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.refreshGroups()
         }
     }
 
     fun createSyncPlayGroup(name: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.createGroup(name)
                 .onSuccess { grp ->
                     showActionFeedback("Started SyncPlay room: ${grp?.groupName ?: name}")
@@ -241,7 +244,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun joinSyncPlayGroup(groupId: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.joinGroup(groupId)
                 .onSuccess { grp ->
                     showActionFeedback("Joined SyncPlay: ${grp?.groupName ?: "Room"}")
@@ -253,7 +256,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun leaveSyncPlayGroup() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.leaveGroup()
                 .onSuccess { showActionFeedback("Left SyncPlay room") }
         }
@@ -268,7 +271,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun dismissReadyAlert(requestId: Int) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             prefs.dismissReadyAlert(requestId)
         }
     }
@@ -301,7 +304,12 @@ class HomeViewModel @Inject constructor(
     }
 
     fun refresh() {
-        loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre, _uiState.value.availabilityFilter)
+        loadCatalog(
+            tab = _uiState.value.activeTab,
+            genre = _uiState.value.selectedGenre,
+            availabilityFilter = _uiState.value.availabilityFilter,
+            forceRefresh = true
+        )
     }
 
     fun togglePreviewMute() {
@@ -323,7 +331,7 @@ class HomeViewModel @Inject constructor(
         val jfId = item.jellyfinId ?: return
         val nextWatched = !item.isWatched
         _uiState.update { it.copy(posterMenuTarget = null) }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.markWatched(profile.jellyfinUserId, jfId, nextWatched)
                 .onSuccess {
                     _uiState.update { state ->
@@ -352,7 +360,7 @@ class HomeViewModel @Inject constructor(
 
     private fun toggleMyListForItem(target: UnifiedMediaItem) {
         val profile = _uiState.value.profile ?: return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.toggleMyList(profile.jellyfinUserId, target)
                 .onSuccess { inList ->
                     _uiState.update { state ->
@@ -420,7 +428,7 @@ class HomeViewModel @Inject constructor(
             showActionFeedback("Requests are locked for Kids profiles")
             return
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val seasons = if (item.mediaType == MediaType.SERIES) {
                 item.seasons.map { it.seasonNumber }.filter { it > 0 }.ifEmpty { null }
             } else null
@@ -464,7 +472,7 @@ class HomeViewModel @Inject constructor(
         val profile = _uiState.value.profile ?: return
         val jfId = item.jellyfinId ?: return
         _uiState.update { it.copy(continueWatchingMenuTarget = null) }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.removeFromContinueWatching(profile.jellyfinUserId, jfId)
                 .onSuccess {
                     _uiState.update { state ->
@@ -492,7 +500,7 @@ class HomeViewModel @Inject constructor(
                 collectionDetailsLoading = true
             )
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val details = catalogRepository.loadBoxSetDetails(
                 userId = profile.jellyfinUserId,
                 boxSetId = boxSetId,
@@ -524,7 +532,7 @@ class HomeViewModel @Inject constructor(
             showActionFeedback("Requests are locked for Kids profiles")
             return
         }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.submitRequest(tmdbId = tmdbId, mediaType = item.mediaType, is4k = is4k)
                 .onSuccess {
                     _uiState.update { state ->
@@ -564,7 +572,7 @@ class HomeViewModel @Inject constructor(
         val col = _uiState.value.activeCollectionDetails ?: return
         val missing = col.items.filter { !it.isPlayable && it.canRequestHd && it.tmdbId != null }
         if (missing.isEmpty()) return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             var count = 0
             val requestedTmdbIds = mutableSetOf<Int>()
             missing.forEach { part ->
@@ -600,34 +608,56 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    fun onItemFocused(item: UnifiedMediaItem) {
-        if (_uiState.value.featuredItem?.id == item.id) return
+    fun onItemFocused(item: UnifiedMediaItem, force: Boolean = false) {
+        if (!force && _uiState.value.featuredItem?.id == item.id) return
         focusPreviewJob?.cancel()
-        focusPreviewJob = viewModelScope.launch {
-            delay(380L)
+        focusPreviewJob = viewModelScope.launch(Dispatchers.IO) {
+            if (!force) {
+                delay(550L)
+            }
             _uiState.update { it.copy(featuredItem = item, previewStream = null) }
 
             if (item.boxSetId != null) return@launch
             val profile = _uiState.value.profile ?: return@launch
-            val enriched = catalogRepository.loadFullDetails(
-                userId = profile.jellyfinUserId,
-                tmdbId = item.tmdbId,
-                jellyfinId = item.jellyfinId,
-                mediaType = item.mediaType
-            ).getOrNull()
 
-            if (enriched != null) {
-                _uiState.update { state ->
-                    if (state.featuredItem?.id == item.id) {
-                        state.copy(featuredItem = enriched)
-                    } else state
+            val needsMetadataEnrichment = item.overview.isBlank() ||
+                (item.backdropUrl == null && item.posterUrl == null)
+            val needsTrailerEnrichment = profile.autoplayPreviews &&
+                item.youtubeTrailerKey == null &&
+                item.localTrailerItemId == null
+
+            val mergedFeatured: UnifiedMediaItem? = if (needsMetadataEnrichment || needsTrailerEnrichment) {
+                val enriched = catalogRepository.loadFullDetails(
+                    userId = profile.jellyfinUserId,
+                    tmdbId = item.tmdbId,
+                    jellyfinId = item.jellyfinId,
+                    mediaType = item.mediaType
+                ).getOrNull()
+
+                enriched?.copy(
+                    id = item.id,
+                    jellyfinId = if (item.mediaType == MediaType.EPISODE && !item.jellyfinId.isNullOrBlank()) {
+                        item.jellyfinId
+                    } else {
+                        enriched.jellyfinId ?: item.jellyfinId
+                    },
+                    episodeLabel = item.episodeLabel ?: enriched.episodeLabel,
+                    resumePositionTicks = if (item.resumePositionTicks > 0L) item.resumePositionTicks else enriched.resumePositionTicks
+                )?.also { merged ->
+                    _uiState.update { state ->
+                        if (state.featuredItem?.id == item.id) {
+                            state.copy(featuredItem = merged)
+                        } else state
+                    }
                 }
+            } else {
+                item
             }
 
             if (!profile.autoplayPreviews) return@launch
 
-            delay(1200L)
-            val target = enriched ?: item
+            delay(1400L)
+            val target = mergedFeatured ?: item
             val stream = trailerResolver.resolvePreview(
                 localTrailerId = target.localTrailerItemId,
                 youtubeKey = target.youtubeTrailerKey
@@ -645,9 +675,10 @@ class HomeViewModel @Inject constructor(
     private fun loadCatalog(
         tab: HomeTab,
         genre: GenreFilterOption,
-        availabilityFilter: AvailabilityFilter
+        availabilityFilter: AvailabilityFilter,
+        forceRefresh: Boolean = false
     ) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     activeTab = tab,
@@ -688,7 +719,8 @@ class HomeViewModel @Inject constructor(
                             HomeTab.NEW_AND_POPULAR -> catalogRepository.loadNewAndPopular(
                                 userId = profile.jellyfinUserId,
                                 availabilityFilter = availabilityFilter,
-                                activeProfile = profile
+                                activeProfile = profile,
+                                forceRefresh = forceRefresh
                             )
                             HomeTab.MY_LIST -> {
                                 val listItems = catalogRepository.loadMyList(profile.jellyfinUserId)
@@ -720,7 +752,8 @@ class HomeViewModel @Inject constructor(
                                     filterType = tab.filter,
                                     genreFilter = activeGenre,
                                     availabilityFilter = availabilityFilter,
-                                    activeProfile = profile
+                                    activeProfile = profile,
+                                    forceRefresh = forceRefresh
                                 )
                             }
                         }
@@ -780,10 +813,10 @@ class HomeViewModel @Inject constructor(
                     )
                 }
                 if (bundle.featured != null) {
-                    onItemFocused(bundle.featured)
+                    onItemFocused(bundle.featured, force = true)
                 }
                 if (tab == HomeTab.HOME && availabilityFilter == AvailabilityFilter.ALL) {
-                    launch {
+                    launch(Dispatchers.IO) {
                         val continueItems = bundle.rows.firstOrNull { it.id == "continue_watching" }?.items.orEmpty()
                         val channelItems = bundle.rows.firstOrNull { it.id == "trending_now" }?.items
                             ?: bundle.rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
@@ -794,7 +827,7 @@ class HomeViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = err.message ?: "Failed to load catalog"
+                        errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load catalog")
                     )
                 }
             }

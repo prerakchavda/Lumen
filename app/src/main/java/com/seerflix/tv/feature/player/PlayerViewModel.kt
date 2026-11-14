@@ -224,9 +224,61 @@ class PlayerViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uiState.update {
-                        it.copy(isLoading = false, errorMessage = err.message ?: "Playback initialization failed")
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Playback initialization failed")
+                        )
                     }
                 }
+        }
+    }
+
+    fun retryPlayback() {
+        val currentSession = _uiState.value.session
+        if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
+            loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
+        } else {
+            loadItem(
+                itemId = currentSession?.itemId ?: initialItemId,
+                qualityOverride = _uiState.value.selectedQuality,
+                mediaSourceIdOverride = _uiState.value.selectedMediaSourceId ?: initialMediaSourceId
+            )
+        }
+    }
+
+    fun onPlaybackError(errorDetail: String?, currentPosMs: Long) {
+        val currentState = _uiState.value
+        val session = currentState.session ?: return
+        if (!session.isTrailer && !session.isHls && currentState.selectedQuality == QualityPreset.AUTO) {
+            val fallbackQuality = if (session.resolutionLabel?.contains("4K", ignoreCase = true) == true) {
+                QualityPreset.UHD_4K
+            } else {
+                QualityPreset.HD_1080P
+            }
+            reportStopped(currentPosMs)
+            loadItem(
+                itemId = session.itemId,
+                qualityOverride = fallbackQuality,
+                resumeOverrideMs = currentPosMs.takeIf { it > 0L }
+            )
+            viewModelScope.launch {
+                _uiState.update {
+                    it.copy(feedbackMessage = "Direct Play unsupported — switched to HLS transcode (${fallbackQuality.label})")
+                }
+                kotlinx.coroutines.delay(4000L)
+                _uiState.update { it.copy(feedbackMessage = null) }
+            }
+        } else {
+            val detail = errorDetail?.takeIf { it.isNotBlank() } ?: "Stream playback error"
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    errorMessage = UnifiedCatalogRepository.formatHttpError(
+                        IllegalStateException(detail),
+                        "Playback error: $detail"
+                    )
+                )
+            }
         }
     }
 

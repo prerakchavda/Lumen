@@ -76,4 +76,22 @@ class UnifiedCatalogRepositoryBadgesTest {
     fun `extractMediaBadges returns empty list when no streams present`() {
         assertTrue(UnifiedCatalogRepository.extractMediaBadges(emptyList()).isEmpty())
     }
+
+    @Test
+    fun `formatHttpError translates raw HTTP status codes into friendly messages`() {
+        val authErr = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 401 Unauthorized"))
+        assertTrue(authErr.contains("Authentication required (HTTP 401)"))
+
+        val forbiddenErr = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 403 Forbidden"))
+        assertTrue(forbiddenErr.contains("Authentication required (HTTP 403)"))
+
+        val notFoundErr = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 404 Not Found"))
+        assertEquals("Media item not found on server (HTTP 404)", notFoundErr)
+
+        val conflictErr = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 409 Conflict"))
+        assertEquals("This item has already been requested (HTTP 409)", conflictErr)
+
+        val serverErr = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 500 Internal Server Error"))
+        assertTrue(serverErr.contains("Server error (HTTP 500)"))
+    }
 }

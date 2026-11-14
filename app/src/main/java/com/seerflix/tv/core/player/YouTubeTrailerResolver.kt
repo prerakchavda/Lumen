@@ -52,7 +52,12 @@ class YouTubeTrailerResolver @Inject constructor(
     }
 
     fun buildJellyfinTrailerUrl(localTrailerId: String): String? {
-        val base = prefs.cachedJellyfinUrl.takeIf { it.isNotBlank() } ?: return null
+        val base = prefs.cachedResolvedJellyfinUrl
+            .ifBlank { prefs.cachedJellyfinLocalUrl }
+            .ifBlank { prefs.cachedJellyfinUrl }
+            .trim()
+            .trimEnd('/')
+            .takeIf { it.isNotBlank() } ?: return null
         val token = prefs.cachedToken.orEmpty()
         return "$base/Videos/$localTrailerId/stream?Static=true&api_key=$token"
     }

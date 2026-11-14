@@ -3,7 +3,6 @@ package com.seerflix.tv.feature.requests
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -226,7 +225,6 @@ private fun RequestItemCard(
                 else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(14.dp)
     ) {
@@ -338,12 +336,13 @@ private fun RequestItemCard(
 private fun FilterChip(
     label: String,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(
                 when {
@@ -354,7 +353,6 @@ private fun FilterChip(
             )
             .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(20.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 8.dp)
     ) {
@@ -382,7 +380,6 @@ private fun FocusIconButton(
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(22.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {

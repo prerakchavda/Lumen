@@ -45,37 +45,85 @@ class JellyfinPlaybackManager @Inject constructor(
                 assSubtitleMode = assSubtitleMode,
                 burnInSubtitleIndex = burnInSubtitleIndex
             )
-            val itemDeferred = async { jellyfinApi.getItemDetails(userId, itemId) }
-            val playbackDeferred = async {
-                jellyfinApi.getPlaybackInfo(
-                    itemId = itemId,
-                    userId = userId,
-                    body = JellyfinPlaybackInfoRequest(
+            var item = jellyfinApi.getItemDetails(userId, itemId)
+            if (item.type.equals("Series", ignoreCase = true) || item.type.equals("Season", ignoreCase = true)) {
+                val targetSeriesId = if (item.type.equals("Season", ignoreCase = true)) {
+                    item.seriesId ?: item.id
+                } else {
+                    item.id
+                }
+                val targetSeasonId = if (item.type.equals("Season", ignoreCase = true)) item.id else null
+                val candidateEpisode = if (targetSeasonId == null) {
+                    runCatching {
+                        jellyfinApi.getResumeItems(userId, limit = 10).items.firstOrNull { it.seriesId == targetSeriesId }
+                    }.getOrNull()
+                } else {
+                    null
+                } ?: runCatching {
+                    val sortedEpisodes = jellyfinApi.getEpisodes(
+                        seriesId = targetSeriesId,
                         userId = userId,
-                        mediaSourceId = mediaSourceId,
-                        subtitleStreamIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null,
-                        maxAudioChannels = if (stereoDownmixEnabled) 2 else null,
-                        deviceProfile = deviceProfile
+                        seasonId = targetSeasonId
+                    ).items
+                        .filter { (it.parentIndexNumber ?: 1) > 0 }
+                        .sortedWith(compareBy({ it.parentIndexNumber ?: 1 }, { it.indexNumber ?: 1 }))
+                    sortedEpisodes.firstOrNull { (it.userData?.playbackPositionTicks ?: 0L) > 0L }
+                        ?: sortedEpisodes.firstOrNull { it.userData?.played != true }
+                        ?: sortedEpisodes.firstOrNull()
+                }.getOrNull() ?: error("No playable episodes found for ${item.name}")
+
+                item = runCatching {
+                    jellyfinApi.getItemDetails(userId, candidateEpisode.id)
+                }.getOrDefault(candidateEpisode)
+            }
+
+            val resolvedItemId = item.id
+            val playbackDeferred = async {
+                runCatching {
+                    jellyfinApi.getPlaybackInfo(
+                        itemId = resolvedItemId,
+                        userId = userId,
+                        body = JellyfinPlaybackInfoRequest(
+                            userId = userId,
+                            mediaSourceId = mediaSourceId,
+                            subtitleStreamIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null,
+                            maxAudioChannels = if (stereoDownmixEnabled) 2 else null,
+                            deviceProfile = deviceProfile
+                        )
                     )
-                )
+                }.getOrNull()
             }
             val segmentsDeferred = async {
-                runCatching { jellyfinApi.getMediaSegments(itemId).items }.getOrDefault(emptyList())
+                runCatching { jellyfinApi.getMediaSegments(resolvedItemId).items }.getOrDefault(emptyList())
             }
 
-            val item = itemDeferred.await()
             val playback = playbackDeferred.await()
             val segments = segmentsDeferred.await()
+            val availableSources = playback?.mediaSources?.takeIf { it.isNotEmpty() }
+                ?: item.mediaSources.takeIf { it.isNotEmpty() }
+                ?: listOf(
+                    JellyfinMediaSourceDto(
+                        id = item.id,
+                        name = item.name,
+                        supportsDirectPlay = true,
+                        supportsDirectStream = true,
+                        mediaStreams = item.mediaStreams
+                    )
+                )
 
             val source = if (!mediaSourceId.isNullOrBlank()) {
-                playback.mediaSources.firstOrNull { it.id == mediaSourceId }
-                    ?: playback.mediaSources.firstOrNull()
+                availableSources.firstOrNull { it.id == mediaSourceId }
+                    ?: availableSources.firstOrNull()
             } else {
-                playback.mediaSources.firstOrNull()
+                availableSources.firstOrNull()
             } ?: error("No playable media sources returned by Jellyfin")
 
-            val playSessionId = playback.playSessionId ?: "${System.currentTimeMillis()}"
-            val base = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
+            val playSessionId = playback?.playSessionId ?: "${System.currentTimeMillis()}"
+            val base = prefs.cachedResolvedJellyfinUrl
+                .ifBlank { prefs.cachedJellyfinLocalUrl }
+                .ifBlank { prefs.cachedJellyfinUrl }
+                .trim()
+                .trimEnd('/')
             val token = prefs.cachedToken.orEmpty()
 
             val (streamUrl, isHls) = buildStreamUrl(
@@ -128,8 +176,8 @@ class JellyfinPlaybackManager @Inject constructor(
                 .filter { it.type.equals("Subtitle", ignoreCase = true) }
                 .mapNotNull { stream ->
                     val ext = normalizeSubtitleFormat(stream.codec)
-                    val delivery = stream.deliveryUrl?.let { path ->
-                        if (path.startsWith("http")) path else "$base$path"
+                    val delivery = stream.deliveryUrl?.takeIf { it.isNotBlank() }?.let { path ->
+                        resolveRelativeJellyfinUrl(base, path, token)
                     } ?: "$base/Videos/${item.id}/${source.id}/Subtitles/${stream.index}/0/Stream.$ext?api_key=$token"
                     ExternalSubtitleFile(
                         index = stream.index,
@@ -164,7 +212,7 @@ class JellyfinPlaybackManager @Inject constructor(
                 }
                 .sortedBy { it.startPositionMs }
 
-            val mediaSourceOptions = playback.mediaSources.map { ms -> mapMediaSourceOption(ms) }
+            val mediaSourceOptions = availableSources.map { ms -> mapMediaSourceOption(ms) }
 
             val primaryVideo = source.mediaStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
             val primaryAudio = source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
@@ -423,6 +471,21 @@ class JellyfinPlaybackManager @Inject constructor(
             else -> "srt"
         }
 
+        fun resolveRelativeJellyfinUrl(base: String, rawPath: String, token: String): String {
+            val cleanBase = base.trim().trimEnd('/')
+            val fullUrl = if (rawPath.startsWith("http://", ignoreCase = true) || rawPath.startsWith("https://", ignoreCase = true)) {
+                rawPath
+            } else {
+                "$cleanBase/${rawPath.trimStart('/')}"
+            }
+            return if (token.isNotBlank() && !fullUrl.contains("api_key=", ignoreCase = true)) {
+                val sep = if ('?' in fullUrl) "&" else "?"
+                "${fullUrl}${sep}api_key=$token"
+            } else {
+                fullUrl
+            }
+        }
+
         fun buildStreamUrl(
             base: String,
             token: String,
@@ -433,25 +496,25 @@ class JellyfinPlaybackManager @Inject constructor(
             stereoDownmix: Boolean = false,
             burnInSubtitleIndex: Int? = null
         ): Pair<String, Boolean> {
+            val cleanBase = base.trim().trimEnd('/')
             val audioParam = if (stereoDownmix) "&MaxAudioChannels=2" else ""
             if (burnInSubtitleIndex != null) {
-                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
             if (maxBitrateBps != null || stereoDownmix) {
                 val br = maxBitrateBps ?: 120_000_000L
-                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
             return if (source.supportsDirectPlay || source.supportsDirectStream) {
-                val url = "$base/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
                 url to false
             } else if (!source.transcodingUrl.isNullOrBlank()) {
-                val path = source.transcodingUrl
-                val url = if (path.startsWith("http")) path else "$base$path"
+                val url = resolveRelativeJellyfinUrl(cleanBase, source.transcodingUrl, token)
                 url to true
             } else {
-                val url = "$base/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&api_key=$token"
                 url to true
             }
         }

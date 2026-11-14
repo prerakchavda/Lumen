@@ -3,7 +3,6 @@ package com.seerflix.tv.feature.details
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +46,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -56,6 +56,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -82,6 +84,7 @@ import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.components.NetflixPosterCard
 import com.seerflix.tv.ui.theme.SeerflixTokens
+import kotlinx.coroutines.delay
 
 @Composable
 fun DetailsScreen(
@@ -177,13 +180,24 @@ fun DetailsContent(
                 )
             }
             state.errorMessage != null || state.item == null -> {
+                val errorBackFocusRequester = remember { FocusRequester() }
+                LaunchedEffect(Unit) {
+                    delay(60L)
+                    runCatching { errorBackFocusRequester.requestFocus() }
+                }
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(state.errorMessage ?: "Title not found", color = colors.accent, fontSize = 16.sp)
                     Spacer(Modifier.height(16.dp))
-                    HeroPillButton("Go Back", Icons.AutoMirrored.Filled.ArrowBack, isPrimary = true, onClick = onBack)
+                    HeroPillButton(
+                        text = "Go Back",
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        isPrimary = true,
+                        onClick = onBack,
+                        modifier = Modifier.focusRequester(errorBackFocusRequester)
+                    )
                 }
             }
             else -> {
@@ -383,7 +397,6 @@ fun DetailsContent(
                                                     else Modifier
                                                 )
                                                 .onFocusChanged { castFocused = it.isFocused }
-                                                .focusable()
                                                 .clickable { onSearchActor(member.name, member.personId) }
                                                 .padding(6.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally
@@ -558,7 +571,6 @@ private fun RelatedVideoCard(
         modifier = Modifier
             .width(220.dp)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
     ) {
         Box(
@@ -626,7 +638,6 @@ private fun ExtrasFeatureCard(
         modifier = Modifier
             .width(220.dp)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
     ) {
         Box(
@@ -758,7 +769,6 @@ private fun DetailsHeaderSection(
                 .background(if (backFocused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
                 .then(if (backFocused) Modifier.border(2.dp, colors.focusBorder, backCorner) else Modifier)
                 .onFocusChanged { backFocused = it.isFocused }
-                .focusable()
                 .clickable(onClick = onBack)
                 .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
@@ -873,18 +883,26 @@ private fun DetailsHeaderSection(
 
             Spacer(Modifier.height(16.dp))
 
+            val primaryActionFocusRequester = remember { FocusRequester() }
+            val canPlay = item.isPlayable || episodes.any { it.isAvailableInJellyfin }
+            val showReqButton = isSeerrConfigured && item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)
+            LaunchedEffect(item.id) {
+                delay(60L)
+                runCatching { primaryActionFocusRequester.requestFocus() }
+            }
+
             LazyRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                val canPlay = item.isPlayable || episodes.any { it.isAvailableInJellyfin }
                 if (canPlay) {
                     item(key = "act_play") {
                         HeroPillButton(
                             text = if (item.resumePositionTicks > 0L) strings.actionResume else strings.actionPlay,
                             icon = Icons.Filled.PlayArrow,
                             isPrimary = true,
-                            onClick = onPlay
+                            onClick = onPlay,
+                            modifier = Modifier.focusRequester(primaryActionFocusRequester)
                         )
                     }
                     item(key = "act_ext_player") {
@@ -897,21 +915,23 @@ private fun DetailsHeaderSection(
                     }
                 }
 
-                if (isSeerrConfigured && item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)) {
+                if (showReqButton) {
                     item(key = "act_req") {
                         if (canSubmitRequests) {
                             HeroPillButton(
                                 text = if (canPlay) "Request 4K / More" else "Request HD / 4K",
                                 icon = Icons.Filled.Add,
                                 isPrimary = !canPlay,
-                                onClick = onRequestClick
+                                onClick = onRequestClick,
+                                modifier = if (!canPlay) Modifier.focusRequester(primaryActionFocusRequester) else Modifier
                             )
                         } else {
                             HeroPillButton(
                                 text = strings.labelKidsLocked,
                                 icon = Icons.Filled.Lock,
                                 isPrimary = false,
-                                onClick = onRequestClick
+                                onClick = onRequestClick,
+                                modifier = if (!canPlay) Modifier.focusRequester(primaryActionFocusRequester) else Modifier
                             )
                         }
                     }
@@ -922,7 +942,8 @@ private fun DetailsHeaderSection(
                         text = if (item.isInMyList) "In My List" else "My List",
                         icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
                         isPrimary = false,
-                        onClick = onToggleMyList
+                        onClick = onToggleMyList,
+                        modifier = if (!canPlay && !showReqButton) Modifier.focusRequester(primaryActionFocusRequester) else Modifier
                     )
                 }
 
@@ -1099,7 +1120,6 @@ private fun SeasonTabChip(
                 else Modifier
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
@@ -1143,7 +1163,6 @@ private fun EpisodeRowCard(
                 else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(12.dp)
     ) {
@@ -1400,6 +1419,12 @@ private fun RequestQualityModal(
                 }
             }
 
+            val sendRequestFocusRequester = remember { FocusRequester() }
+            LaunchedEffect(Unit) {
+                delay(60L)
+                runCatching { sendRequestFocusRequester.requestFocus() }
+            }
+
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -1424,7 +1449,7 @@ private fun RequestQualityModal(
                             )
                         }
                     },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).focusRequester(sendRequestFocusRequester)
                 )
                 HeroPillButton(
                     text = "Cancel",
@@ -1511,6 +1536,11 @@ private fun ReportIssueModal(
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     var selectedType by remember { mutableStateOf(SeerrIssueType.VIDEO) }
     var message by remember { mutableStateOf("") }
+    val submitIssueFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(60L)
+        runCatching { submitIssueFocusRequester.requestFocus() }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -1555,7 +1585,7 @@ private fun ReportIssueModal(
                     icon = Icons.Filled.Flag,
                     isPrimary = true,
                     onClick = { if (!isSubmitting) onSubmit(selectedType, message) },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).focusRequester(submitIssueFocusRequester)
                 )
                 HeroPillButton(
                     text = "Cancel",
@@ -1589,13 +1619,12 @@ private fun QualityToggleRow(
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, corner) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable(enabled = enabled)
             .clickable(enabled = enabled, onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Checkbox(
             checked = checked,
-            onCheckedChange = if (enabled) { { onToggle() } } else null,
+            onCheckedChange = null,
             enabled = enabled,
             colors = CheckboxDefaults.colors(
                 checkedColor = colors.accent,

@@ -1,5 +1,6 @@
 package com.seerflix.tv.core.player
 
+import com.seerflix.tv.core.data.MediaImageUrls
 import com.seerflix.tv.core.network.JellyfinItemDto
 import com.seerflix.tv.core.network.JellyfinMediaSourceDto
 import com.seerflix.tv.core.network.JellyfinTrickplayInfoDto
@@ -72,6 +73,51 @@ class JellyfinPlaybackManagerTest {
 
         assertTrue(isHls)
         assertEquals("http://jf:8096/Videos/item1/hls1/main.m3u8?api_key=tok123", url)
+    }
+
+    @Test
+    fun `resolveRelativeJellyfinUrl normalizes slashes and appends api_key when missing`() {
+        val resolvedNoKey = JellyfinPlaybackManager.resolveRelativeJellyfinUrl(
+            base = "http://jf:8096/",
+            rawPath = "Videos/item1/src1/Subtitles/2/0/Stream.srt",
+            token = "tok123"
+        )
+        assertEquals(
+            "http://jf:8096/Videos/item1/src1/Subtitles/2/0/Stream.srt?api_key=tok123",
+            resolvedNoKey
+        )
+
+        val resolvedWithQuery = JellyfinPlaybackManager.resolveRelativeJellyfinUrl(
+            base = "http://jf:8096",
+            rawPath = "/Videos/item1/hls1/main.m3u8?PlaySessionId=s1",
+            token = "tok123"
+        )
+        assertEquals(
+            "http://jf:8096/Videos/item1/hls1/main.m3u8?PlaySessionId=s1&api_key=tok123",
+            resolvedWithQuery
+        )
+
+        val resolvedExistingKey = JellyfinPlaybackManager.resolveRelativeJellyfinUrl(
+            base = "http://jf:8096/",
+            rawPath = "/Videos/item1/hls1/main.m3u8?api_key=tok123",
+            token = "tok123"
+        )
+        assertEquals(
+            "http://jf:8096/Videos/item1/hls1/main.m3u8?api_key=tok123",
+            resolvedExistingKey
+        )
+    }
+
+    @Test
+    fun `MediaImageUrls trims trailing slashes from baseUrl`() {
+        assertEquals(
+            "http://jf:8096/Items/abc/Images/Primary?maxWidth=340&quality=82",
+            MediaImageUrls.jellyfinPrimary("http://jf:8096/", "abc")
+        )
+        assertEquals(
+            "http://jf:8096/Items/abc/Images/Backdrop/0?maxWidth=960&quality=80",
+            MediaImageUrls.jellyfinBackdrop("http://jf:8096///", "abc")
+        )
     }
 
     @Test

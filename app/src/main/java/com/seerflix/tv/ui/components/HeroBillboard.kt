@@ -14,7 +14,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +47,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -92,35 +93,18 @@ fun HeroBillboard(
     val spec = SeerflixTokens.spec
     var isVideoReady by remember(item.id, previewStream?.videoUrl) { mutableStateOf(false) }
 
-    // Subtle Ken Burns motion when showing static backdrop
-    val infiniteTransition = rememberInfiniteTransition(label = "kenBurns")
-    val kbScale by infiniteTransition.animateFloat(
-        initialValue = 1.0f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 16000),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "kbScale"
-    )
-
     Box(
         modifier = modifier
             .fillMaxWidth()
             .height(spec.heroHeightDp.dp)
             .background(colors.background)
     ) {
-        // Backdrop image (always rendered beneath, animated with subtle Ken Burns)
+        // Static backdrop image (avoids continuous 60fps full-screen GPU redraws on low-power TV sticks)
         AsyncImage(
             model = item.backdropUrl ?: item.posterUrl,
             contentDescription = item.title,
             contentScale = ContentScale.Crop,
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    scaleX = if (isVideoReady) 1f else kbScale
-                    scaleY = if (isVideoReady) 1f else kbScale
-                }
+            modifier = Modifier.fillMaxSize()
         )
 
         if (previewStream != null) {
@@ -322,6 +306,11 @@ fun HeroBillboard(
 
             Spacer(Modifier.height(16.dp))
 
+            val primaryActionFocusRequester = remember { FocusRequester() }
+            LaunchedEffect(Unit) {
+                runCatching { primaryActionFocusRequester.requestFocus() }
+            }
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -339,7 +328,8 @@ fun HeroBillboard(
                     text = primaryLabel,
                     icon = primaryIcon,
                     isPrimary = true,
-                    onClick = onPrimaryAction
+                    onClick = onPrimaryAction,
+                    modifier = Modifier.focusRequester(primaryActionFocusRequester)
                 )
                 HeroPillButton(
                     text = "More Info",
@@ -373,8 +363,7 @@ fun HeroBillboard(
                         color = if (muteFocused) colors.focusBorder else colors.badgeBorder,
                         shape = CircleShape
                     )
-                    .onFocusChanged { muteFocused = it.isFocused }
-                    .focusable()
+                    .onFocusChanged { muteFocused = it.isFocused || it.hasFocus }
                     .clickable(onClick = onToggleMute),
                 contentAlignment = Alignment.Center
             ) {
@@ -400,7 +389,11 @@ fun HeroPillButton(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(if (focused) 1.05f else 1f, label = "pillScale")
+    val scale by animateFloatAsState(
+        targetValue = if (focused) 1.05f else 1f,
+        animationSpec = tween(durationMillis = 120),
+        label = "pillScale"
+    )
 
     val bg = when {
         isPrimary -> colors.primaryButtonBg
@@ -430,8 +423,7 @@ fun HeroPillButton(
                     Modifier.border(1.dp, colors.badgeBorder, shape)
                 } else Modifier
             )
-            .onFocusChanged { focused = it.isFocused }
-            .focusable()
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(
                 horizontal = if (spec.preset == UiPreset.APPLE_TV) 22.dp else 20.dp,

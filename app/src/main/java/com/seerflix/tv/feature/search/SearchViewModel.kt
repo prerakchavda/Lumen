@@ -1,5 +1,6 @@
 package com.seerflix.tv.feature.search
 
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,6 +11,7 @@ import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class SearchUiState(
     val query: String = "",
     val results: List<UnifiedMediaItem> = emptyList(),
@@ -63,7 +66,7 @@ class SearchViewModel @Inject constructor(
     }
 
     private fun loadTrendingSuggestions() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     isLoadingSuggestions = true,
@@ -90,7 +93,7 @@ class SearchViewModel @Inject constructor(
             _uiState.update { it.copy(results = emptyList(), personResults = emptyList(), isSearching = false) }
             return
         }
-        searchJob = viewModelScope.launch {
+        searchJob = viewModelScope.launch(Dispatchers.IO) {
             delay(350L)
             _uiState.update { it.copy(isSearching = true) }
             val profile = authRepository.activeProfileFlow.first()
@@ -116,7 +119,7 @@ class SearchViewModel @Inject constructor(
             return
         }
         searchJob?.cancel()
-        searchJob = viewModelScope.launch {
+        searchJob = viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     query = "",
@@ -139,7 +142,7 @@ class SearchViewModel @Inject constructor(
 
     fun selectPerson(personId: Int, name: String) {
         searchJob?.cancel()
-        searchJob = viewModelScope.launch {
+        searchJob = viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     activePersonName = name,
@@ -169,4 +172,5 @@ class SearchViewModel @Inject constructor(
         }
     }
 }
+
 

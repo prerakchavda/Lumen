@@ -107,7 +107,7 @@ class UnifiedMediaItemTest {
         val unlocked = UserProfile("1", "Prerak", "1", "tok")
         assertFalse(unlocked.hasPin)
         assertTrue(unlocked.autoplayNextEpisode)
-        assertTrue(unlocked.autoplayPreviews)
+        assertFalse(unlocked.autoplayPreviews)
         assertEquals(1.0f, unlocked.subtitleFontScale, 0.001f)
         assertEquals(0.6f, unlocked.subtitleBackgroundAlpha, 0.001f)
 

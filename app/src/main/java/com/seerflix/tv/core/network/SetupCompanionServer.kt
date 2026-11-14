@@ -20,7 +20,8 @@ data class CompanionFormResult(
     val jellyfinLocalUrl: String = "",
     val seerrUrl: String = "",
     val seerrLocalUrl: String = "",
-    val trustSelfSigned: Boolean = false
+    val trustSelfSigned: Boolean = false,
+    val seerrApiKey: String = ""
 )
 
 class SetupCompanionServer {
@@ -178,6 +179,8 @@ class SetupCompanionServer {
             <input type="url" name="seerrUrl" placeholder="https://seerr.example.com" value="${escapeHtml(defaults.seerrUrl)}"/>
             <label>Seerr Local LAN URL (Optional)</label>
             <input type="url" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
+            <label>Seerr API Key (Optional)</label>
+            <input type="text" name="seerrApiKey" placeholder="Optional X-Api-Key from Seerr Settings" value="${escapeHtml(defaults.seerrApiKey)}"/>
             <label class="check">
               <input type="checkbox" name="trustSelfSigned" value="true" ${if (defaults.trustSelfSigned) "checked" else ""}/>
               <span>Trust self-signed HTTPS certificates</span>
@@ -228,7 +231,8 @@ class SetupCompanionServer {
                 jellyfinLocalUrl = fields["jellyfinLocalUrl"].orEmpty(),
                 seerrUrl = fields["seerrUrl"].orEmpty(),
                 seerrLocalUrl = fields["seerrLocalUrl"].orEmpty(),
-                trustSelfSigned = fields["trustSelfSigned"] == "true" || fields["trustSelfSigned"] == "on"
+                trustSelfSigned = fields["trustSelfSigned"] == "true" || fields["trustSelfSigned"] == "on",
+                seerrApiKey = fields["seerrApiKey"].orEmpty()
             )
         }
 

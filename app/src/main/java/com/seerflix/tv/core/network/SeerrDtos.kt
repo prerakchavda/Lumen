@@ -21,7 +21,8 @@ data class SeerrUserDto(
 @Serializable
 data class SeerrJellyfinLoginRequest(
     val username: String,
-    val password: String
+    val password: String,
+    val hostname: String? = null
 )
 
 @Serializable

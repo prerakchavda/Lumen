@@ -4,7 +4,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +33,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +42,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -107,6 +109,17 @@ fun ProfilePickerContent(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val firstTileFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(
+        state.profiles.size,
+        state.showAuthDialog,
+        state.pinChallengeProfile == null,
+        state.editingProfile == null
+    ) {
+        if (!state.showAuthDialog && state.pinChallengeProfile == null && state.editingProfile == null) {
+            runCatching { firstTileFocusRequester.requestFocus() }
+        }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -153,16 +166,18 @@ fun ProfilePickerContent(
                 horizontalArrangement = Arrangement.spacedBy(28.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                state.profiles.forEach { profile ->
+                state.profiles.forEachIndexed { idx, profile ->
                     NetflixAvatarTile(
                         profile = profile,
                         isManageMode = state.isManageMode,
-                        onClick = { onSelectProfile(profile) }
+                        onClick = { onSelectProfile(profile) },
+                        modifier = if (idx == 0) Modifier.focusRequester(firstTileFocusRequester) else Modifier
                     )
                 }
 
                 AddProfileTile(
-                    onClick = onOpenAddProfile
+                    onClick = onOpenAddProfile,
+                    modifier = if (state.profiles.isEmpty()) Modifier.focusRequester(firstTileFocusRequester) else Modifier
                 )
             }
         }
@@ -191,6 +206,10 @@ fun ProfilePickerContent(
 
     if (state.showAuthDialog) {
         val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+        val authFocusRequester = remember { FocusRequester() }
+        LaunchedEffect(state.usePasswordMode) {
+            runCatching { authFocusRequester.requestFocus() }
+        }
         Dialog(onDismissRequest = onCloseAuthDialog) {
             Column(
                 modifier = Modifier
@@ -241,6 +260,32 @@ fun ProfilePickerContent(
                         CircularProgressIndicator(color = colors.accent)
                     }
                 } else {
+                    if (state.publicUsers.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Detected Jellyfin Accounts:",
+                                color = colors.textSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                state.publicUsers.take(4).forEach { user ->
+                                    PrefChip(
+                                        label = user,
+                                        selected = state.username.equals(user, ignoreCase = true),
+                                        onClick = { onUpdateUsername(user) },
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = state.username,
                         onValueChange = onUpdateUsername,
@@ -272,7 +317,7 @@ fun ProfilePickerContent(
                         text = if (state.isAuthenticating) "Signing in..." else "Sign In",
                         isPrimary = true,
                         onClick = onSignInWithPassword,
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().focusRequester(authFocusRequester)
                     )
                 }
 
@@ -288,7 +333,9 @@ fun ProfilePickerContent(
                         text = if (state.usePasswordMode) "Use Quick Connect" else "Use Password",
                         isPrimary = false,
                         onClick = { onToggleAuthMode(!state.usePasswordMode) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(if (!state.usePasswordMode) Modifier.focusRequester(authFocusRequester) else Modifier)
                     )
                     DialogButton(
                         text = "Cancel",
@@ -324,7 +371,6 @@ private fun TopCornerButton(
             )
             .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
@@ -380,6 +426,10 @@ fun PinEntryCard(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val firstKeyFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { firstKeyFocusRequester.requestFocus() }
+    }
     Column(
         modifier = Modifier
             .width(380.dp)
@@ -442,7 +492,9 @@ fun PinEntryCard(
                                     else -> onDigit(key)
                                 }
                             },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(if (key == "1") Modifier.focusRequester(firstKeyFocusRequester) else Modifier)
                         )
                     }
                 }
@@ -468,6 +520,10 @@ private fun ProfileSettingsDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val saveFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { saveFocusRequester.requestFocus() }
+    }
 
     var activeSection by remember(profile.id) { mutableStateOf(0) } // 0=Appearance, 1=Theater, 2=Kids&PIN
 
@@ -767,7 +823,7 @@ private fun ProfileSettingsDialog(
                         )
                         onSave(updated, pinCode, clearPin)
                     },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f).focusRequester(saveFocusRequester)
                 )
                 DialogButton(
                     text = "Delete Profile",
@@ -803,14 +859,13 @@ private fun PreferenceSwitchRow(
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 8.dp)
     ) {
         Text(label, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Medium)
         Switch(
             checked = checked,
-            onCheckedChange = { onToggle() },
+            onCheckedChange = null,
             colors = SwitchDefaults.colors(checkedThumbColor = colors.white, checkedTrackColor = colors.accent)
         )
     }
@@ -837,7 +892,6 @@ private fun PrefChip(
             )
             .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center
@@ -855,7 +909,8 @@ private fun PrefChip(
 private fun NetflixAvatarTile(
     profile: UserProfile,
     isManageMode: Boolean = false,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
@@ -863,13 +918,12 @@ private fun NetflixAvatarTile(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
+        modifier = modifier
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
     ) {
         Box(
@@ -950,20 +1004,22 @@ private fun NetflixAvatarTile(
 }
 
 @Composable
-private fun AddProfileTile(onClick: () -> Unit) {
+private fun AddProfileTile(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (focused) 1.08f else 1f, label = "addProfileScale")
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
+        modifier = modifier
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
     ) {
         Box(
@@ -1015,7 +1071,6 @@ private fun DialogButton(
             )
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(6.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {

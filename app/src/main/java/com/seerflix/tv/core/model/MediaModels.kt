@@ -1,5 +1,6 @@
 package com.seerflix.tv.core.model
 
+import androidx.compose.runtime.Immutable
 import kotlin.math.roundToInt
 
 enum class MediaType {
@@ -29,6 +30,7 @@ enum class AvailabilityTier(val code: Int) {
     }
 }
 
+@Immutable
 data class DownloadProgressInfo(
     val is4k: Boolean,
     val status: String,
@@ -57,6 +59,7 @@ data class DownloadProgressInfo(
         }
 }
 
+@Immutable
 data class SeasonSummary(
     val seasonNumber: Int,
     val name: String,
@@ -71,6 +74,7 @@ data class SeasonSummary(
         get() = jellyfinSeasonId != null || hdStatus.isInLibrary || uhdStatus.isInLibrary
 }
 
+@Immutable
 data class EpisodeSummary(
     val id: String,
     val name: String,
@@ -92,6 +96,7 @@ data class EpisodeSummary(
         get() = (runtimeTicks / 600_000_000L).toInt()
 }
 
+@Immutable
 data class CastMember(
     val name: String,
     val role: String,
@@ -99,6 +104,7 @@ data class CastMember(
     val personId: Int? = null
 )
 
+@Immutable
 data class PersonSearchResult(
     val id: Int,
     val name: String,
@@ -106,6 +112,7 @@ data class PersonSearchResult(
     val imageUrl: String? = null
 )
 
+@Immutable
 data class RelatedVideoItem(
     val title: String,
     val type: String,
@@ -114,6 +121,7 @@ data class RelatedVideoItem(
     val thumbnailUrl: String? = null
 )
 
+@Immutable
 data class TrickplayCrop(
     val tileIndex: Int,
     val tileUrl: String,
@@ -123,6 +131,7 @@ data class TrickplayCrop(
     val height: Int
 )
 
+@Immutable
 data class TrickplayInfo(
     val width: Int,
     val height: Int,
@@ -167,6 +176,7 @@ enum class AvailabilityFilter(val label: String) {
     }
 }
 
+@Immutable
 data class GenreFilterOption(
     val id: String,
     val label: String,
@@ -196,6 +206,7 @@ enum class QualityPreset(val label: String, val maxBitrateBps: Long?) {
     HD_720P("720p (6 Mbps)", 6_000_000L)
 }
 
+@Immutable
 data class MediaRequestSummary(
     val requestId: Int,
     val tmdbId: Int,
@@ -223,6 +234,7 @@ data class MediaRequestSummary(
         }
 }
 
+@Immutable
 data class UnifiedMediaItem(
     val id: String,
     val tmdbId: Int? = null,
@@ -318,6 +330,7 @@ data class UnifiedMediaItem(
         }
 }
 
+@Immutable
 data class CollectionSummary(
     val id: String,
     val tmdbCollectionId: Int? = null,
@@ -337,6 +350,7 @@ data class CollectionSummary(
         }
 }
 
+@Immutable
 data class RemoteSubtitleOption(
     val id: String,
     val name: String,
@@ -355,6 +369,7 @@ enum class RowStyle {
     WIDE
 }
 
+@Immutable
 data class CatalogRow(
     val id: String,
     val title: String,
@@ -362,6 +377,7 @@ data class CatalogRow(
     val items: List<UnifiedMediaItem>
 )
 
+@Immutable
 data class TrackOption(
     val index: Int,
     val label: String,
@@ -371,11 +387,13 @@ data class TrackOption(
     val externalUrl: String? = null
 )
 
+@Immutable
 data class ChapterMarker(
     val name: String,
     val startPositionMs: Long
 )
 
+@Immutable
 data class MediaSourceOption(
     val id: String,
     val name: String,
@@ -395,6 +413,7 @@ data class MediaSourceOption(
         ).distinct().joinToString(" • ").ifBlank { id }
 }
 
+@Immutable
 data class ExternalSubtitleFile(
     val index: Int,
     val title: String,
@@ -403,6 +422,7 @@ data class ExternalSubtitleFile(
     val url: String
 )
 
+@Immutable
 data class ExtrasItem(
     val id: String,
     val name: String,
@@ -412,12 +432,14 @@ data class ExtrasItem(
     val thumbnailUrl: String? = null
 )
 
+@Immutable
 data class JellyfinLibraryView(
     val id: String,
     val name: String,
     val collectionType: String? = null
 )
 
+@Immutable
 data class LiveTvProgram(
     val id: String,
     val title: String,
@@ -433,6 +455,7 @@ data class LiveTvProgram(
     }
 }
 
+@Immutable
 data class LiveTvChannel(
     val id: String,
     val number: String?,
@@ -442,6 +465,7 @@ data class LiveTvChannel(
     val nextProgram: LiveTvProgram? = null
 )
 
+@Immutable
 data class SyncPlayGroup(
     val groupId: String,
     val groupName: String,
@@ -453,11 +477,13 @@ data class SyncPlayGroup(
     val playingItemName: String? = null
 )
 
+@Immutable
 data class ArrQualityProfile(
     val id: Int,
     val name: String
 )
 
+@Immutable
 data class ArrServerOption(
     val id: Int,
     val name: String,
@@ -474,6 +500,7 @@ enum class SeerrIssueType(val code: Int, val label: String) {
     OTHER(4, "Other")
 }
 
+@Immutable
 @kotlinx.serialization.Serializable
 data class ReadyRequestAlert(
     val requestId: Int,
@@ -485,6 +512,7 @@ data class ReadyRequestAlert(
     val timestampMs: Long = 0L
 )
 
+@Immutable
 data class AppUpdateInfo(
     val latestVersion: String,
     val releaseNotes: String,
@@ -492,12 +520,14 @@ data class AppUpdateInfo(
     val htmlUrl: String
 )
 
+@Immutable
 data class DiscoveredServer(
     val id: String,
     val name: String,
     val address: String
 )
 
+@Immutable
 data class PlaybackSessionData(
     val itemId: String,
     val title: String,
@@ -532,3 +562,4 @@ data class PlaybackSessionData(
     val directPlayUrl: String? = null,
     val isLiveTv: Boolean = false
 )
+

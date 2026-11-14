@@ -1,7 +1,9 @@
 package com.seerflix.tv.core.model
 
+import androidx.compose.runtime.Immutable
 import kotlinx.serialization.Serializable
 
+@Immutable
 @Serializable
 data class ServerConfig(
     val jellyfinUrl: String = "",
@@ -9,7 +11,8 @@ data class ServerConfig(
     val deviceId: String = "",
     val jellyfinLocalUrl: String = "",
     val seerrLocalUrl: String = "",
-    val trustSelfSignedCerts: Boolean = false
+    val trustSelfSignedCerts: Boolean = false,
+    val seerrApiKey: String = ""
 ) {
     val isJellyfinConfigured: Boolean
         get() = jellyfinUrl.isNotBlank() || jellyfinLocalUrl.isNotBlank()
@@ -66,6 +69,7 @@ enum class HomeTabId(val label: String) {
     MY_LIST("My List")
 }
 
+@Immutable
 @Serializable
 data class UserProfile(
     val id: String,
@@ -78,7 +82,7 @@ data class UserProfile(
     val isAdmin: Boolean = false,
     val pinHash: String? = null,
     val autoplayNextEpisode: Boolean = true,
-    val autoplayPreviews: Boolean = true,
+    val autoplayPreviews: Boolean = false,
     val preferredAudioLang: String? = null,
     val preferredSubtitleLang: String? = null,
     val subtitleFontScale: Float = 1.0f,

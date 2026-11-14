@@ -1,6 +1,7 @@
 package com.seerflix.tv.feature.details
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -20,6 +21,7 @@ import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.ResolvedPreviewStream
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,6 +33,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+@Immutable
 data class DetailsUiState(
     val item: UnifiedMediaItem? = null,
     val recommendations: List<UnifiedMediaItem> = emptyList(),
@@ -82,7 +85,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun loadAll() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null) {
@@ -114,12 +117,12 @@ class DetailsViewModel @Inject constructor(
                 }
 
                 if (seerrConfigured) {
-                    launch {
+                    launch(Dispatchers.IO) {
                         val has4k = catalogRepository.has4kServerConfigured(item.mediaType)
                         _uiState.update { it.copy(has4kServer = has4k) }
                     }
                 }
-                launch {
+                launch(Dispatchers.IO) {
                     val recs = catalogRepository.loadRecommendations(
                         userId = activeUserId,
                         tmdbId = item.tmdbId,
@@ -130,17 +133,19 @@ class DetailsViewModel @Inject constructor(
                     _uiState.update { it.copy(recommendations = recs) }
                 }
                 item.collectionId?.let { colId ->
-                    launch {
+                    launch(Dispatchers.IO) {
                         val saga = catalogRepository.loadCollectionSaga(activeUserId, colId, activeProfile = profile)
                         _uiState.update { it.copy(collectionSaga = saga) }
                     }
                 }
-                launch {
-                    val preview = trailerResolver.resolvePreview(
-                        localTrailerId = item.localTrailerItemId,
-                        youtubeKey = item.youtubeTrailerKey
-                    )
-                    _uiState.update { it.copy(previewStream = preview) }
+                if (profile.autoplayPreviews) {
+                    launch(Dispatchers.IO) {
+                        val preview = trailerResolver.resolvePreview(
+                            localTrailerId = item.localTrailerItemId,
+                            youtubeKey = item.youtubeTrailerKey
+                        )
+                        _uiState.update { it.copy(previewStream = preview) }
+                    }
                 }
                 if (item.mediaType == MediaType.SERIES && item.seasons.isNotEmpty()) {
                     selectSeason(defaultSeason)
@@ -149,7 +154,10 @@ class DetailsViewModel @Inject constructor(
                 startLivePollingIfNeeded(item)
             }.onFailure { err ->
                 _uiState.update {
-                    it.copy(isLoading = false, errorMessage = err.message ?: "Failed to load details")
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load details")
+                    )
                 }
             }
         }
@@ -162,7 +170,7 @@ class DetailsViewModel @Inject constructor(
     fun selectSeason(seasonNumber: Int) {
         val item = _uiState.value.item ?: return
         val season = item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(selectedSeasonNumber = seasonNumber, episodesLoading = true) }
             val eps = catalogRepository.loadSeasonEpisodes(
                 userId = activeUserId,
@@ -187,7 +195,7 @@ class DetailsViewModel @Inject constructor(
         val item = _uiState.value.item ?: return
         _uiState.update { it.copy(showRequestModal = true, feedbackBanner = null) }
         if (_uiState.value.arrServers.isEmpty()) {
-            viewModelScope.launch {
+            viewModelScope.launch(Dispatchers.IO) {
                 _uiState.update { it.copy(arrServersLoading = true) }
                 val servers = catalogRepository.loadArrServers(item.mediaType)
                 _uiState.update { it.copy(arrServers = servers, arrServersLoading = false) }

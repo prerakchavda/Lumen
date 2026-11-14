@@ -4,7 +4,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +31,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -40,6 +40,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
@@ -63,6 +65,7 @@ fun SetupScreen(
         onJellyfinLocalUrlChange = viewModel::updateJellyfinLocalUrl,
         onSeerrUrlChange = viewModel::updateSeerrUrl,
         onSeerrLocalUrlChange = viewModel::updateSeerrLocalUrl,
+        onSeerrApiKeyChange = viewModel::updateSeerrApiKey,
         onToggleJellyfinOnly = viewModel::toggleJellyfinOnlyMode,
         onToggleSelfSigned = viewModel::toggleTrustSelfSigned,
         onScanNetwork = viewModel::scanNetwork,
@@ -78,6 +81,7 @@ fun SetupContent(
     onJellyfinLocalUrlChange: (String) -> Unit = {},
     onSeerrUrlChange: (String) -> Unit,
     onSeerrLocalUrlChange: (String) -> Unit = {},
+    onSeerrApiKeyChange: (String) -> Unit = {},
     onToggleJellyfinOnly: () -> Unit = {},
     onToggleSelfSigned: () -> Unit = {},
     onScanNetwork: () -> Unit = {},
@@ -90,6 +94,10 @@ fun SetupContent(
     val buttonCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     val qrBitmap = remember(state.companionUrl) {
         state.companionUrl?.let { QrCodeGenerator.generate(it, 200) }
+    }
+    val connectButtonFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(state.statusMessage) {
+        runCatching { connectButtonFocusRequester.requestFocus() }
     }
 
     Box(
@@ -199,6 +207,12 @@ fun SetupContent(
                         label = "Seerr Local LAN URL (Optional Dual Failover)",
                         placeholder = "http://192.168.1.100:5055"
                     )
+                    SetupUrlField(
+                        value = state.seerrApiKey,
+                        onValueChange = onSeerrApiKeyChange,
+                        label = "Seerr API Key (Optional — from Seerr Settings)",
+                        placeholder = "Leave blank to sign in automatically with your Jellyfin account"
+                    )
                 }
 
                 SetupSwitchTile(
@@ -235,8 +249,8 @@ fun SetupContent(
                         .clip(buttonCorner)
                         .background(if (btnFocused) colors.accentDark else colors.accent)
                         .then(if (btnFocused) Modifier.border(2.dp, colors.focusBorder, buttonCorner) else Modifier)
+                        .focusRequester(connectButtonFocusRequester)
                         .onFocusChanged { btnFocused = it.isFocused }
-                        .focusable()
                         .clickable(enabled = !state.isTesting, onClick = onConnectClick),
                     contentAlignment = Alignment.Center
                 ) {
@@ -426,7 +440,6 @@ private fun SetupSwitchTile(
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onToggle)
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
@@ -450,7 +463,7 @@ private fun SetupSwitchTile(
         }
         Switch(
             checked = checked,
-            onCheckedChange = { onToggle() },
+            onCheckedChange = null,
             colors = SwitchDefaults.colors(checkedThumbColor = colors.white, checkedTrackColor = colors.accent)
         )
     }
@@ -467,7 +480,6 @@ private fun ScanButton(isScanning: Boolean, onClick: () -> Unit) {
             .background(if (focused) colors.surfaceElevated else colors.dialogSurface)
             .border(1.dp, if (focused) colors.focusBorder else colors.badgeBorder, RoundedCornerShape(6.dp))
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(enabled = !isScanning, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
@@ -516,7 +528,6 @@ private fun DiscoveredServerChip(
                 RoundedCornerShape(6.dp)
             )
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {

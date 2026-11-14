@@ -18,6 +18,7 @@ import javax.inject.Inject
 
 data class ProfilePickerUiState(
     val profiles: List<UserProfile> = emptyList(),
+    val publicUsers: List<String> = emptyList(),
     val isManageMode: Boolean = false,
     val editingProfile: UserProfile? = null,
     val pinChallengeProfile: UserProfile? = null,
@@ -156,6 +157,20 @@ class ProfilePickerViewModel @Inject constructor(
                 quickConnectSecret = null
             )
         }
+        viewModelScope.launch {
+            val users = authRepository.fetchPublicUsers().getOrDefault(emptyList())
+                .map { it.name.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+            if (users.isNotEmpty()) {
+                _uiState.update { state ->
+                    state.copy(
+                        publicUsers = users,
+                        username = state.username.ifBlank { users.first() }
+                    )
+                }
+            }
+        }
         startQuickConnect(onSignedIn)
     }
 
@@ -196,10 +211,17 @@ class ProfilePickerViewModel @Inject constructor(
                     onSignedIn()
                 }
                 .onFailure { err ->
+                    val raw = err.message.orEmpty()
+                    val friendly = when {
+                        raw.contains("401") -> "Invalid Jellyfin username or password."
+                        raw.contains("403") -> "Sign-in forbidden (HTTP 403). Check account permissions."
+                        raw.isNotBlank() -> raw
+                        else -> "Sign-in failed"
+                    }
                     _uiState.update {
                         it.copy(
                             isAuthenticating = false,
-                            errorMessage = err.message ?: "Sign-in failed"
+                            errorMessage = friendly
                         )
                     }
                 }
@@ -211,11 +233,12 @@ class ProfilePickerViewModel @Inject constructor(
         qcPollingJob = viewModelScope.launch {
             _uiState.update { it.copy(isAuthenticating = true, errorMessage = null) }
             val initResult = authRepository.initiateQuickConnect()
-            initResult.onFailure { err ->
+            initResult.onFailure {
                 _uiState.update {
                     it.copy(
                         isAuthenticating = false,
-                        errorMessage = "Quick Connect unavailable (${err.message}). Try Password login."
+                        usePasswordMode = true,
+                        errorMessage = "Quick Connect is not enabled on this server — sign in with your password below."
                     )
                 }
                 return@launch

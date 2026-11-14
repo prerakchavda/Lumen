@@ -8,7 +8,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +37,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -114,6 +116,10 @@ fun SearchContent(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val gridMinWidth = if (spec.cardStyle == CardPresentationStyle.WIDESCREEN_16_9) 224.dp else 148.dp
+    val searchInputFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        runCatching { searchInputFocusRequester.requestFocus() }
+    }
 
     Column(
         modifier = Modifier
@@ -149,7 +155,7 @@ fun SearchContent(
                     focusedBorderColor = colors.accent,
                     unfocusedBorderColor = colors.badgeBorder
                 ),
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).focusRequester(searchInputFocusRequester)
             )
 
             SearchIconCircleButton(
@@ -184,7 +190,6 @@ fun SearchContent(
                             else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.5f), RoundedCornerShape(18.dp))
                         )
                         .onFocusChanged { focused = it.isFocused }
-                        .focusable()
                         .clickable { onSelectGenre(genre) }
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) {
@@ -226,7 +231,6 @@ fun SearchContent(
                         .background(if (clearFocused) colors.surfaceElevated else colors.surface)
                         .then(if (clearFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(16.dp)) else Modifier)
                         .onFocusChanged { clearFocused = it.isFocused }
-                        .focusable()
                         .clickable(onClick = onClearFilter)
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
@@ -317,7 +321,6 @@ fun SearchContent(
                                             .background(if (focused) colors.surfaceElevated else Color.Transparent)
                                             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp)) else Modifier)
                                             .onFocusChanged { focused = it.isFocused }
-                                            .focusable()
                                             .clickable { onSelectPerson(person) }
                                             .padding(6.dp)
                                     ) {
@@ -382,7 +385,6 @@ private fun SearchIconCircleButton(
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(22.dp)) else Modifier)
             .onFocusChanged { focused = it.isFocused }
-            .focusable()
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
