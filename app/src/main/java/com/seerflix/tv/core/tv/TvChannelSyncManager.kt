@@ -47,24 +47,29 @@ class TvChannelSyncManager @Inject constructor(
                     .setTitle(alert.title)
                     .setDescription("Requested title is now ready to watch")
                     .setIntentUri(buildPlayerDeepLink(jfId))
-                    .setInternalProviderId("ready_$jfId")
+                    .setInternalProviderId("$READY_PREFIX$jfId")
 
                 alert.posterUrl?.let { art ->
                     builder.setPosterArtUri(Uri.parse(art))
                     builder.setPosterArtAspectRatio(TvContractCompat.PreviewPrograms.ASPECT_RATIO_2_3)
                 }
-                context.contentResolver.insert(
-                    TvContractCompat.WatchNextPrograms.CONTENT_URI,
-                    builder.build().toContentValues()
-                )
+                val values = builder.build().toContentValues()
+                val existingRowId = findWatchNextRowId("$READY_PREFIX$jfId")
+                if (existingRowId != null) {
+                    context.contentResolver.update(
+                        TvContractCompat.buildWatchNextProgramUri(existingRowId),
+                        values,
+                        null,
+                        null
+                    )
+                } else {
+                    context.contentResolver.insert(TvContractCompat.WatchNextPrograms.CONTENT_URI, values)
+                }
             }
         }
 
-    private fun syncWatchNext(items: List<UnifiedMediaItem>) {
-        val resolver = context.contentResolver
-        val existingIds = mutableMapOf<String, Long>()
-
-        resolver.query(
+    private fun findWatchNextRowId(internalProviderId: String): Long? {
+        context.contentResolver.query(
             TvContractCompat.WatchNextPrograms.CONTENT_URI,
             arrayOf(
                 TvContractCompat.WatchNextPrograms._ID,
@@ -73,15 +78,45 @@ class TvChannelSyncManager @Inject constructor(
             null,
             null,
             null
+        )?.use { cursor ->
+            val idIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms._ID)
+            val provIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms.COLUMN_INTERNAL_PROVIDER_ID)
+            if (idIdx < 0 || provIdx < 0) return null
+            while (cursor.moveToNext()) {
+                if (cursor.getString(provIdx) == internalProviderId) return cursor.getLong(idIdx)
+            }
+        }
+        return null
+    }
+
+    private fun syncWatchNext(items: List<UnifiedMediaItem>) {
+        val resolver = context.contentResolver
+        val existingIds = mutableMapOf<String, Long>()
+        val engagementByRowId = mutableMapOf<Long, Long>()
+
+        resolver.query(
+            TvContractCompat.WatchNextPrograms.CONTENT_URI,
+            arrayOf(
+                TvContractCompat.WatchNextPrograms._ID,
+                TvContractCompat.WatchNextPrograms.COLUMN_INTERNAL_PROVIDER_ID,
+                TvContractCompat.WatchNextPrograms.COLUMN_LAST_ENGAGEMENT_TIME_UTC_MILLIS
+            ),
+            null,
+            null,
+            null
         )?.use { cursor: Cursor ->
             val idIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms._ID)
             val provIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms.COLUMN_INTERNAL_PROVIDER_ID)
+            val engagedIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms.COLUMN_LAST_ENGAGEMENT_TIME_UTC_MILLIS)
             while (cursor.moveToNext()) {
                 if (idIdx >= 0 && provIdx >= 0) {
                     val rowId = cursor.getLong(idIdx)
                     val provId = cursor.getString(provIdx)
                     if (!provId.isNullOrBlank()) {
                         existingIds[provId] = rowId
+                        if (engagedIdx >= 0 && !cursor.isNull(engagedIdx)) {
+                            engagementByRowId[rowId] = cursor.getLong(engagedIdx)
+                        }
                     }
                 }
             }
@@ -108,9 +143,20 @@ class TvChannelSyncManager @Inject constructor(
             }
         }
 
-        // Remove stale entries no longer in Continue Watching
+        // Remove stale entries no longer in Continue Watching. "Ready to watch" promotions
+        // (inserted by promoteNewReleaseToWatchNext) are not Continue Watching rows, so they must
+        // survive this sync; drop them once the title shows up in Continue Watching or they expire.
+        val now = System.currentTimeMillis()
         existingIds.forEach { (provId, rowId) ->
-            if (provId !in currentProviderIds) {
+            val isReadyPromotion = provId.startsWith(READY_PREFIX)
+            val stale = if (isReadyPromotion) {
+                val promotedAt = engagementByRowId[rowId] ?: now
+                provId.removePrefix(READY_PREFIX) in currentProviderIds ||
+                    now - promotedAt > READY_PROMOTION_TTL_MS
+            } else {
+                provId !in currentProviderIds
+            }
+            if (stale) {
                 resolver.delete(TvContractCompat.buildWatchNextProgramUri(rowId), null, null)
             }
         }
@@ -173,6 +219,8 @@ class TvChannelSyncManager @Inject constructor(
 
     companion object {
         private const val CHANNEL_NAME = "Lumen"
+        private const val READY_PREFIX = "ready_"
+        private const val READY_PROMOTION_TTL_MS = 14L * 24 * 60 * 60 * 1000
 
         fun buildPlayerDeepLink(jellyfinId: String): Uri =
             Uri.parse("seerflix://player/$jellyfinId")

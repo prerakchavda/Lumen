@@ -14,6 +14,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -76,7 +77,8 @@ class SearchViewModel @Inject constructor(
             val profile = authRepository.activeProfileFlow.first()
             val userId = profile?.jellyfinUserId.orEmpty()
             val trending = catalogRepository.loadTrendingTitles(userId, activeProfile = profile)
-            _uiState.update { it.copy(trendingItems = trending, isLoadingSuggestions = false) }
+            // Grid keys are derived from item ids; duplicates would crash the LazyVerticalGrid.
+            _uiState.update { it.copy(trendingItems = trending.distinctBy { t -> t.id }, isLoadingSuggestions = false) }
         }
     }
 
@@ -103,12 +105,19 @@ class SearchViewModel @Inject constructor(
                 query = newQuery.trim(),
                 activeProfile = profile
             )
+            // A newer keystroke may have superseded this search while it was in flight; never let
+            // stale results land on top of the current query.
+            ensureActive()
             _uiState.update {
-                it.copy(
-                    results = mediaResults,
-                    personResults = people,
-                    isSearching = false
-                )
+                if (it.query != newQuery) {
+                    it
+                } else {
+                    it.copy(
+                        results = mediaResults.distinctBy { r -> r.id },
+                        personResults = people.distinctBy { p -> p.id },
+                        isSearching = false
+                    )
+                }
             }
         }
     }
@@ -132,7 +141,8 @@ class SearchViewModel @Inject constructor(
             val profile = authRepository.activeProfileFlow.first()
             val userId = profile?.jellyfinUserId.orEmpty()
             val items = catalogRepository.loadByGenre(userId, genre, activeProfile = profile)
-            _uiState.update { it.copy(results = items, isSearching = false) }
+            ensureActive()
+            _uiState.update { it.copy(results = items.distinctBy { r -> r.id }, isSearching = false) }
         }
     }
 
@@ -142,19 +152,22 @@ class SearchViewModel @Inject constructor(
 
     fun selectPerson(personId: Int, name: String) {
         searchJob?.cancel()
+        // Set synchronously (not inside the IO coroutine) so the very first frame already knows a
+        // filmography is shown — the screen uses that to decide where initial focus goes.
+        _uiState.update {
+            it.copy(
+                activePersonName = name,
+                selectedGenre = null,
+                personResults = emptyList(),
+                isSearching = true
+            )
+        }
         searchJob = viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update {
-                it.copy(
-                    activePersonName = name,
-                    selectedGenre = null,
-                    personResults = emptyList(),
-                    isSearching = true
-                )
-            }
             val profile = authRepository.activeProfileFlow.first()
             val userId = profile?.jellyfinUserId.orEmpty()
             val items = catalogRepository.loadPersonCredits(userId, personId, activeProfile = profile)
-            _uiState.update { it.copy(results = items, isSearching = false) }
+            ensureActive()
+            _uiState.update { it.copy(results = items.distinctBy { r -> r.id }, isSearching = false) }
         }
     }
 

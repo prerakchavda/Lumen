@@ -12,10 +12,17 @@ import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
 import coil3.disk.directory
 import coil3.memory.MemoryCache
+import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.allowRgb565
 import coil3.request.crossfade
+import com.seerflix.tv.core.network.MediaClient
 import com.seerflix.tv.core.tv.RequestReadyWorker
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
 import dagger.hilt.android.HiltAndroidApp
+import dagger.hilt.components.SingletonComponent
+import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
 @HiltAndroidApp
@@ -38,9 +45,30 @@ class SeerflixApp : Application(), SingletonImageLoader.Factory {
                     .maxSizeBytes(80L * 1024 * 1024)
                     .build()
             }
+            .components {
+                // Route image loads through the client that honours the "trust self-signed
+                // certificates" setting so Jellyfin artwork loads on self-signed HTTPS servers.
+                add(
+                    OkHttpNetworkFetcherFactory(
+                        callFactory = {
+                            EntryPointAccessors.fromApplication(
+                                context.applicationContext,
+                                ImageClientEntryPoint::class.java
+                            ).mediaClient()
+                        }
+                    )
+                )
+            }
             .allowRgb565(true)
             .crossfade(false)
             .build()
+    }
+
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface ImageClientEntryPoint {
+        @MediaClient
+        fun mediaClient(): OkHttpClient
     }
 
     private fun scheduleRequestReadyWorker() {

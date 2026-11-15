@@ -68,7 +68,7 @@ data class JellyfinUpdateUserDataRequest(
 
 @Serializable
 data class JellyfinPersonDto(
-    @SerialName("Name") val name: String,
+    @SerialName("Name") val name: String = "",
     @SerialName("Role") val role: String? = null,
     @SerialName("Type") val type: String? = null,
     @SerialName("Id") val id: String? = null,
@@ -95,8 +95,9 @@ data class JellyfinTrickplayInfoDto(
 @Serializable
 data class JellyfinItemDto(
     @SerialName("Id") val id: String,
-    @SerialName("Name") val name: String,
-    @SerialName("Type") val type: String,
+    // BaseItemDto.Name is nullable server-side; one nameless item must not fail a whole page.
+    @SerialName("Name") val name: String = "",
+    @SerialName("Type") val type: String = "",
     @SerialName("Overview") val overview: String? = null,
     @SerialName("Taglines") val taglines: List<String> = emptyList(),
     @SerialName("ProductionYear") val productionYear: Int? = null,
@@ -251,7 +252,7 @@ data class JellyfinPlaybackInfoResponse(
 
 @Serializable
 data class JellyfinMediaSourceDto(
-    @SerialName("Id") val id: String,
+    @SerialName("Id") val id: String = "",
     @SerialName("Name") val name: String? = null,
     @SerialName("Path") val path: String? = null,
     @SerialName("Container") val container: String? = null,
@@ -267,7 +268,7 @@ data class JellyfinMediaSourceDto(
 @Serializable
 data class JellyfinMediaStreamDto(
     @SerialName("Index") val index: Int,
-    @SerialName("Type") val type: String,
+    @SerialName("Type") val type: String = "",
     @SerialName("Codec") val codec: String? = null,
     @SerialName("Language") val language: String? = null,
     @SerialName("DisplayTitle") val displayTitle: String? = null,
@@ -281,6 +282,7 @@ data class JellyfinMediaStreamDto(
     @SerialName("IsHearingImpaired") val isHearingImpaired: Boolean = false,
     @SerialName("IsExternal") val isExternal: Boolean = false,
     @SerialName("DeliveryUrl") val deliveryUrl: String? = null,
+    @SerialName("DeliveryMethod") val deliveryMethod: String? = null,
     @SerialName("AudioSpatialFormat") val audioSpatialFormat: String? = null
 )
 

@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,14 +29,19 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -46,6 +50,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AvailabilityTier
@@ -61,6 +68,13 @@ fun RequestsScreen(
     viewModel: RequestsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, viewModel) {
+        // 15s live polling only while this destination is actually on screen.
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.autoRefreshWhileVisible()
+        }
+    }
     RequestsContent(
         state = state,
         onBack = onBack,
@@ -84,6 +98,13 @@ fun RequestsContent(
 ) {
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
+    // Initial D-pad focus (nothing was focused on entry, so the first remote press did nothing),
+    // and the fallback target when the focused request card disappears after Approve/Decline.
+    val filterFocusRequester = remember { FocusRequester() }
+    var focusRescueTick by remember { mutableStateOf(0) }
+    LaunchedEffect(focusRescueTick) {
+        runCatching { filterFocusRequester.requestFocus() }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -126,12 +147,14 @@ fun RequestsContent(
 
         Spacer(Modifier.height(18.dp))
 
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(RequestFilter.entries) { filter ->
+        // Plain Row (only 4 chips): every chip stays composed, so the focus requester is always attached.
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            RequestFilter.entries.forEach { filter ->
                 FilterChip(
                     label = filter.label,
                     selected = state.filter == filter,
-                    onClick = { onSelectFilter(filter) }
+                    onClick = { onSelectFilter(filter) },
+                    modifier = if (state.filter == filter) Modifier.focusRequester(filterFocusRequester) else Modifier
                 )
             }
         }
@@ -140,6 +163,14 @@ fun RequestsContent(
 
         Box(modifier = Modifier.fillMaxSize()) {
             when {
+                state.isKidsLocked -> {
+                    Text(
+                        text = strings.labelKidsLocked,
+                        color = colors.textSecondary,
+                        fontSize = 16.sp,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
                 !state.isSeerrConfigured -> {
                     Column(
                         modifier = Modifier.align(Alignment.Center),
@@ -163,7 +194,19 @@ fun RequestsContent(
                     CircularProgressIndicator(color = colors.accent, modifier = Modifier.align(Alignment.Center))
                 }
                 state.errorMessage != null -> {
-                    Text(state.errorMessage!!, color = colors.accent, modifier = Modifier.align(Alignment.Center))
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Text(state.errorMessage.orEmpty(), color = colors.accent)
+                        HeroPillButton(
+                            text = "Retry",
+                            icon = Icons.Filled.Refresh,
+                            isPrimary = true,
+                            onClick = onRefresh
+                        )
+                    }
                 }
                 state.visibleRequests.isEmpty() -> {
                     Text(
@@ -185,6 +228,7 @@ fun RequestsContent(
                                 isBusy = state.busyRequestId == req.requestId,
                                 onApprove = { onApproveRequest(req.requestId) },
                                 onDecline = { onDeclineRequest(req.requestId) },
+                                onRemovedAfterAction = { focusRescueTick++ },
                                 onClick = {
                                     if (req.tmdbId > 0) {
                                         onOpenRequestDetails(req.tmdbId, req.mediaType)
@@ -206,7 +250,8 @@ private fun RequestItemCard(
     isBusy: Boolean,
     onApprove: () -> Unit,
     onDecline: () -> Unit,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRemovedAfterAction: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
@@ -214,10 +259,32 @@ private fun RequestItemCard(
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
 
+    // Approve/Decline make their own buttons disappear (status leaves "pending"), which would drop
+    // D-pad focus into nowhere. Remember that the user acted here and hand focus back to the card,
+    // or — if the card itself leaves the filtered list — to the screen's fallback target.
+    val showAdminActions = isAdmin && req.requestStatus == 1
+    val cardFocusRequester = remember { FocusRequester() }
+    var actionClicked by remember { mutableStateOf(false) }
+    LaunchedEffect(showAdminActions) {
+        if (!showAdminActions && actionClicked) {
+            actionClicked = false
+            runCatching { cardFocusRequester.requestFocus() }
+        }
+    }
+    LaunchedEffect(isBusy) {
+        // Action failed: the buttons are still there and still focused, nothing to rescue.
+        if (!isBusy && showAdminActions) actionClicked = false
+    }
+    val latestOnRemoved by rememberUpdatedState(onRemovedAfterAction)
+    DisposableEffect(Unit) {
+        onDispose { if (actionClicked) latestOnRemoved() }
+    }
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
+            .focusRequester(cardFocusRequester)
             .clip(corner)
             .background(if (focused) colors.surfaceElevated else colors.surface)
             .then(
@@ -252,7 +319,9 @@ private fun RequestItemCard(
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    // Without a weight a long title takes the whole row and squeezes the HD/4K badge out.
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 Box(
                     modifier = Modifier
@@ -312,20 +381,30 @@ private fun RequestItemCard(
             }
         }
 
-        if (isAdmin && req.requestStatus == 1) {
+        if (showAdminActions) {
             Spacer(Modifier.width(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 HeroPillButton(
                     text = if (isBusy) "..." else strings.actionApprove,
                     icon = Icons.Filled.Check,
                     isPrimary = true,
-                    onClick = { if (!isBusy) onApprove() }
+                    onClick = {
+                        if (!isBusy) {
+                            actionClicked = true
+                            onApprove()
+                        }
+                    }
                 )
                 HeroPillButton(
                     text = strings.actionDecline,
                     icon = Icons.Filled.Close,
                     isPrimary = false,
-                    onClick = { if (!isBusy) onDecline() }
+                    onClick = {
+                        if (!isBusy) {
+                            actionClicked = true
+                            onDecline()
+                        }
+                    }
                 )
             }
         }

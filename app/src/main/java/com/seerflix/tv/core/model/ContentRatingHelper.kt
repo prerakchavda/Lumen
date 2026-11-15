@@ -1,16 +1,41 @@
 package com.seerflix.tv.core.model
 
 object ContentRatingHelper {
+    private val KIDS = setOf("G", "TV-Y", "TV-G", "TV-Y7", "TV-Y7-FV", "U", "AL", "E", "ALL", "TP", "L")
+    private val FAMILY = setOf("PG", "TV-PG")
+    private val TEEN = setOf("PG-13", "TV-14", "12", "12A", "13+", "14+", "M")
+    private val MATURE = setOf(
+        "R", "NC-17", "TV-MA", "18", "18+", "X", "NR", "UNRATED", "MA", "AO", "XXX", "R18", "R18+"
+    )
+    private val COUNTRY_PREFIX = Regex("^[A-Z]{2}-(.+)$")
+    private val AGE_DIGITS = Regex("(\\d{1,2})")
+
     fun ratingRank(officialRating: String?): Int {
         if (officialRating.isNullOrBlank()) return 2
         val norm = officialRating.trim().uppercase()
-        return when {
-            norm in setOf("G", "TV-Y", "TV-G", "TV-Y7", "TV-Y7-FV", "U", "AL") -> 1
-            norm in setOf("PG", "TV-PG") -> 2
-            norm in setOf("PG-13", "TV-14", "12", "12A", "13+", "14+") -> 3
-            norm in setOf("R", "NC-17", "TV-MA", "18", "18+", "X", "NR", "UNRATED") -> 4
-            else -> 2
+        knownRank(norm)?.let { return it }
+        // Jellyfin often stores country-prefixed ratings ("DE-16", "GB-15", "AU-MA15+").
+        val unprefixed = COUNTRY_PREFIX.find(norm)?.groupValues?.get(1)
+        if (unprefixed != null) knownRank(unprefixed)?.let { return it }
+        // Age-based systems (FSK-16, "16+", "MA15+", PEGI 18, "15"): rank by the minimum age.
+        val age = AGE_DIGITS.find(unprefixed ?: norm)?.groupValues?.get(1)?.toIntOrNull()
+        if (age != null) {
+            return when {
+                age <= 6 -> 1
+                age <= 11 -> 2
+                age <= 14 -> 3
+                else -> 4
+            }
         }
+        return 2
+    }
+
+    private fun knownRank(norm: String): Int? = when (norm) {
+        in KIDS -> 1
+        in FAMILY -> 2
+        in TEEN -> 3
+        in MATURE -> 4
+        else -> null
     }
 
     fun isAllowed(item: UnifiedMediaItem, profile: UserProfile?): Boolean {

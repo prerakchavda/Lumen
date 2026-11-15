@@ -38,6 +38,29 @@ class SessionPreferencesTest {
     }
 
     @Test
+    fun `normalizeUrl treats an auto-capitalised scheme as a scheme`() {
+        assertEquals("https://jf.example.com", SessionPreferences.normalizeUrl("Https://jf.example.com/"))
+        assertEquals("http://192.168.1.50:8096", SessionPreferences.normalizeUrl("HTTP://192.168.1.50:8096"))
+    }
+
+    @Test
+    fun `shared Json encodes default-valued request fields and omits nulls`() {
+        val appJson = NetworkModule.provideJson()
+        assertEquals(
+            """{"PlaybackPositionTicks":0}""",
+            appJson.encodeToString(JellyfinUpdateUserDataRequest.serializer(), JellyfinUpdateUserDataRequest(0L))
+        )
+        val body = appJson.encodeToString(
+            SeerrCreateRequestBody.serializer(),
+            SeerrCreateRequestBody(mediaType = "movie", mediaId = 1)
+        )
+        assertTrue(body.contains("\"is4k\":false"))
+        assertFalse(body.contains("null"))
+        val profile = appJson.encodeToString(JellyfinDeviceProfileDto.serializer(), JellyfinDeviceProfileDto())
+        assertTrue(profile.contains("DirectPlayProfiles"))
+    }
+
+    @Test
     fun `normalizeUrl returns empty string when blank`() {
         assertEquals("", SessionPreferences.normalizeUrl("   "))
     }

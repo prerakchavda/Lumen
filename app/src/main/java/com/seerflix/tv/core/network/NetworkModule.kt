@@ -37,6 +37,15 @@ annotation class SeerrClient
 @Retention(AnnotationRetention.BINARY)
 annotation class GeneralClient
 
+/**
+ * Plain client (no base-URL rewriting, no auth headers) that honours the user's
+ * "trust self-signed certificates" toggle. Use it for absolute media URLs that may point at
+ * the user's own server (Jellyfin images, streams, external subtitle files).
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class MediaClient
+
 private class FailoverBaseUrlInterceptor(
     private val candidatesProvider: () -> List<String>,
     private val onResolvedUrl: (String) -> Unit
@@ -58,7 +67,8 @@ private class FailoverBaseUrlInterceptor(
                 return response
             } catch (io: IOException) {
                 lastError = io
-                if (idx == candidates.lastIndex) throw io
+                // A cancelled call must not fan out to the next candidate URL.
+                if (idx == candidates.lastIndex || chain.call().isCanceled()) throw io
             }
         }
         throw lastError ?: IOException("Unable to reach server URL")
@@ -89,19 +99,29 @@ private class JellyfinAuthInterceptor(
     private val prefs: SessionPreferences
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
-        val token = prefs.cachedToken
-        val deviceId = prefs.cachedDeviceId
-        val authHeader = buildString {
-            append("""MediaBrowser Client="Lumen", Device="Google TV", DeviceId="$deviceId", Version="${BuildConfig.VERSION_NAME}"""")
-            if (!token.isNullOrBlank()) {
-                append(""", Token="$token"""")
-            }
-        }
+        // Never send the previously active profile's token on sign-in calls: a stale/revoked
+        // token must not leak into (or interfere with) a fresh authentication for another user.
+        val path = chain.request().url.encodedPath
+        val isSignInCall = path.endsWith("/AuthenticateByName", ignoreCase = true) ||
+            path.endsWith("/AuthenticateWithQuickConnect", ignoreCase = true)
+        val token = if (isSignInCall) null else prefs.cachedToken
+        val authHeader = buildJellyfinAuthHeader(prefs.cachedDeviceId, token)
         val request = chain.request().newBuilder()
             .header("Authorization", authHeader)
             .header("Accept", "application/json")
             .build()
         return chain.proceed(request)
+    }
+}
+
+/**
+ * Standard Jellyfin client authorization header value
+ * (`MediaBrowser Client="…", Device="…", DeviceId="…", Version="…", Token="…"`).
+ */
+internal fun buildJellyfinAuthHeader(deviceId: String, token: String?): String = buildString {
+    append("""MediaBrowser Client="Lumen", Device="Google TV", DeviceId="$deviceId", Version="${BuildConfig.VERSION_NAME}"""")
+    if (!token.isNullOrBlank()) {
+        append(""", Token="$token"""")
     }
 }
 
@@ -128,8 +148,12 @@ private class SeerrSessionCookieJar(
         val sid = cookies.firstOrNull { it.name == "connect.sid" } ?: return
         val encoded = "${sid.name}=${sid.value}"
         prefs.setImmediateSeerrCookie(encoded)
+        // Sign-in responses belong to the profile being created; AuthRepository persists them via
+        // upsertAndActivateProfile. Writing them to the *currently active* profile here would hand
+        // the previous profile the new user's Seerr session.
+        if (url.encodedPath.contains("/api/v1/auth/", ignoreCase = true)) return
         scope.launch {
-            prefs.updateActiveSeerrCookie(encoded)
+            runCatching { prefs.updateActiveSeerrCookie(encoded) }
         }
     }
 
@@ -170,13 +194,18 @@ private fun OkHttpClient.Builder.applyDynamicSelfSignedTrust(prefs: SessionPrefe
         tmf.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().firstOrNull()
     }.getOrNull()
 
+    // If the platform trust manager could not be loaded, fail closed instead of silently
+    // trusting every certificate while the self-signed toggle is OFF.
+    fun platformTm(): javax.net.ssl.X509TrustManager = systemDefaultTm
+        ?: throw java.security.cert.CertificateException("System trust store unavailable")
+
     val delegatingTm = object : javax.net.ssl.X509TrustManager {
         override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
-            if (!prefs.cachedTrustSelfSigned) systemDefaultTm?.checkClientTrusted(chain, authType)
+            if (!prefs.cachedTrustSelfSigned) platformTm().checkClientTrusted(chain, authType)
         }
 
         override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
-            if (!prefs.cachedTrustSelfSigned) systemDefaultTm?.checkServerTrusted(chain, authType)
+            if (!prefs.cachedTrustSelfSigned) platformTm().checkServerTrusted(chain, authType)
         }
 
         override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> =
@@ -204,15 +233,27 @@ object NetworkModule {
         ignoreUnknownKeys = true
         coerceInputValues = true
         isLenient = true
+        // Request bodies must carry values even when they equal the Kotlin default
+        // (e.g. PlaybackPositionTicks = 0 to clear resume, the DeviceProfile's DirectPlay /
+        // Transcoding profiles), otherwise kotlinx drops them and the server sees `{}`.
+        encodeDefaults = true
+        // ...but omit nulls rather than sending `"serverId": null` style fields.
+        explicitNulls = false
+    }
+
+    private fun loggingInterceptor(): HttpLoggingInterceptor = HttpLoggingInterceptor().apply {
+        level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
+        redactHeader("Authorization")
+        redactHeader("X-Api-Key")
+        redactHeader("Cookie")
+        redactHeader("Set-Cookie")
     }
 
     @Provides
     @Singleton
     @JellyfinClient
     fun provideJellyfinOkHttp(prefs: SessionPreferences): OkHttpClient {
-        val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
+        val logging = loggingInterceptor()
         return OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
@@ -232,9 +273,7 @@ object NetworkModule {
     @Singleton
     @SeerrClient
     fun provideSeerrOkHttp(prefs: SessionPreferences): OkHttpClient {
-        val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BASIC
-        }
+        val logging = loggingInterceptor()
         return OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
@@ -257,6 +296,17 @@ object NetworkModule {
     fun provideGeneralOkHttp(): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
+        .build()
+
+    @Provides
+    @Singleton
+    @MediaClient
+    fun provideMediaOkHttp(
+        @GeneralClient general: OkHttpClient,
+        prefs: SessionPreferences
+    ): OkHttpClient = general.newBuilder()
+        .readTimeout(30, TimeUnit.SECONDS)
+        .applyDynamicSelfSignedTrust(prefs)
         .build()
 
     @Provides

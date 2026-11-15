@@ -1,5 +1,7 @@
 package com.seerflix.tv.feature.home
 
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,6 +24,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,10 +68,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,6 +93,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.i18n.UiStrings
@@ -111,6 +120,8 @@ import com.seerflix.tv.ui.components.Top10PosterCard
 import com.seerflix.tv.ui.components.UiPresetPickerDialog
 import com.seerflix.tv.ui.theme.NavLayoutStyle
 import com.seerflix.tv.ui.theme.SeerflixTokens
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 
 @Composable
 private fun HomeTab.localizedLabel(strings: UiStrings): String = when (this) {
@@ -134,6 +145,11 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    // Back from the player/details: pick up new Continue Watching progress (no-op on first load).
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshContinueWatching()
+        onPauseOrDispose { }
+    }
     HomeContent(
         state = state,
         onOpenDetails = onOpenDetails,
@@ -178,11 +194,24 @@ fun HomeScreen(
             if (jfId != null) {
                 viewModel.dismissReadyAlert(alert.requestId)
                 onPlayDirect(jfId)
+            } else {
+                // Library index hasn't picked the title up yet: open Details instead of
+                // silently ignoring the "Watch Now" press.
+                onOpenDetails(
+                    UnifiedMediaItem(
+                        id = "tmdb_${alert.tmdbId}",
+                        tmdbId = alert.tmdbId,
+                        mediaType = alert.mediaType,
+                        title = alert.title,
+                        posterUrl = alert.posterUrl
+                    )
+                )
             }
         },
         onDismissReadyAlert = viewModel::dismissReadyAlert,
         onOpenUpdateDialog = viewModel::openUpdateDialog,
-        onDismissUpdateDialog = viewModel::dismissUpdateDialog
+        onDismissUpdateDialog = viewModel::dismissUpdateDialog,
+        previewHttpClient = viewModel.previewHttpClient
     )
 }
 
@@ -229,12 +258,19 @@ fun HomeContent(
     onPlayReadyAlert: (ReadyRequestAlert) -> Unit = {},
     onDismissReadyAlert: (Int) -> Unit = {},
     onOpenUpdateDialog: () -> Unit = {},
-    onDismissUpdateDialog: () -> Unit = {}
+    onDismissUpdateDialog: () -> Unit = {},
+    previewHttpClient: OkHttpClient? = null
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
     var railExpanded by remember { mutableStateOf(false) }
+    // Attached to the active tab in whichever nav (rail / pill bar / header) the preset uses,
+    // so Back from content can hand focus to the navigation before the app exits.
+    val navFocusRequester = remember { FocusRequester() }
+    val onBackToNav: () -> Unit = remember(navFocusRequester) {
+        { runCatching { navFocusRequester.requestFocus() } }
+    }
 
     val canvasBg = if (spec.preset == UiPreset.DISNEY_PLUS) {
         Brush.verticalGradient(listOf(colors.backgroundGlow.copy(alpha = 0.45f), colors.background))
@@ -258,6 +294,7 @@ fun HomeContent(
                     hasUpdate = state.updateInfo != null,
                     profileName = state.profile?.name ?: "Profile",
                     strings = strings,
+                    activeTabFocusRequester = navFocusRequester,
                     onRailFocusChange = { railExpanded = it },
                     onSelectTab = onSelectTab,
                     onOpenSearch = onOpenSearch,
@@ -286,6 +323,8 @@ fun HomeContent(
                     onOpenCollection = onOpenCollection,
                     onPlayReadyAlert = onPlayReadyAlert,
                     onDismissReadyAlert = onDismissReadyAlert,
+                    onBackToNav = onBackToNav,
+                    previewHttpClient = previewHttpClient,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
@@ -313,6 +352,8 @@ fun HomeContent(
                     onOpenCollection = onOpenCollection,
                     onPlayReadyAlert = onPlayReadyAlert,
                     onDismissReadyAlert = onDismissReadyAlert,
+                    onBackToNav = onBackToNav,
+                    previewHttpClient = previewHttpClient,
                     modifier = Modifier.fillMaxSize()
                 )
 
@@ -324,6 +365,7 @@ fun HomeContent(
                     hasUpdate = state.updateInfo != null,
                     profileName = state.profile?.name ?: "Profile",
                     strings = strings,
+                    activeTabFocusRequester = navFocusRequester,
                     onSelectTab = onSelectTab,
                     onOpenSearch = onOpenSearch,
                     onOpenRequests = onOpenRequests,
@@ -354,6 +396,7 @@ fun HomeContent(
                     hasUpdate = state.updateInfo != null,
                     profileName = state.profile?.name ?: "Profile",
                     strings = strings,
+                    activeTabFocusRequester = navFocusRequester,
                     onSelectTab = onSelectTab,
                     onOpenSearch = onOpenSearch,
                     onOpenRequests = onOpenRequests,
@@ -381,6 +424,8 @@ fun HomeContent(
                     onOpenCollection = onOpenCollection,
                     onPlayReadyAlert = onPlayReadyAlert,
                     onDismissReadyAlert = onDismissReadyAlert,
+                    onBackToNav = onBackToNav,
+                    previewHttpClient = previewHttpClient,
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
@@ -504,14 +549,63 @@ private fun HomeMainCanvas(
     onOpenCollection: (boxSetId: String, title: String, tmdbCollectionId: Int?) -> Unit,
     onPlayReadyAlert: (ReadyRequestAlert) -> Unit,
     onDismissReadyAlert: (Int) -> Unit,
+    onBackToNav: () -> Unit = {},
+    previewHttpClient: OkHttpClient? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val scope = rememberCoroutineScope()
+    val hasBackDispatcher = LocalOnBackPressedDispatcherOwner.current != null
 
-    Box(modifier = modifier) {
+    // --- D-pad focus bookkeeping -------------------------------------------------------------
+    // Key of the last focused card; saveable so it survives navigating to Details and back.
+    // Held as a raw State (not delegated) and only written from focus callbacks so focus moves
+    // don't recompose this whole canvas.
+    val lastFocusedCardKey = rememberSaveable { mutableStateOf<String?>(null) }
+    // Non-null only when Home re-enters composition with a saved focus target (Back from Details/Player).
+    val restoreFocusKey = remember { Snapshot.withoutReadObservation { lastFocusedCardKey.value } }
+    val restoreFocusRequester = remember { FocusRequester() }
+    val heroFocusRequester = remember { FocusRequester() }
+    var initialFocusHandled by rememberSaveable { mutableStateOf(false) }
+    var contentHasFocus by remember { mutableStateOf(false) }
+    val onCardFocused = remember<(String) -> Unit> { { cardKey -> lastFocusedCardKey.value = cardKey } }
+
+    // Restore focus to the card the user left from instead of dumping it on the hero / nothing.
+    LaunchedEffect(Unit) {
+        if (restoreFocusKey == null) return@LaunchedEffect
+        withFrameNanos { }
+        if (runCatching { restoreFocusRequester.requestFocus() }.isFailure) {
+            runCatching { heroFocusRequester.requestFocus() }
+        }
+    }
+    // One-shot initial focus once the first load settles, so the remote works immediately on launch.
+    // (Previously HeroBillboard grabbed focus every time it re-entered composition, which yanked
+    // focus back to "Play" while scrolling up through rows and after returning from Details.)
+    LaunchedEffect(state.isLoading) {
+        if (state.isLoading || initialFocusHandled || restoreFocusKey != null) return@LaunchedEffect
+        initialFocusHandled = true
+        withFrameNanos { }
+        if (runCatching { heroFocusRequester.requestFocus() }.isFailure && state.errorMessage == null) {
+            onBackToNav()
+        }
+    }
+    // Back from content returns to the nav first; only a Back from the nav exits the app.
+    if (hasBackDispatcher) {
+        BackHandler(enabled = contentHasFocus) { onBackToNav() }
+    }
+
+    val hasContentForTab = when (state.activeTab) {
+        HomeTab.COLLECTIONS -> state.collections.isNotEmpty()
+        HomeTab.LIVE_TV -> state.liveTvChannels.isNotEmpty() || state.liveTvRecordings.isNotEmpty()
+        else -> state.rows.isNotEmpty()
+    }
+
+    Box(modifier = modifier.onFocusChanged { contentHasFocus = it.hasFocus }) {
         when {
-            state.isLoading && state.rows.isEmpty() && state.collections.isEmpty() && state.liveTvChannels.isEmpty() -> {
+            // Per-tab check: switching to Collections / Live TV used to flash their
+            // "nothing found" empty state while the request was still in flight.
+            state.isLoading && !hasContentForTab -> {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -525,19 +619,36 @@ private fun HomeMainCanvas(
                     )
                 }
             }
-            state.errorMessage != null && state.rows.isEmpty() && state.collections.isEmpty() && state.liveTvChannels.isEmpty() -> {
+            state.errorMessage != null && !hasContentForTab -> {
+                val retryFocusRequester = remember { FocusRequester() }
+                LaunchedEffect(state.errorMessage) {
+                    // Nothing else is focusable here; make sure the remote lands on Retry.
+                    withFrameNanos { }
+                    runCatching { retryFocusRequester.requestFocus() }
+                }
                 Column(
-                    modifier = Modifier.align(Alignment.Center),
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(horizontal = 48.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(state.errorMessage!!, color = colors.accent, fontSize = 15.sp)
+                    Text(
+                        text = state.errorMessage.orEmpty(),
+                        color = colors.accent,
+                        fontSize = 15.sp,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Spacer(Modifier.height(14.dp))
                     NavRailItem(
                         icon = Icons.Filled.Refresh,
                         label = "Retry",
                         expanded = true,
                         selected = false,
-                        onClick = onRefresh
+                        onClick = onRefresh,
+                        modifier = Modifier
+                            .width(160.dp)
+                            .focusRequester(retryFocusRequester)
                     )
                 }
             }
@@ -579,9 +690,22 @@ private fun HomeMainCanvas(
                 }
             }
             else -> {
+                val listState = rememberLazyListState()
+                if (hasBackDispatcher) {
+                    // Registered after the outer handler, so it takes precedence while the list is shown.
+                    BackHandler(enabled = contentHasFocus) {
+                        onBackToNav()
+                        scope.launch { listState.scrollToItem(0) }
+                    }
+                }
+                // Duplicate row ids would crash LazyColumn ("Key was already used").
+                val rows = remember(state.rows) { state.rows.distinctBy { it.id } }
+                // The Apple TV glass bar floats over the list; without a hero the filter bar sat under it.
+                val listTopPadding = if (spec.navStyle == NavLayoutStyle.TOP_GLASS_PILL && state.featuredItem == null) 92.dp else 0.dp
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 48.dp)
+                    contentPadding = PaddingValues(top = listTopPadding, bottom = 48.dp)
                 ) {
                     state.featuredItem?.let { hero ->
                         item(key = "hero_billboard", contentType = "hero") {
@@ -589,6 +713,8 @@ private fun HomeMainCanvas(
                                 item = hero,
                                 previewStream = state.previewStream,
                                 isMuted = state.isPreviewMuted,
+                                primaryFocusRequester = heroFocusRequester,
+                                previewHttpClient = previewHttpClient,
                                 onToggleMute = onTogglePreviewMute,
                                 onPrimaryAction = {
                                     if (hero.boxSetId != null) {
@@ -606,7 +732,10 @@ private fun HomeMainCanvas(
                                         onOpenDetails(hero)
                                     }
                                 },
-                                onToggleMyList = onToggleFeaturedMyList
+                                onToggleMyList = onToggleFeaturedMyList,
+                                // Remember the hero too, so Back from Details lands here (no card
+                                // requester matches this key, so restore falls back to the hero).
+                                modifier = Modifier.onFocusChanged { if (it.hasFocus) onCardFocused("hero_billboard") }
                             )
                         }
                     }
@@ -642,8 +771,10 @@ private fun HomeMainCanvas(
                         }
                     }
 
-                    if (state.rows.isEmpty() && !state.isLoading) {
+                    if (rows.isEmpty() && !state.isLoading) {
                         item(key = "empty_filtered_state", contentType = "empty") {
+                            val isFiltered = state.availabilityFilter != AvailabilityFilter.ALL ||
+                                state.selectedGenre.id != GenreFilterOption.ALL_GENRES.first().id
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -651,14 +782,22 @@ private fun HomeMainCanvas(
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text(
-                                    text = "No titles match \"${state.availabilityFilter.label}\"",
+                                    text = if (isFiltered) {
+                                        "No titles match \"${state.availabilityFilter.label}\""
+                                    } else {
+                                        "Nothing to show here yet"
+                                    },
                                     color = colors.white,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    text = "Switch back to All or pick another genre to keep browsing.",
+                                    text = if (isFiltered) {
+                                        "Switch back to All or pick another genre to keep browsing."
+                                    } else {
+                                        "Your libraries returned no titles. Use Refresh in the menu to try again."
+                                    },
                                     color = colors.textSecondary,
                                     fontSize = 13.sp
                                 )
@@ -667,12 +806,15 @@ private fun HomeMainCanvas(
                     }
 
                     items(
-                        items = state.rows,
+                        items = rows,
                         key = { it.id },
                         contentType = { it.style }
                     ) { row ->
                         CatalogRowSection(
                             row = row,
+                            restoreFocusKey = restoreFocusKey,
+                            restoreFocusRequester = restoreFocusRequester,
+                            onCardFocused = onCardFocused,
                             onItemFocus = onItemFocused,
                             onItemClick = { item ->
                                 if (item.boxSetId != null) {
@@ -705,7 +847,9 @@ private fun HomeMainCanvas(
                     text = message,
                     color = colors.white,
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -731,7 +875,8 @@ private fun AppleTvTopGlassBar(
     onSwitchProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    activeTabFocusRequester: FocusRequester? = null
 ) {
     val colors = SeerflixTokens.colors
     Row(
@@ -778,7 +923,8 @@ private fun AppleTvTopGlassBar(
                     label = tab.localizedLabel(strings),
                     selected = activeTab == tab,
                     isGlass = true,
-                    onClick = { onSelectTab(tab) }
+                    onClick = { onSelectTab(tab) },
+                    modifier = activeTabModifier(tab == activeTab, activeTabFocusRequester)
                 )
             }
         }
@@ -833,7 +979,8 @@ private fun DisneyTopHeaderBar(
     onOpenUpdate: () -> Unit,
     onSwitchProfile: () -> Unit,
     onOpenSettings: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    activeTabFocusRequester: FocusRequester? = null
 ) {
     val colors = SeerflixTokens.colors
     Row(
@@ -867,7 +1014,8 @@ private fun DisneyTopHeaderBar(
                         label = tab.localizedLabel(strings),
                         selected = activeTab == tab,
                         isGlass = false,
-                        onClick = { onSelectTab(tab) }
+                        onClick = { onSelectTab(tab) },
+                        modifier = activeTabModifier(tab == activeTab, activeTabFocusRequester)
                     )
                 }
             }
@@ -904,19 +1052,26 @@ private fun DisneyTopHeaderBar(
     }
 }
 
+private fun activeTabModifier(isActive: Boolean, requester: FocusRequester?): Modifier =
+    if (isActive && requester != null) Modifier.focusRequester(requester) else Modifier
+
+private fun focusRestoreModifier(cardKey: String, restoreKey: String?, requester: FocusRequester?): Modifier =
+    if (requester != null && restoreKey != null && cardKey == restoreKey) Modifier.focusRequester(requester) else Modifier
+
 @Composable
 private fun TopNavTabPill(
     label: String,
     selected: Boolean,
     isGlass: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
     val corner = RoundedCornerShape(if (isGlass) 22.dp else 8.dp)
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(corner)
             .background(
                 when {
@@ -1031,7 +1186,7 @@ private fun AvailabilityFilterBar(
             } else {
                 listOf(AvailabilityFilter.ALL, AvailabilityFilter.WATCH_NOW)
             }
-            options.forEach { filter ->
+            options.forEach { filter -> key(filter) {
                 var focused by remember { mutableStateOf(false) }
                 val selected = selectedFilter == filter
                 Box(
@@ -1060,7 +1215,7 @@ private fun AvailabilityFilterBar(
                         fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
                     )
                 }
-            }
+            } }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1091,7 +1246,9 @@ private fun StatusTagChip(label: String, tint: Color) {
             text = label,
             color = colors.white,
             fontSize = 11.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -1158,10 +1315,13 @@ private fun PosterOptionsDialog(
     val strings = AppStrings.current
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val firstActionFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        runCatching { firstActionFocusRequester.requestFocus() }
-    }
     Dialog(onDismissRequest = onDismiss) {
+        // Must run inside the dialog's own composition: from the parent it fires before the
+        // dialog window's content is attached and silently fails, leaving the dialog unfocused.
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { firstActionFocusRequester.requestFocus() }
+        }
         Column(
             modifier = Modifier
                 .width(400.dp)
@@ -1175,7 +1335,9 @@ private fun PosterOptionsDialog(
                 text = item.title,
                 color = colors.white,
                 fontSize = 19.sp,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
             val subtitle = buildList {
                 item.releaseYear?.let(::add)
@@ -1241,11 +1403,13 @@ private fun ContinueWatchingOptionsDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val strings = AppStrings.current
     val firstActionFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        runCatching { firstActionFocusRequester.requestFocus() }
-    }
     Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { firstActionFocusRequester.requestFocus() }
+        }
         Column(
             modifier = Modifier
                 .width(380.dp)
@@ -1259,19 +1423,21 @@ private fun ContinueWatchingOptionsDialog(
                 text = item.title,
                 color = colors.white,
                 fontSize = 19.sp,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
             item.episodeLabel?.let {
-                Text(it, color = colors.textSecondary, fontSize = 13.sp)
+                Text(it, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(4.dp))
             ContextActionRow(
                 icon = Icons.Filled.PlayArrow,
-                label = "Resume Playing",
+                label = strings.actionResume,
                 onClick = onResume,
                 modifier = Modifier.focusRequester(firstActionFocusRequester)
             )
-            ContextActionRow(Icons.Filled.Info, "More Details", onViewDetails)
+            ContextActionRow(Icons.Filled.Info, strings.actionMoreInfo, onViewDetails)
             ContextActionRow(Icons.Filled.DeleteOutline, "Remove from Continue Watching", onRemove)
         }
     }
@@ -1299,7 +1465,14 @@ private fun ContextActionRow(
     ) {
         Icon(icon, contentDescription = null, tint = colors.white, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(12.dp))
-        Text(label, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            text = label,
+            color = colors.white,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -1309,11 +1482,17 @@ private fun CatalogRowSection(
     onItemFocus: (UnifiedMediaItem) -> Unit,
     onItemClick: (UnifiedMediaItem) -> Unit,
     onContinueWatchingOptions: (UnifiedMediaItem) -> Unit,
-    onPosterOptions: (UnifiedMediaItem) -> Unit
+    onPosterOptions: (UnifiedMediaItem) -> Unit,
+    restoreFocusKey: String? = null,
+    restoreFocusRequester: FocusRequester? = null,
+    onCardFocused: (String) -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val horizontalPad = spec.contentStartPaddingDp.dp
+    // The same title can legitimately be returned twice for a row (e.g. merged Jellyfin + Seerr
+    // results); duplicate LazyRow keys crash with "Key ... was already used".
+    val rowItems = remember(row.items) { row.items.distinctBy { it.id } }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1324,7 +1503,9 @@ private fun CatalogRowSection(
             color = colors.textPrimary,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = horizontalPad, bottom = 10.dp)
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(start = horizontalPad, end = horizontalPad, bottom = 10.dp)
         )
 
         LazyRow(
@@ -1334,44 +1515,59 @@ private fun CatalogRowSection(
             when (row.style) {
                 RowStyle.CONTINUE_WATCHING -> {
                     items(
-                        items = row.items,
+                        items = rowItems,
                         key = { "${row.id}_${it.id}" },
                         contentType = { "cw_card" }
                     ) { item ->
+                        val cardKey = "${row.id}_${item.id}"
                         ContinueWatchingCard(
                             item = item,
-                            onFocus = { onItemFocus(item) },
+                            onFocus = {
+                                onCardFocused(cardKey)
+                                onItemFocus(item)
+                            },
                             onClick = { onItemClick(item) },
-                            onOptionsMenu = { onContinueWatchingOptions(item) }
+                            onOptionsMenu = { onContinueWatchingOptions(item) },
+                            modifier = focusRestoreModifier(cardKey, restoreFocusKey, restoreFocusRequester)
                         )
                     }
                 }
                 RowStyle.TOP_10 -> {
                     itemsIndexed(
-                        items = row.items,
-                        key = { idx, it -> "${row.id}_${idx}_${it.id}" },
+                        items = rowItems,
+                        key = { _, it -> "${row.id}_${it.id}" },
                         contentType = { _, _ -> "top10_card" }
                     ) { idx, item ->
+                        val cardKey = "${row.id}_${item.id}"
                         Top10PosterCard(
                             rank = idx + 1,
                             item = item,
-                            onFocus = { onItemFocus(item) },
+                            onFocus = {
+                                onCardFocused(cardKey)
+                                onItemFocus(item)
+                            },
                             onClick = { onItemClick(item) },
-                            onOptionsMenu = { onPosterOptions(item) }
+                            onOptionsMenu = { onPosterOptions(item) },
+                            modifier = focusRestoreModifier(cardKey, restoreFocusKey, restoreFocusRequester)
                         )
                     }
                 }
                 else -> {
                     items(
-                        items = row.items,
+                        items = rowItems,
                         key = { "${row.id}_${it.id}" },
                         contentType = { "poster_card" }
                     ) { item ->
+                        val cardKey = "${row.id}_${item.id}"
                         NetflixPosterCard(
                             item = item,
-                            onFocus = { onItemFocus(item) },
+                            onFocus = {
+                                onCardFocused(cardKey)
+                                onItemFocus(item)
+                            },
                             onClick = { onItemClick(item) },
-                            onOptionsMenu = { onPosterOptions(item) }
+                            onOptionsMenu = { onPosterOptions(item) },
+                            modifier = focusRestoreModifier(cardKey, restoreFocusKey, restoreFocusRequester)
                         )
                     }
                 }
@@ -1390,6 +1586,7 @@ private fun NetflixNavRail(
     hasUpdate: Boolean,
     profileName: String,
     strings: UiStrings,
+    activeTabFocusRequester: FocusRequester? = null,
     onRailFocusChange: (Boolean) -> Unit,
     onSelectTab: (HomeTab) -> Unit,
     onOpenSearch: () -> Unit,
@@ -1450,49 +1647,56 @@ private fun NetflixNavRail(
                 label = strings.navHome,
                 expanded = expanded,
                 selected = activeTab == HomeTab.HOME,
-                onClick = { onSelectTab(HomeTab.HOME) }
+                onClick = { onSelectTab(HomeTab.HOME) },
+                modifier = activeTabModifier(activeTab == HomeTab.HOME, activeTabFocusRequester)
             )
             NavRailItem(
                 icon = Icons.Filled.NewReleases,
                 label = strings.navNewAndPopular,
                 expanded = expanded,
                 selected = activeTab == HomeTab.NEW_AND_POPULAR,
-                onClick = { onSelectTab(HomeTab.NEW_AND_POPULAR) }
+                onClick = { onSelectTab(HomeTab.NEW_AND_POPULAR) },
+                modifier = activeTabModifier(activeTab == HomeTab.NEW_AND_POPULAR, activeTabFocusRequester)
             )
             NavRailItem(
                 icon = Icons.Filled.Tv,
                 label = strings.navShows,
                 expanded = expanded,
                 selected = activeTab == HomeTab.SHOWS,
-                onClick = { onSelectTab(HomeTab.SHOWS) }
+                onClick = { onSelectTab(HomeTab.SHOWS) },
+                modifier = activeTabModifier(activeTab == HomeTab.SHOWS, activeTabFocusRequester)
             )
             NavRailItem(
                 icon = Icons.Filled.Movie,
                 label = strings.navMovies,
                 expanded = expanded,
                 selected = activeTab == HomeTab.MOVIES,
-                onClick = { onSelectTab(HomeTab.MOVIES) }
+                onClick = { onSelectTab(HomeTab.MOVIES) },
+                modifier = activeTabModifier(activeTab == HomeTab.MOVIES, activeTabFocusRequester)
             )
             NavRailItem(
                 icon = Icons.Filled.VideoLibrary,
                 label = strings.navCollections,
                 expanded = expanded,
                 selected = activeTab == HomeTab.COLLECTIONS,
-                onClick = { onSelectTab(HomeTab.COLLECTIONS) }
+                onClick = { onSelectTab(HomeTab.COLLECTIONS) },
+                modifier = activeTabModifier(activeTab == HomeTab.COLLECTIONS, activeTabFocusRequester)
             )
             NavRailItem(
                 icon = Icons.Filled.LiveTv,
                 label = strings.navLiveTv,
                 expanded = expanded,
                 selected = activeTab == HomeTab.LIVE_TV,
-                onClick = { onSelectTab(HomeTab.LIVE_TV) }
+                onClick = { onSelectTab(HomeTab.LIVE_TV) },
+                modifier = activeTabModifier(activeTab == HomeTab.LIVE_TV, activeTabFocusRequester)
             )
             NavRailItem(
                 icon = Icons.Filled.Bookmark,
                 label = strings.navMyList,
                 expanded = expanded,
                 selected = activeTab == HomeTab.MY_LIST,
-                onClick = { onSelectTab(HomeTab.MY_LIST) }
+                onClick = { onSelectTab(HomeTab.MY_LIST) },
+                modifier = activeTabModifier(activeTab == HomeTab.MY_LIST, activeTabFocusRequester)
             )
             if (isSeerrConfigured) {
                 NavRailItem(
@@ -1569,14 +1773,15 @@ private fun NavRailItem(
     expanded: Boolean,
     selected: Boolean,
     badgeCount: Int = 0,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(42.dp)
             .clip(RoundedCornerShape(6.dp))
@@ -1634,7 +1839,8 @@ private fun NavRailItem(
                 color = if (focused || selected) colors.white else colors.textSecondary,
                 fontSize = 14.sp,
                 fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1777,10 +1983,17 @@ private fun CollectionDetailsDialog(
     val spec = SeerflixTokens.spec
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val buttonCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
-    val missingCount = remember(collection.items) {
-        collection.items.count { !it.isPlayable && it.canRequestHd }
+    val parts = remember(collection.items) { collection.items.distinctBy { it.id } }
+    val missingCount = remember(parts) {
+        parts.count { !it.isPlayable && it.canRequestHd }
     }
+    val closeFocusRequester = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
+        // Without an initial focus target the dialog opened with nothing focused.
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { closeFocusRequester.requestFocus() }
+        }
         Column(
             modifier = Modifier
                 .width(680.dp)
@@ -1832,6 +2045,7 @@ private fun CollectionDetailsDialog(
                     var closeFocused by remember { mutableStateOf(false) }
                     Box(
                         modifier = Modifier
+                            .focusRequester(closeFocusRequester)
                             .size(34.dp)
                             .clip(CircleShape)
                             .background(if (closeFocused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
@@ -1855,7 +2069,7 @@ private fun CollectionDetailsDialog(
                 )
             }
 
-            if (isLoading && collection.items.isEmpty()) {
+            if (isLoading && parts.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1864,6 +2078,20 @@ private fun CollectionDetailsDialog(
                 ) {
                     CircularProgressIndicator(color = colors.accent)
                 }
+            } else if (parts.isEmpty()) {
+                // Load finished (or failed) with nothing to list: say so instead of a blank box.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No titles found in this collection.",
+                        color = colors.textSecondary,
+                        fontSize = 14.sp
+                    )
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier
@@ -1871,7 +2099,7 @@ private fun CollectionDetailsDialog(
                         .height(340.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(collection.items, key = { it.id }) { part ->
+                    items(parts, key = { it.id }) { part ->
                         var rowFocused by remember { mutableStateOf(false) }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -2000,12 +2228,16 @@ private fun ReadyRequestAlertsBanner(
                             text = "Just Arrived • ${alert.title}",
                             color = colors.white,
                             fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "Your Seerr request finished downloading and is ready to watch.",
                             color = colors.textSecondary,
-                            fontSize = 12.sp
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -2279,7 +2511,14 @@ private fun CustomizeHomeDialog(
         mutableStateListOf<String>().apply { addAll(profile.hiddenHomeRowIds) }
     }
     val orderedRows = remember(profile.id, currentRows) {
-        val known = currentRows.map { it.id to it.title }
+        val visible = currentRows.distinctBy { it.id }.map { it.id to it.title }
+        // Hidden rows are filtered out of `currentRows` by the repository, so without this they
+        // vanished from the dialog and could never be shown again.
+        val visibleIds = visible.map { it.first }.toSet()
+        val hiddenOnly = profile.hiddenHomeRowIds.distinct()
+            .filterNot { it in visibleIds }
+            .map { id -> id to id.split('_').joinToString(" ") { part -> part.replaceFirstChar { c -> c.uppercase() } } }
+        val known = visible + hiddenOnly
         val base = if (profile.homeRowOrder.isNotEmpty()) {
             val map = known.toMap()
             profile.homeRowOrder.mapNotNull { id -> map[id]?.let { id to it } } +
@@ -2290,6 +2529,7 @@ private fun CustomizeHomeDialog(
         mutableStateListOf<Pair<String, String>>().apply { addAll(base) }
     }
     var startupTab by remember(profile.id) { mutableStateOf(profile.defaultStartupTab) }
+    val strings = AppStrings.current
 
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -2371,7 +2611,7 @@ private fun CustomizeHomeDialog(
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Text(
-                            text = tab.label,
+                            text = tab.toHomeTab().localizedLabel(strings),
                             color = if (selected) colors.deepBlack else colors.white,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
@@ -2408,6 +2648,8 @@ private fun CustomizeHomeDialog(
                                 color = if (hidden) colors.textMuted else colors.white,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
                             SmallIconAction(
@@ -2444,6 +2686,7 @@ private fun CustomizeHomeDialog(
 
             val saveLayoutFocusRequester = remember { FocusRequester() }
             LaunchedEffect(Unit) {
+                withFrameNanos { }
                 runCatching { saveLayoutFocusRequester.requestFocus() }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -2461,7 +2704,7 @@ private fun CustomizeHomeDialog(
                     modifier = Modifier.weight(1f).focusRequester(saveLayoutFocusRequester)
                 )
                 SmallTextButton(
-                    text = "Cancel",
+                    text = strings.actionCancel,
                     isPrimary = false,
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f)
@@ -2486,11 +2729,12 @@ private fun SyncPlayDialog(
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     var roomName by remember { mutableStateOf("Movie Night") }
     val createRoomFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        runCatching { createRoomFocusRequester.requestFocus() }
-    }
 
     Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { createRoomFocusRequester.requestFocus() }
+        }
         Column(
             modifier = Modifier
                 .width(520.dp)
@@ -2525,7 +2769,7 @@ private fun SyncPlayDialog(
                         .padding(12.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Active Room: ${activeGroup.groupName}", color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("Active Room: ${activeGroup.groupName}", color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
                             text = "${activeGroup.participants.size.coerceAtLeast(1)} viewer(s) • ${activeGroup.state}",
                             color = colors.matchGreen,
@@ -2579,7 +2823,7 @@ private fun SyncPlayDialog(
                                 .padding(horizontal = 12.dp, vertical = 10.dp)
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(grp.groupName, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                Text(grp.groupName, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(
                                     text = "${grp.participants.size} participant(s) • ${grp.state}",
                                     color = colors.textSecondary,
@@ -2608,10 +2852,11 @@ private fun AppUpdateDialog(
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val closeFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        runCatching { closeFocusRequester.requestFocus() }
-    }
     Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { closeFocusRequester.requestFocus() }
+        }
         Column(
             modifier = Modifier
                 .width(500.dp)
@@ -2671,7 +2916,9 @@ private fun SmallIconAction(
             .background(if (focused) colors.surfaceElevated else colors.dialogSurface)
             .border(1.dp, if (focused) colors.focusBorder else colors.badgeBorder, RoundedCornerShape(6.dp))
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
-            .clickable(enabled = enabled, onClick = onClick),
+            // Stay focusable when disabled: moving a row to the top disabled its focused "Up"
+            // button, which dropped D-pad focus out of the dialog entirely.
+            .clickable { if (enabled) onClick() },
         contentAlignment = Alignment.Center
     ) {
         Icon(

@@ -8,6 +8,7 @@ import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +23,8 @@ data class ProfilePickerUiState(
     val isManageMode: Boolean = false,
     val editingProfile: UserProfile? = null,
     val pinChallengeProfile: UserProfile? = null,
+    /** True when the PIN challenge gates "Manage Profiles" editing rather than signing in. */
+    val pinChallengeForEdit: Boolean = false,
     val pinEntryInput: String = "",
     val pinError: String? = null,
     val showAuthDialog: Boolean = false,
@@ -43,6 +46,8 @@ class ProfilePickerViewModel @Inject constructor(
     val uiState: StateFlow<ProfilePickerUiState> = _uiState.asStateFlow()
 
     private var qcPollingJob: Job? = null
+    private var pinFailedAttempts = 0
+    private var pinLockedUntilMs = 0L
 
     init {
         viewModelScope.launch {
@@ -57,18 +62,22 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     fun selectProfile(profile: UserProfile, onSignedIn: () -> Unit) {
-        if (_uiState.value.isManageMode) {
-            _uiState.update { it.copy(editingProfile = profile) }
-            return
-        }
+        val manage = _uiState.value.isManageMode
+        // A PIN-locked profile must also be unlocked before it can be edited, otherwise anyone could
+        // open Manage Profiles, hit "Remove PIN" (or turn off Kids Mode) and walk straight in.
         if (profile.hasPin) {
             _uiState.update {
                 it.copy(
                     pinChallengeProfile = profile,
+                    pinChallengeForEdit = manage,
                     pinEntryInput = "",
                     pinError = null
                 )
             }
+            return
+        }
+        if (manage) {
+            _uiState.update { it.copy(editingProfile = profile) }
             return
         }
         viewModelScope.launch {
@@ -78,6 +87,7 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     fun appendPinDigit(digit: String, onSignedIn: () -> Unit) {
+        if (isPinLockedOut()) return
         val current = _uiState.value.pinEntryInput
         if (current.length >= 4) return
         val next = current + digit
@@ -99,24 +109,58 @@ class ProfilePickerViewModel @Inject constructor(
 
     fun submitPinChallenge(onSignedIn: () -> Unit) {
         val target = _uiState.value.pinChallengeProfile ?: return
+        if (isPinLockedOut()) return
         val pin = _uiState.value.pinEntryInput
         if (pin.length != 4) {
             _uiState.update { it.copy(pinError = "Enter 4 digits") }
             return
         }
         if (authRepository.verifyProfilePin(target, pin)) {
-            _uiState.update { it.copy(pinChallengeProfile = null, pinEntryInput = "", pinError = null) }
-            viewModelScope.launch {
-                authRepository.switchProfile(target.id)
-                onSignedIn()
+            pinFailedAttempts = 0
+            val forEdit = _uiState.value.pinChallengeForEdit
+            _uiState.update {
+                it.copy(
+                    pinChallengeProfile = null,
+                    pinChallengeForEdit = false,
+                    pinEntryInput = "",
+                    pinError = null,
+                    editingProfile = if (forEdit) target else it.editingProfile
+                )
+            }
+            if (!forEdit) {
+                viewModelScope.launch {
+                    authRepository.switchProfile(target.id)
+                    onSignedIn()
+                }
             }
         } else {
-            _uiState.update { it.copy(pinEntryInput = "", pinError = "Incorrect PIN. Try again.") }
+            pinFailedAttempts++
+            val error = if (pinFailedAttempts >= MAX_PIN_ATTEMPTS) {
+                pinFailedAttempts = 0
+                pinLockedUntilMs = System.currentTimeMillis() + PIN_LOCKOUT_MS
+                "Too many incorrect attempts. Try again in ${PIN_LOCKOUT_MS / 1000}s."
+            } else {
+                "Incorrect PIN. Try again."
+            }
+            _uiState.update { it.copy(pinEntryInput = "", pinError = error) }
         }
     }
 
+    /** Simple brute-force throttle: a 4-digit PIN is otherwise trivially enumerable with a remote. */
+    private fun isPinLockedOut(): Boolean {
+        val remainingMs = pinLockedUntilMs - System.currentTimeMillis()
+        if (remainingMs <= 0L) return false
+        val secs = (remainingMs + 999L) / 1000L
+        _uiState.update {
+            it.copy(pinEntryInput = "", pinError = "Too many incorrect attempts. Try again in ${secs}s.")
+        }
+        return true
+    }
+
     fun dismissPinChallenge() {
-        _uiState.update { it.copy(pinChallengeProfile = null, pinEntryInput = "", pinError = null) }
+        _uiState.update {
+            it.copy(pinChallengeProfile = null, pinChallengeForEdit = false, pinEntryInput = "", pinError = null)
+        }
     }
 
     fun closeProfileSettings() {
@@ -176,14 +220,34 @@ class ProfilePickerViewModel @Inject constructor(
 
     fun closeAuthDialog() {
         qcPollingJob?.cancel()
-        _uiState.update { it.copy(showAuthDialog = false, isAuthenticating = false, errorMessage = null) }
+        _uiState.update {
+            it.copy(
+                showAuthDialog = false,
+                isAuthenticating = false,
+                errorMessage = null,
+                password = "",
+                quickConnectCode = null,
+                quickConnectSecret = null
+            )
+        }
     }
 
     fun toggleAuthMode(usePassword: Boolean, onSignedIn: () -> Unit) {
-        _uiState.update { it.copy(usePasswordMode = usePassword, errorMessage = null) }
         if (usePassword) {
             qcPollingJob?.cancel()
+            // A cancelled Quick Connect init leaves isAuthenticating=true, which would block the
+            // password Sign In button; reset it along with the stale code.
+            _uiState.update {
+                it.copy(
+                    usePasswordMode = true,
+                    errorMessage = null,
+                    isAuthenticating = false,
+                    quickConnectCode = null,
+                    quickConnectSecret = null
+                )
+            }
         } else {
+            _uiState.update { it.copy(usePasswordMode = false, errorMessage = null) }
             startQuickConnect(onSignedIn)
         }
     }
@@ -197,6 +261,7 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     fun signInWithPassword(onSignedIn: () -> Unit) {
+        if (_uiState.value.isAuthenticating) return
         val u = _uiState.value.username
         val p = _uiState.value.password
         if (u.isBlank()) {
@@ -233,6 +298,9 @@ class ProfilePickerViewModel @Inject constructor(
         qcPollingJob = viewModelScope.launch {
             _uiState.update { it.copy(isAuthenticating = true, errorMessage = null) }
             val initResult = authRepository.initiateQuickConnect()
+            // initiateQuickConnect() uses runCatching, so a cancel (dialog closed / switched to
+            // password) surfaces as a failure; don't report it as "Quick Connect not enabled".
+            ensureActive()
             initResult.onFailure {
                 _uiState.update {
                     it.copy(
@@ -252,17 +320,44 @@ class ProfilePickerViewModel @Inject constructor(
                 )
             }
 
+            var consecutiveFailures = 0
             while (isActive) {
                 delay(2500L)
                 val poll = authRepository.pollAndCompleteQuickConnect(qc.secret)
+                ensureActive()
                 val signedInProfile = poll.getOrNull()
                 if (signedInProfile != null) {
-                    _uiState.update { it.copy(showAuthDialog = false) }
+                    _uiState.update {
+                        it.copy(showAuthDialog = false, quickConnectCode = null, quickConnectSecret = null)
+                    }
                     onSignedIn()
                     break
                 }
+                if (poll.isFailure) {
+                    // Expired/invalid secrets fail on every poll; stop instead of hammering the
+                    // server every 2.5s for as long as the dialog stays open.
+                    consecutiveFailures++
+                    if (consecutiveFailures >= MAX_QC_POLL_FAILURES) {
+                        _uiState.update {
+                            it.copy(
+                                quickConnectCode = null,
+                                quickConnectSecret = null,
+                                errorMessage = "Quick Connect code expired or the server stopped responding — sign in with your password, or switch back to Quick Connect for a new code."
+                            )
+                        }
+                        break
+                    }
+                } else {
+                    consecutiveFailures = 0
+                }
             }
         }
+    }
+
+    private companion object {
+        const val MAX_PIN_ATTEMPTS = 5
+        const val PIN_LOCKOUT_MS = 30_000L
+        const val MAX_QC_POLL_FAILURES = 6
     }
 }
 

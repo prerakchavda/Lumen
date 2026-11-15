@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.time.LocalDate
+import java.time.ZoneId
 
 class UpcomingDateFormatterTest {
 
@@ -67,6 +68,26 @@ class UpcomingDateFormatterTest {
         assertEquals(
             "In 3 days",
             UpcomingDateFormatter.formatComingSoonBadge("2026-05-13T00:00:00.0000000Z", today = today)
+        )
+    }
+
+    @Test
+    fun `air times are converted to the viewer zone while midnight dates keep their calendar day`() {
+        val newYork = ZoneId.of("America/New_York")
+        // 01:00Z on May 11 is 9pm EDT on May 10 -> airs tonight for a US viewer
+        assertEquals(
+            "S1 E1 • Tonight",
+            UpcomingDateFormatter.formatComingSoonBadge(
+                "2026-05-11T01:00:00.0000000Z",
+                episodeLabel = "S1 E1",
+                today = today,
+                zone = newYork
+            )
+        )
+        // Date-only values encoded as midnight UTC must not slip back a day west of UTC
+        assertEquals(
+            "Tomorrow",
+            UpcomingDateFormatter.formatComingSoonBadge("2026-05-11T00:00:00Z", today = today, zone = newYork)
         )
     }
 }

@@ -4,6 +4,7 @@ import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.network.SeerrDownloadStatusDto
 import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 
 object DownloadProgressParser {
 
@@ -50,7 +51,9 @@ object DownloadProgressParser {
         now: Instant = Instant.now()
     ): String? {
         if (!estimatedCompletionIso.isNullOrBlank()) {
-            val target = runCatching { Instant.parse(estimatedCompletionIso) }.getOrNull()
+            val target = runCatching { Instant.parse(estimatedCompletionIso) }
+                .recoverCatching { OffsetDateTime.parse(estimatedCompletionIso).toInstant() }
+                .getOrNull()
             if (target != null) {
                 val seconds = Duration.between(now, target).seconds
                 if (seconds > 0) {
@@ -67,18 +70,18 @@ object DownloadProgressParser {
         return null
     }
 
-    private fun parseTimeLeftSeconds(raw: String): Long? {
-        // Formats seen from Radarr/Sonarr/Seerr: "00:05:42", "01:23:10.500", "1.02:15:00"
-        val clean = raw.substringBefore(".")
-        val daySplit = clean.split(".")
-        val (days, hms) = if (daySplit.size == 2) {
-            (daySplit[0].toLongOrNull() ?: 0L) to daySplit[1]
-        } else {
-            0L to clean
-        }
-        val parts = hms.split(":").mapNotNull { it.toLongOrNull() }
+    internal fun parseTimeLeftSeconds(raw: String): Long? {
+        // Formats seen from Radarr/Sonarr/Seerr (.NET TimeSpan): "00:05:42", "01:23:10.500",
+        // "1.02:15:00" (days.hours), "1.02:15:00.250".
+        val parts = raw.trim().split(":")
         if (parts.size != 3) return null
-        return days * 86400L + parts[0] * 3600L + parts[1] * 60L + parts[2]
+        // Fractional seconds only ever follow the last colon.
+        val seconds = parts[2].substringBefore(".").toLongOrNull() ?: return null
+        val minutes = parts[1].toLongOrNull() ?: return null
+        val head = parts[0]
+        val days = if ('.' in head) head.substringBefore('.').toLongOrNull() ?: return null else 0L
+        val hours = head.substringAfter('.').toLongOrNull() ?: return null
+        return days * 86400L + hours * 3600L + minutes * 60L + seconds
     }
 
     private fun formatSeconds(totalSeconds: Long): String {

@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.tv.material3.ColorScheme
@@ -238,15 +239,17 @@ fun SeerflixPresetTheme(
     content: @Composable () -> Unit
 ) {
     val colors = colorsForPreset(preset)
-    val spec = specForPreset(preset)
-    val strings = com.seerflix.tv.core.i18n.stringsForLanguage(uiLanguage)
+    // Avoid re-allocating spec / strings / color scheme on every root recomposition.
+    val spec = remember(preset) { specForPreset(preset) }
+    val strings = remember(uiLanguage) { com.seerflix.tv.core.i18n.stringsForLanguage(uiLanguage) }
+    val tvColorScheme = remember(colors) { tvColorSchemeFor(colors) }
     CompositionLocalProvider(
         LocalSeerflixColors provides colors,
         LocalSeerflixSpec provides spec,
         com.seerflix.tv.core.i18n.LocalStrings provides strings
     ) {
         MaterialTheme(
-            colorScheme = tvColorSchemeFor(colors),
+            colorScheme = tvColorScheme,
             typography = SeerflixTypography,
             content = content
         )

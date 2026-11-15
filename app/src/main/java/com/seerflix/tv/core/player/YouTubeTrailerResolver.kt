@@ -2,8 +2,9 @@ package com.seerflix.tv.core.player
 
 import android.util.LruCache
 import com.seerflix.tv.core.network.SessionPreferences
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -62,9 +63,15 @@ class YouTubeTrailerResolver @Inject constructor(
         return "$base/Videos/$localTrailerId/stream?Static=true&api_key=$token"
     }
 
+    /** Drops a cached stream so the next [resolvePreview] re-extracts it (e.g. after a 403 on an expired URL). */
+    fun evict(youtubeKey: String?) {
+        if (!youtubeKey.isNullOrBlank()) cache.remove(youtubeKey)
+    }
+
     suspend fun resolvePreview(
         localTrailerId: String?,
-        youtubeKey: String?
+        youtubeKey: String?,
+        timeoutMs: Long = 7_000L
     ): ResolvedPreviewStream? {
         if (!localTrailerId.isNullOrBlank()) {
             buildJellyfinTrailerUrl(localTrailerId)?.let { url ->
@@ -75,9 +82,11 @@ class YouTubeTrailerResolver @Inject constructor(
 
         cache.get(youtubeKey)?.let { return it }
 
-        return withContext(Dispatchers.IO) {
-            withTimeoutOrNull(7_000L) {
-                runCatching {
+        // NewPipe extraction is blocking network I/O: run it interruptibly so the timeout (and caller
+        // cancellation) actually stops it, and don't let runCatching swallow the CancellationException.
+        return withTimeoutOrNull(timeoutMs) {
+            try {
+                runInterruptible(Dispatchers.IO) {
                     ensureInit()
                     val watchUrl = "https://www.youtube.com/watch?v=$youtubeKey"
                     val info = StreamInfo.getInfo(ServiceList.YouTube, watchUrl)
@@ -108,7 +117,11 @@ class YouTubeTrailerResolver @Inject constructor(
                             ).also { cache.put(youtubeKey, it) }
                         } else null
                     }
-                }.getOrNull()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
             }
         }
     }

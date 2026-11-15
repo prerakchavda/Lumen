@@ -17,16 +17,39 @@ import com.seerflix.tv.core.network.JellyfinPlaybackProgressRequest
 import com.seerflix.tv.core.network.JellyfinSubtitleProfileDto
 import com.seerflix.tv.core.network.JellyfinTranscodingProfileDto
 import com.seerflix.tv.core.network.SessionPreferences
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * Like [runCatching] but rethrows [CancellationException] so cancelled coroutines stay cancelled
+ * instead of being reported as a regular failure (e.g. "Playback initialization failed").
+ */
+inline fun <T> runCatchingCancellable(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    Result.failure(e)
+}
 
 @Singleton
 class JellyfinPlaybackManager @Inject constructor(
     private val jellyfinApi: JellyfinApi,
     private val prefs: SessionPreferences
 ) {
+    /**
+     * Process-lifetime scope for fire-and-forget reports (e.g. "playback stopped") that must
+     * survive the PlayerScreen being disposed and its ViewModel being cleared.
+     */
+    private val reportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     suspend fun preparePlayback(
         userId: String,
         itemId: String,
@@ -36,7 +59,7 @@ class JellyfinPlaybackManager @Inject constructor(
         stereoDownmixEnabled: Boolean = false,
         assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
         burnInSubtitleIndex: Int? = null
-    ): Result<PlaybackSessionData> = runCatching {
+    ): Result<PlaybackSessionData> = runCatchingCancellable {
         coroutineScope {
             val deviceProfile = buildDeviceProfile(
                 maxBitrateBps = maxBitrateBps,
@@ -54,12 +77,12 @@ class JellyfinPlaybackManager @Inject constructor(
                 }
                 val targetSeasonId = if (item.type.equals("Season", ignoreCase = true)) item.id else null
                 val candidateEpisode = if (targetSeasonId == null) {
-                    runCatching {
+                    runCatchingCancellable {
                         jellyfinApi.getResumeItems(userId, limit = 10).items.firstOrNull { it.seriesId == targetSeriesId }
                     }.getOrNull()
                 } else {
                     null
-                } ?: runCatching {
+                } ?: runCatchingCancellable {
                     val sortedEpisodes = jellyfinApi.getEpisodes(
                         seriesId = targetSeriesId,
                         userId = userId,
@@ -72,14 +95,14 @@ class JellyfinPlaybackManager @Inject constructor(
                         ?: sortedEpisodes.firstOrNull()
                 }.getOrNull() ?: error("No playable episodes found for ${item.name}")
 
-                item = runCatching {
+                item = runCatchingCancellable {
                     jellyfinApi.getItemDetails(userId, candidateEpisode.id)
                 }.getOrDefault(candidateEpisode)
             }
 
             val resolvedItemId = item.id
             val playbackDeferred = async {
-                runCatching {
+                runCatchingCancellable {
                     jellyfinApi.getPlaybackInfo(
                         itemId = resolvedItemId,
                         userId = userId,
@@ -94,7 +117,7 @@ class JellyfinPlaybackManager @Inject constructor(
                 }.getOrNull()
             }
             val segmentsDeferred = async {
-                runCatching { jellyfinApi.getMediaSegments(resolvedItemId).items }.getOrDefault(emptyList())
+                runCatchingCancellable { jellyfinApi.getMediaSegments(resolvedItemId).items }.getOrDefault(emptyList())
             }
 
             val playback = playbackDeferred.await()
@@ -146,7 +169,7 @@ class JellyfinPlaybackManager @Inject constructor(
             var nextEpisodeId: String? = null
             var nextEpisodeTitle: String? = null
             if (item.type.equals("Episode", ignoreCase = true) && !item.seriesId.isNullOrBlank()) {
-                val seasonEps = runCatching {
+                val seasonEps = runCatchingCancellable {
                     jellyfinApi.getEpisodes(
                         seriesId = item.seriesId,
                         userId = userId,
@@ -154,8 +177,21 @@ class JellyfinPlaybackManager @Inject constructor(
                     ).items.sortedBy { it.indexNumber ?: 0 }
                 }.getOrDefault(emptyList())
                 val currentIdx = seasonEps.indexOfFirst { it.id == item.id }
-                if (currentIdx >= 0 && currentIdx + 1 < seasonEps.size) {
-                    val nextEp = seasonEps[currentIdx + 1]
+                val currentSeasonNumber = item.parentIndexNumber ?: 0
+                val nextEp = if (currentIdx >= 0 && currentIdx + 1 < seasonEps.size) {
+                    seasonEps[currentIdx + 1]
+                } else if (currentIdx >= 0 && currentSeasonNumber > 0) {
+                    // Season finale: continue with the first episode of the next (non-special) season.
+                    val seriesIdForNext = item.seriesId.orEmpty()
+                    runCatchingCancellable {
+                        jellyfinApi.getEpisodes(seriesId = seriesIdForNext, userId = userId).items
+                    }.getOrDefault(emptyList())
+                        .filter { (it.parentIndexNumber ?: 0) > currentSeasonNumber }
+                        .minWithOrNull(compareBy({ it.parentIndexNumber ?: 0 }, { it.indexNumber ?: 0 }))
+                } else {
+                    null
+                }
+                if (nextEp != null) {
                     nextEpisodeId = nextEp.id
                     nextEpisodeTitle = "S${nextEp.parentIndexNumber ?: 1}:E${nextEp.indexNumber ?: 0} • ${nextEp.name}"
                 }
@@ -178,7 +214,12 @@ class JellyfinPlaybackManager @Inject constructor(
                     val ext = normalizeSubtitleFormat(stream.codec)
                     val delivery = stream.deliveryUrl?.takeIf { it.isNotBlank() }?.let { path ->
                         resolveRelativeJellyfinUrl(base, path, token)
-                    } ?: "$base/Videos/${item.id}/${source.id}/Subtitles/${stream.index}/0/Stream.$ext?api_key=$token"
+                    } ?: run {
+                        // Image-based subtitles (PGS/VobSub/DVB) cannot be served as text; side-loading a
+                        // "Stream.srt" for them fails on the server and makes ExoPlayer abort playback.
+                        if (isImageBasedSubtitle(stream.codec)) return@mapNotNull null
+                        "$base/Videos/${item.id}/${source.id}/Subtitles/${stream.index}/0/Stream.$ext?api_key=$token"
+                    }
                     ExternalSubtitleFile(
                         index = stream.index,
                         title = stream.displayTitle ?: stream.title ?: stream.language?.uppercase() ?: "Sub ${stream.index}",
@@ -307,7 +348,7 @@ class JellyfinPlaybackManager @Inject constructor(
     suspend fun searchRemoteSubtitles(
         itemId: String,
         language: String = "eng"
-    ): Result<List<com.seerflix.tv.core.model.RemoteSubtitleOption>> = runCatching {
+    ): Result<List<com.seerflix.tv.core.model.RemoteSubtitleOption>> = runCatchingCancellable {
         jellyfinApi.searchRemoteSubtitles(itemId = itemId, language = language)
             .map { dto ->
                 com.seerflix.tv.core.model.RemoteSubtitleOption(
@@ -331,12 +372,12 @@ class JellyfinPlaybackManager @Inject constructor(
     suspend fun downloadRemoteSubtitle(
         itemId: String,
         subtitleId: String
-    ): Result<Unit> = runCatching {
+    ): Result<Unit> = runCatchingCancellable {
         jellyfinApi.downloadRemoteSubtitle(itemId = itemId, subtitleId = subtitleId)
     }
 
     suspend fun reportStart(session: PlaybackSessionData, positionTicks: Long) {
-        runCatching {
+        runCatchingCancellable {
             jellyfinApi.reportPlaybackStart(
                 JellyfinPlaybackProgressRequest(
                     itemId = session.itemId,
@@ -350,7 +391,7 @@ class JellyfinPlaybackManager @Inject constructor(
     }
 
     suspend fun reportProgress(session: PlaybackSessionData, positionTicks: Long, isPaused: Boolean) {
-        runCatching {
+        runCatchingCancellable {
             jellyfinApi.reportPlaybackProgress(
                 JellyfinPlaybackProgressRequest(
                     itemId = session.itemId,
@@ -363,8 +404,16 @@ class JellyfinPlaybackManager @Inject constructor(
         }
     }
 
+    /**
+     * Sends the "stopped" report on a process-lifetime scope so it is not cancelled when the
+     * caller's scope (e.g. a ViewModel being cleared on exit) goes away.
+     */
+    fun reportStoppedDetached(session: PlaybackSessionData, positionTicks: Long) {
+        reportScope.launch { reportStopped(session, positionTicks) }
+    }
+
     suspend fun reportStopped(session: PlaybackSessionData, positionTicks: Long) {
-        runCatching {
+        runCatchingCancellable {
             jellyfinApi.reportPlaybackStopped(
                 JellyfinPlaybackProgressRequest(
                     itemId = session.itemId,
@@ -471,6 +520,16 @@ class JellyfinPlaybackManager @Inject constructor(
             else -> "srt"
         }
 
+        private val IMAGE_SUBTITLE_CODECS = setOf(
+            "pgs", "pgssub", "hdmv_pgs_subtitle", "dvdsub", "dvd_subtitle", "vobsub",
+            "dvbsub", "dvb_subtitle", "xsub"
+        )
+
+        fun isImageBasedSubtitle(codec: String?): Boolean {
+            val normalized = codec?.trim()?.lowercase() ?: return false
+            return normalized in IMAGE_SUBTITLE_CODECS
+        }
+
         fun resolveRelativeJellyfinUrl(base: String, rawPath: String, token: String): String {
             val cleanBase = base.trim().trimEnd('/')
             val fullUrl = if (rawPath.startsWith("http://", ignoreCase = true) || rawPath.startsWith("https://", ignoreCase = true)) {
@@ -507,7 +566,11 @@ class JellyfinPlaybackManager @Inject constructor(
                 val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
-            return if (source.supportsDirectPlay || source.supportsDirectStream) {
+            // DirectStream-only sources need the server's remux/transcode URL: serving the raw file
+            // (Static=true) for a container/codec the device profile rejected fails in ExoPlayer.
+            return if (source.supportsDirectPlay ||
+                (source.supportsDirectStream && source.transcodingUrl.isNullOrBlank())
+            ) {
                 val url = "$cleanBase/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
                 url to false
             } else if (!source.transcodingUrl.isNullOrBlank()) {

@@ -231,7 +231,8 @@ class UnifiedCatalogRepositoryFeaturesTest {
             sortOrder: String,
             limit: Int,
             parentId: String?,
-            maxOfficialRating: String?
+            maxOfficialRating: String?,
+            startIndex: Int?
         ) = JellyfinItemsResponse(libraryItems, libraryItems.size)
         override suspend fun getFavoriteItems(
             userId: String,
@@ -272,7 +273,7 @@ class UnifiedCatalogRepositoryFeaturesTest {
             libraryItems.first { it.id == itemId }
         override suspend fun getSpecialFeatures(itemId: String, userId: String): List<JellyfinItemDto> = emptyList()
         override suspend fun getSeasons(seriesId: String, userId: String, fields: String) = JellyfinItemsResponse()
-        override suspend fun getEpisodes(seriesId: String, userId: String, seasonId: String?, fields: String) = JellyfinItemsResponse()
+        override suspend fun getEpisodes(seriesId: String, userId: String, seasonId: String?, fields: String, isMissing: Boolean?) = JellyfinItemsResponse()
         override suspend fun getSimilarItems(itemId: String, userId: String, limit: Int, fields: String) = JellyfinItemsResponse()
         override suspend fun getLocalTrailers(itemId: String, userId: String): List<JellyfinItemDto> = emptyList()
         override suspend fun getPlaybackInfo(itemId: String, userId: String, body: JellyfinPlaybackInfoRequest) = JellyfinPlaybackInfoResponse()

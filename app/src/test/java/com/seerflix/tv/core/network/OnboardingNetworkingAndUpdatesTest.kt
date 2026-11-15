@@ -48,6 +48,32 @@ class OnboardingNetworkingAndUpdatesTest {
     }
 
     @Test
+    fun `SetupCompanionServer only serves paths under its random access token`() {
+        val token = SetupCompanionServer.generateAccessToken()
+        assertEquals(24, token.length)
+        assertFalse(token == SetupCompanionServer.generateAccessToken())
+
+        assertTrue(SetupCompanionServer.isAuthorizedPath("/$token/", token))
+        assertTrue(SetupCompanionServer.isAuthorizedPath("/$token/save", token))
+        assertTrue(SetupCompanionServer.isAuthorizedPath("/$token", token))
+        assertFalse(SetupCompanionServer.isAuthorizedPath("/", token))
+        assertFalse(SetupCompanionServer.isAuthorizedPath("/save", token))
+        assertFalse(SetupCompanionServer.isAuthorizedPath("/${token}x/save", token))
+        assertFalse(SetupCompanionServer.isAuthorizedPath("/anything", ""))
+    }
+
+    @Test
+    fun `Jellyfin authorization header uses MediaBrowser scheme and only adds Token when present`() {
+        val anonymous = buildJellyfinAuthHeader("dev-1", null)
+        assertTrue(anonymous.startsWith("MediaBrowser Client=\"Lumen\""))
+        assertTrue(anonymous.contains("DeviceId=\"dev-1\""))
+        assertFalse(anonymous.contains("Token="))
+
+        val authed = buildJellyfinAuthHeader("dev-1", "abc123")
+        assertTrue(authed.endsWith(", Token=\"abc123\""))
+    }
+
+    @Test
     fun `AppUpdateChecker compares semantic versions and parses GitHub release APK asset`() {
         assertTrue(AppUpdateChecker.isNewerVersion("0.1.0-beta", "v0.1.1"))
         assertTrue(AppUpdateChecker.isNewerVersion("0.1.0-beta", "v0.2.0"))

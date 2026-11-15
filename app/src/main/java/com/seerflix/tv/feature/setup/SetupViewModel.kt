@@ -19,9 +19,9 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class SetupUiState(
-    val jellyfinUrl: String = "http://192.168.1.100:8096",
+    val jellyfinUrl: String = "",
     val jellyfinLocalUrl: String = "",
-    val seerrUrl: String = "http://192.168.1.100:5055",
+    val seerrUrl: String = "",
     val seerrLocalUrl: String = "",
     val seerrApiKey: String = "",
     val trustSelfSignedCerts: Boolean = false,
@@ -32,7 +32,9 @@ data class SetupUiState(
     val updateInfo: AppUpdateInfo? = null,
     val isTesting: Boolean = false,
     val statusMessage: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** Bumped each time the phone companion pushes values so the UI can move focus to Connect. */
+    val companionUpdateCount: Int = 0
 )
 
 @HiltViewModel
@@ -97,7 +99,8 @@ class SetupViewModel @Inject constructor(
                     jellyfinOnlyMode = onlyJf,
                     trustSelfSignedCerts = submitted.trustSelfSigned,
                     errorMessage = null,
-                    statusMessage = "Received settings from phone companion! Ready to connect."
+                    statusMessage = "Received settings from phone companion! Ready to connect.",
+                    companionUpdateCount = it.companionUpdateCount + 1
                 )
             }
         }
@@ -146,8 +149,9 @@ class SetupViewModel @Inject constructor(
 
     fun scanNetwork() {
         if (_uiState.value.isScanning) return
+        // Set synchronously so a double-press can't start two concurrent UDP scans.
+        _uiState.update { it.copy(isScanning = true) }
         viewModelScope.launch {
-            _uiState.update { it.copy(isScanning = true) }
             val found = runCatching { discoveryClient.discoverServers() }.getOrDefault(emptyList())
             _uiState.update { state ->
                 val msg = when {
@@ -163,7 +167,7 @@ class SetupViewModel @Inject constructor(
                     } else {
                         state.jellyfinLocalUrl
                     },
-                    jellyfinUrl = if (state.jellyfinUrl == "http://192.168.1.100:8096" && found.isNotEmpty()) {
+                    jellyfinUrl = if (state.jellyfinUrl.isBlank() && found.isNotEmpty()) {
                         found.first().address
                     } else {
                         state.jellyfinUrl
@@ -187,6 +191,7 @@ class SetupViewModel @Inject constructor(
 
     fun connectAndContinue(onSuccess: () -> Unit) {
         val state = _uiState.value
+        if (state.isTesting) return
         val hasJf = state.jellyfinUrl.isNotBlank() || state.jellyfinLocalUrl.isNotBlank()
         val hasSeerr = state.seerrUrl.isNotBlank() || state.seerrLocalUrl.isNotBlank()
 
@@ -218,9 +223,13 @@ class SetupViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isTesting = false,
-                        statusMessage = "Connected to $jfName ($seerrVer)"
+                        statusMessage = "Connected to $jfName ($seerrVer)",
+                        companionUrl = null
                     )
                 }
+                // Setup is done: stop the phone-companion HTTP server now rather than waiting
+                // for the back stack entry (and this ViewModel) to be cleared.
+                companionServer.stop()
                 onSuccess()
             }.onFailure { err ->
                 _uiState.update {

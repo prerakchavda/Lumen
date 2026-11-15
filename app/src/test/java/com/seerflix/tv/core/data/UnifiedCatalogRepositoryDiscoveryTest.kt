@@ -367,7 +367,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
                 seriesName = "Severance",
                 parentIndexNumber = 2,
                 indexNumber = 10,
-                premiereDate = "2026-04-02T20:00:00Z"
+                // Midday UTC so the air date is Apr 2 in (almost) any JVM default time zone.
+                premiereDate = "2026-04-02T12:00:00Z"
             )
         )
 
@@ -450,7 +451,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             sortOrder: String,
             limit: Int,
             parentId: String?,
-            maxOfficialRating: String?
+            maxOfficialRating: String?,
+            startIndex: Int?
         ) = JellyfinItemsResponse(libraryItems, libraryItems.size)
 
         override suspend fun getFavoriteItems(
@@ -490,7 +492,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             libraryItems.first { it.id == itemId }
         override suspend fun getSpecialFeatures(itemId: String, userId: String): List<JellyfinItemDto> = emptyList()
         override suspend fun getSeasons(seriesId: String, userId: String, fields: String) = JellyfinItemsResponse()
-        override suspend fun getEpisodes(seriesId: String, userId: String, seasonId: String?, fields: String) =
+        override suspend fun getEpisodes(seriesId: String, userId: String, seasonId: String?, fields: String, isMissing: Boolean?) =
             JellyfinItemsResponse()
         override suspend fun getSimilarItems(itemId: String, userId: String, limit: Int, fields: String) =
             JellyfinItemsResponse()

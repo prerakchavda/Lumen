@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -19,9 +20,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.seerflix.tv.core.data.AuthRepository
@@ -156,13 +159,20 @@ private fun SeerflixNavGraph(
         }
     }
 
-    LaunchedEffect(startDestination, incomingIntent) {
-        if (startDestination == Routes.HOME && incomingIntent != null) {
-            val route = resolveDeepLinkRoute(incomingIntent)
-            onIntentHandled()
-            if (route != null && route != Routes.HOME) {
-                navController.navigate(route)
-            }
+    // Deep links (Watch Next, voice search, seerflix:// URIs) are held until the user is past
+    // setup and the profile gate, so a PIN-locked profile can't be bypassed and links that
+    // arrive while the picker is showing aren't silently dropped.
+    val currentEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = currentEntry?.destination?.route
+    LaunchedEffect(currentRoute, incomingIntent) {
+        if (incomingIntent == null || currentRoute == null) return@LaunchedEffect
+        if (currentRoute == Routes.SETUP || currentRoute == Routes.PROFILES) return@LaunchedEffect
+        val route = resolveDeepLinkRoute(incomingIntent)
+        onIntentHandled()
+        if (route == Routes.HOME) {
+            navController.popBackStack(Routes.HOME, inclusive = false)
+        } else if (route != null) {
+            navController.navigate(route)
         }
     }
 
@@ -185,22 +195,34 @@ private fun SeerflixNavGraph(
         composable(Routes.SETUP) {
             SetupScreen(
                 onSetupComplete = {
+                    // Server settings may have changed: drop everything (incl. an old Home) and
+                    // start fresh from the profile picker.
                     navController.navigate(Routes.PROFILES) {
-                        popUpTo(Routes.SETUP) { inclusive = true }
+                        popUpTo(navController.graph.id) { inclusive = true }
+                        launchSingleTop = true
                     }
                 }
             )
         }
 
         composable(Routes.PROFILES) {
+            // If the active profile was deleted from the picker, Back must not return to a Home
+            // that has no profile behind it; leave the app instead. (ProfilePickerScreen's own
+            // BackHandler, e.g. for Manage mode, is registered later and still takes priority.)
+            val activity = LocalContext.current as? ComponentActivity
+            val currentProfile by authRepository.activeProfileFlow.collectAsState(initial = null)
+            BackHandler(enabled = currentProfile == null) { activity?.finish() }
             ProfilePickerScreen(
                 onProfileSelected = {
+                    // Clear the whole stack so switching profiles never leaves the previous
+                    // profile's Home (or a stale picker) underneath.
                     navController.navigate(Routes.HOME) {
-                        popUpTo(Routes.PROFILES) { inclusive = true }
+                        popUpTo(navController.graph.id) { inclusive = true }
+                        launchSingleTop = true
                     }
                 },
                 onOpenSettings = {
-                    navController.navigate(Routes.SETUP)
+                    navController.navigate(Routes.SETUP) { launchSingleTop = true }
                 }
             )
         }
@@ -209,10 +231,10 @@ private fun SeerflixNavGraph(
             HomeScreen(
                 onOpenDetails = { item -> navController.navigate(Routes.details(item)) },
                 onPlayDirect = { itemId -> navController.navigate(Routes.player(itemId)) },
-                onOpenSearch = { navController.navigate(Routes.search()) },
-                onOpenRequests = { navController.navigate(Routes.REQUESTS) },
-                onSwitchProfile = { navController.navigate(Routes.PROFILES) },
-                onOpenSettings = { navController.navigate(Routes.SETUP) }
+                onOpenSearch = { navController.navigate(Routes.search()) { launchSingleTop = true } },
+                onOpenRequests = { navController.navigate(Routes.REQUESTS) { launchSingleTop = true } },
+                onSwitchProfile = { navController.navigate(Routes.PROFILES) { launchSingleTop = true } },
+                onOpenSettings = { navController.navigate(Routes.SETUP) { launchSingleTop = true } }
             )
         }
 

@@ -26,6 +26,8 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
@@ -46,12 +48,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -117,8 +123,25 @@ fun SearchContent(
     val spec = SeerflixTokens.spec
     val gridMinWidth = if (spec.cardStyle == CardPresentationStyle.WIDESCREEN_16_9) 224.dp else 148.dp
     val searchInputFocusRequester = remember { FocusRequester() }
+    val clearFilterFocusRequester = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    // Set when the focused element is about to disappear (a person tile or the Clear chip), so
+    // focus can be handed to a stable target on the next frame instead of being lost.
+    var pendingFocusTarget by remember { mutableStateOf<FocusRequester?>(null) }
     LaunchedEffect(Unit) {
-        runCatching { searchInputFocusRequester.requestFocus() }
+        // Arriving on an actor's filmography (from Details) shouldn't pop the on-screen keyboard
+        // over the results; focus the filter chip instead of the text field.
+        val target = if (state.activePersonName != null) clearFilterFocusRequester else searchInputFocusRequester
+        runCatching { target.requestFocus() }
+    }
+    LaunchedEffect(pendingFocusTarget, state.activePersonName, state.selectedGenre) {
+        val target = pendingFocusTarget ?: return@LaunchedEffect
+        if (target == clearFilterFocusRequester && state.activePersonName == null && state.selectedGenre == null) {
+            return@LaunchedEffect // Clear chip not composed yet
+        }
+        pendingFocusTarget = null
+        runCatching { target.requestFocus() }
     }
 
     Column(
@@ -149,6 +172,13 @@ fun SearchContent(
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = colors.textSecondary) },
                 singleLine = true,
+                // The IME's action key closes the keyboard and moves into the results instead of
+                // doing nothing (default single-line behaviour), which left TV users stuck behind it.
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    keyboardController?.hide()
+                    focusManager.moveFocus(FocusDirection.Down)
+                }),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = colors.white,
                     unfocusedTextColor = colors.textPrimary,
@@ -221,17 +251,25 @@ fun SearchContent(
                     text = activeFilterLabel,
                     color = colors.white,
                     fontSize = 19.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 var clearFocused by remember { mutableStateOf(false) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
+                        .focusRequester(clearFilterFocusRequester)
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (clearFocused) colors.surfaceElevated else colors.surface)
                         .then(if (clearFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(16.dp)) else Modifier)
                         .onFocusChanged { clearFocused = it.isFocused }
-                        .clickable(onClick = onClearFilter)
+                        .clickable {
+                            // This chip disappears once the filter is cleared.
+                            onClearFilter()
+                            pendingFocusTarget = searchInputFocusRequester
+                        }
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Icon(Icons.Filled.Close, contentDescription = "Clear", tint = colors.white, modifier = Modifier.size(14.dp))
@@ -321,7 +359,11 @@ fun SearchContent(
                                             .background(if (focused) colors.surfaceElevated else Color.Transparent)
                                             .then(if (focused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp)) else Modifier)
                                             .onFocusChanged { focused = it.isFocused }
-                                            .clickable { onSelectPerson(person) }
+                                            .clickable {
+                                                // The People row is removed once a person is picked.
+                                                onSelectPerson(person)
+                                                pendingFocusTarget = clearFilterFocusRequester
+                                            }
                                             .padding(6.dp)
                                     ) {
                                         AsyncImage(

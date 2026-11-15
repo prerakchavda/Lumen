@@ -52,6 +52,22 @@ class DownloadProgressParserTest {
     }
 
     @Test
+    fun `parses dotnet TimeSpan timeLeft formats including days and fractional seconds`() {
+        assertEquals(342L, DownloadProgressParser.parseTimeLeftSeconds("00:05:42"))
+        assertEquals(4990L, DownloadProgressParser.parseTimeLeftSeconds("01:23:10.500"))
+        assertEquals(86400L + 2 * 3600L + 15 * 60L, DownloadProgressParser.parseTimeLeftSeconds("1.02:15:00"))
+        assertEquals(86400L + 2 * 3600L + 15 * 60L, DownloadProgressParser.parseTimeLeftSeconds("1.02:15:00.250"))
+        assertNull(DownloadProgressParser.parseTimeLeftSeconds("garbage"))
+        assertEquals("~1d 2h left", DownloadProgressParser.formatEta(null, "1.02:15:00"))
+    }
+
+    @Test
+    fun `ISO ETA with explicit offset is accepted`() {
+        val now = Instant.parse("2026-11-13T05:00:00Z")
+        assertEquals("~6m left", DownloadProgressParser.formatEta("2026-11-13T05:06:30+00:00", null, now))
+    }
+
+    @Test
     fun `handles unknown size without crashing or showing fake percentage`() {
         val dto = SeerrDownloadStatusDto(
             title = "Queued.Release",

@@ -36,10 +36,12 @@ import com.seerflix.tv.core.network.SeerrRelatedVideoDto
 import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.YouTubeUrlParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import java.time.Instant
 import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
@@ -108,6 +110,12 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
+    /** TMDB id of an owned series given its Jellyfin item id (episodes only carry their own TMDB id). */
+    private fun seriesTmdbIdFor(seriesId: String?): Int? {
+        if (seriesId.isNullOrBlank()) return null
+        return tmdbToJellyfinSeries.entries.firstOrNull { it.value.id == seriesId }?.key
+    }
+
     suspend fun refreshLibraryIndex(
         userId: String,
         activeProfile: UserProfile? = null,
@@ -124,16 +132,34 @@ class UnifiedCatalogRepository @Inject constructor(
             return
         }
 
-        val items = runCatching {
-            jellyfinApi.getLibraryItems(
-                userId = userId,
-                fields = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating",
-                limit = 1000,
-                maxOfficialRating = maxRating
-            ).items
+        // The index is deliberately NOT filtered by MaxOfficialRating: it is used to match Seerr
+        // results to owned items. If restricted titles were dropped here, an R-rated movie that is
+        // in the library would surface in discovery rows as an unrated, "requestable" Seerr item and
+        // slip past the parental filter. Rating filtering is applied client-side to every row
+        // (ContentRatingHelper) using the matched item's OfficialRating instead.
+        val items = runCatchingCancellable {
+            val collected = mutableListOf<JellyfinItemDto>()
+            var startIndex = 0
+            while (collected.size < MAX_LIBRARY_INDEX_ITEMS) {
+                val page = jellyfinApi.getLibraryItems(
+                    userId = userId,
+                    fields = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating",
+                    limit = LIBRARY_INDEX_PAGE_SIZE,
+                    startIndex = startIndex.takeIf { it > 0 }
+                )
+                collected += page.items
+                startIndex += page.items.size
+                if (page.items.size < LIBRARY_INDEX_PAGE_SIZE ||
+                    (page.totalRecordCount in 1..startIndex)
+                ) {
+                    break
+                }
+            }
+            collected.toList()
         }.getOrDefault(emptyList())
 
-        if (items.isNotEmpty() || allLibraryItems.isEmpty()) {
+        // Never keep serving another user's index after a profile switch, even if this fetch failed.
+        if (items.isNotEmpty() || allLibraryItems.isEmpty() || lastIndexUserId != userId) {
             allLibraryItems = items
             val movies = HashMap<Int, JellyfinItemDto>(items.size)
             val series = HashMap<Int, JellyfinItemDto>(items.size)
@@ -155,7 +181,7 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
-    suspend fun markWatched(userId: String, itemId: String, watched: Boolean): Result<Unit> = runCatching {
+    suspend fun markWatched(userId: String, itemId: String, watched: Boolean): Result<Unit> = runCatchingCancellable {
         if (watched) {
             jellyfinApi.markPlayed(userId, itemId)
         } else {
@@ -165,7 +191,7 @@ class UnifiedCatalogRepository @Inject constructor(
     }
 
     suspend fun loadUserLibraryViews(userId: String): List<JellyfinLibraryView> {
-        return runCatching {
+        return runCatchingCancellable {
             jellyfinApi.getUserViews(userId).items.map { dto ->
                 JellyfinLibraryView(
                     id = dto.id,
@@ -176,7 +202,7 @@ class UnifiedCatalogRepository @Inject constructor(
         }.getOrDefault(emptyList())
     }
 
-    suspend fun toggleMyList(userId: String, item: UnifiedMediaItem): Result<Boolean> = runCatching {
+    suspend fun toggleMyList(userId: String, item: UnifiedMediaItem): Result<Boolean> = runCatchingCancellable {
         invalidateDetailsCache()
         if (item.jellyfinId != null) {
             val newState = !item.isInMyList
@@ -200,8 +226,8 @@ class UnifiedCatalogRepository @Inject constructor(
         return prefs.toggleReminder(userId, tmdbId, item.mediaType)
     }
 
-    suspend fun removeFromContinueWatching(userId: String, itemId: String): Result<Unit> = runCatching {
-        val updated = runCatching {
+    suspend fun removeFromContinueWatching(userId: String, itemId: String): Result<Unit> = runCatchingCancellable {
+        val updated = runCatchingCancellable {
             jellyfinApi.updateUserData(
                 userId = userId,
                 itemId = itemId,
@@ -212,6 +238,7 @@ class UnifiedCatalogRepository @Inject constructor(
             jellyfinApi.markPlayed(userId, itemId)
             jellyfinApi.markUnplayed(userId, itemId)
         }
+        invalidateDetailsCache()
     }
 
     suspend fun loadMyList(userId: String): List<UnifiedMediaItem> = coroutineScope {
@@ -219,7 +246,7 @@ class UnifiedCatalogRepository @Inject constructor(
             refreshLibraryIndex(userId)
         }
         val jfFavsDeferred = async {
-            runCatching { jellyfinApi.getFavoriteItems(userId = userId).items }.getOrDefault(emptyList())
+            runCatchingCancellable { jellyfinApi.getFavoriteItems(userId = userId).items }.getOrDefault(emptyList())
         }
         val localEntries = prefs.getLocalMyList(userId)
         val remainingLocal = mutableListOf<UnifiedMediaItem>()
@@ -232,7 +259,7 @@ class UnifiedCatalogRepository @Inject constructor(
             }
             if (matchedJf != null) {
                 // Auto-promote local My List item to Jellyfin Favorites now that it's in the library
-                runCatching { jellyfinApi.addFavorite(userId, matchedJf.id) }
+                runCatchingCancellable { jellyfinApi.addFavorite(userId, matchedJf.id) }
                 prefs.removeFromLocalMyList(userId, entry.tmdbId, entry.mediaType)
             } else {
                 remainingLocal += entry.toUnifiedMediaItem()
@@ -245,6 +272,15 @@ class UnifiedCatalogRepository @Inject constructor(
             it.tmdbId != null && "${it.mediaType}_${it.tmdbId}" in seenTmdb
         }
         jfFavs + dedupedLocal
+    }
+
+    /**
+     * Lightweight re-fetch of only the Continue Watching items, used when Home comes back into
+     * view after playback so progress / newly started titles show up without a full reload.
+     */
+    suspend fun loadContinueWatchingItems(userId: String, activeProfile: UserProfile?): List<UnifiedMediaItem> {
+        val items = jellyfinApi.getResumeItems(userId = userId, limit = 15).items.map { mapJellyfinItem(it) }
+        return ContentRatingHelper.filterForProfile(items, activeProfile)
     }
 
     suspend fun loadHomeRows(
@@ -272,22 +308,22 @@ class UnifiedCatalogRepository @Inject constructor(
         val seerrActive = isSeerrEnabled
         val resumeDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatching { jellyfinApi.getResumeItems(userId = userId, limit = 15).items }.getOrDefault(emptyList())
+            else runCatchingCancellable { jellyfinApi.getResumeItems(userId = userId, limit = 15).items }.getOrDefault(emptyList())
         }
         val latestDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatching { jellyfinApi.getLatestItems(userId = userId, limit = 20) }.getOrDefault(emptyList())
+            else runCatchingCancellable { jellyfinApi.getLatestItems(userId = userId, limit = 20) }.getOrDefault(emptyList())
         }
         val myListDeferred = async {
-            runCatching { loadMyList(userId) }.getOrDefault(emptyList())
+            runCatchingCancellable { loadMyList(userId) }.getOrDefault(emptyList())
         }
         val playedDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatching { jellyfinApi.getPlayedItems(userId = userId, limit = 20).items }.getOrDefault(emptyList())
+            else runCatchingCancellable { jellyfinApi.getPlayedItems(userId = userId, limit = 20).items }.getOrDefault(emptyList())
         }
         val trendingDeferred = async {
             if (!seerrActive) emptyList()
-            else runCatching { seerrApi.getTrending(language = metaLang).results }.getOrDefault(emptyList())
+            else runCatchingCancellable { seerrApi.getTrending(language = metaLang).results }.getOrDefault(emptyList())
         }
         val topMoviesNowDeferred = async {
             if (seerrActive && (filterType == null || filterType == MediaType.MOVIE)) {
@@ -365,12 +401,12 @@ class UnifiedCatalogRepository @Inject constructor(
         }
         val upcomingMoviesDeferred = async {
             if (seerrActive && filterType != MediaType.SERIES) {
-                runCatching { seerrApi.getUpcomingMovies(language = metaLang).results }.getOrDefault(emptyList())
+                runCatchingCancellable { seerrApi.getUpcomingMovies(language = metaLang).results }.getOrDefault(emptyList())
             } else emptyList()
         }
         val upcomingTvDeferred = async {
             if (seerrActive && filterType != MediaType.MOVIE) {
-                runCatching { seerrApi.getUpcomingTv(language = metaLang).results }.getOrDefault(emptyList())
+                runCatchingCancellable { seerrApi.getUpcomingTv(language = metaLang).results }.getOrDefault(emptyList())
             } else emptyList()
         }
         val pinnedLibraryRowsDeferred = async {
@@ -382,7 +418,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 val maxRating = activeProfile?.effectiveRatingLimit?.jellyfinMaxOfficialRating
                 pinnedIds.mapNotNull { libId ->
                     val view = views[libId]
-                    val libItems = runCatching {
+                    val libItems = runCatchingCancellable {
                         jellyfinApi.getLibraryItems(
                             userId = userId,
                             parentId = libId,
@@ -418,7 +454,8 @@ class UnifiedCatalogRepository @Inject constructor(
             )
         }
 
-        val resumeItems = resumeDeferred.await()
+        val resumeRaw = resumeDeferred.await()
+        val resumeItems = resumeRaw
             .map { mapJellyfinItem(it) }
             .filter {
                 (filterType == null ||
@@ -534,13 +571,21 @@ class UnifiedCatalogRepository @Inject constructor(
         val recentSeed = resumeItems.firstOrNull { it.tmdbId != null || it.jellyfinId != null }
             ?: playedRaw.firstOrNull()?.let { mapJellyfinItem(it) }
         if (recentSeed != null) {
-            val seedType = if (recentSeed.mediaType == MediaType.EPISODE) MediaType.SERIES else recentSeed.mediaType
+            val seedIsEpisode = recentSeed.mediaType == MediaType.EPISODE
+            val seedType = if (seedIsEpisode) MediaType.SERIES else recentSeed.mediaType
             val seedName = recentSeed.seriesName ?: recentSeed.title
-            val personalized = runCatching {
+            // An episode's ProviderIds hold the *episode's* TMDB id; recommendations must be keyed
+            // on the parent series (both the Seerr TV id and the Jellyfin item id).
+            val seedSeriesId = if (seedIsEpisode) {
+                (resumeRaw + playedRaw).firstOrNull { it.id == recentSeed.jellyfinId }?.seriesId
+            } else null
+            val seedTmdbId = if (seedIsEpisode) seriesTmdbIdFor(seedSeriesId) else recentSeed.tmdbId
+            val seedJellyfinId = if (seedIsEpisode) seedSeriesId else recentSeed.jellyfinId
+            val personalized = runCatchingCancellable {
                 loadRecommendations(
                     userId = userId,
-                    tmdbId = recentSeed.tmdbId,
-                    jellyfinId = recentSeed.jellyfinId,
+                    tmdbId = seedTmdbId,
+                    jellyfinId = seedJellyfinId,
                     mediaType = seedType,
                     activeProfile = activeProfile
                 )
@@ -755,7 +800,7 @@ class UnifiedCatalogRepository @Inject constructor(
         val movieGenreDeferred = async {
             if (seerrActive && filterType != MediaType.SERIES && genre.movieGenreId != null) {
                 fetchGenrePool(availabilityFilter) { page ->
-                    runCatching { seerrApi.getMoviesByGenre(genre.movieGenreId, page = page, language = metaLang).results }
+                    runCatchingCancellable { seerrApi.getMoviesByGenre(genre.movieGenreId, page = page, language = metaLang).results }
                         .getOrDefault(emptyList())
                         .map { mapSeerrResult(it, MediaType.MOVIE) }
                 }
@@ -764,7 +809,7 @@ class UnifiedCatalogRepository @Inject constructor(
         val tvGenreDeferred = async {
             if (seerrActive && filterType != MediaType.MOVIE && genre.tvGenreId != null) {
                 fetchGenrePool(availabilityFilter) { page ->
-                    runCatching { seerrApi.getTvByGenre(genre.tvGenreId, page = page, language = metaLang).results }
+                    runCatchingCancellable { seerrApi.getTvByGenre(genre.tvGenreId, page = page, language = metaLang).results }
                         .getOrDefault(emptyList())
                         .map { mapSeerrResult(it, MediaType.SERIES) }
                 }
@@ -848,7 +893,7 @@ class UnifiedCatalogRepository @Inject constructor(
             if (seerrActive) fetchTop10TvAiringNow(today, availabilityFilter) else emptyList()
         }
         val trendingDeferred = async {
-            if (seerrActive) runCatching { seerrApi.getTrending(language = metaLang).results }.getOrDefault(emptyList())
+            if (seerrActive) runCatchingCancellable { seerrApi.getTrending(language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
         }
         val airingThisWeekDeferred = async {
@@ -856,16 +901,16 @@ class UnifiedCatalogRepository @Inject constructor(
             else loadAiringThisWeek(userId, today)
         }
         val upcomingMoviesDeferred = async {
-            if (seerrActive) runCatching { seerrApi.getUpcomingMovies(language = metaLang).results }.getOrDefault(emptyList())
+            if (seerrActive) runCatchingCancellable { seerrApi.getUpcomingMovies(language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
         }
         val upcomingTvDeferred = async {
-            if (seerrActive) runCatching { seerrApi.getUpcomingTv(language = metaLang).results }.getOrDefault(emptyList())
+            if (seerrActive) runCatchingCancellable { seerrApi.getUpcomingTv(language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
         }
         val latestDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatching { jellyfinApi.getLatestItems(userId = userId, limit = 24) }.getOrDefault(emptyList())
+            else runCatchingCancellable { jellyfinApi.getLatestItems(userId = userId, limit = 24) }.getOrDefault(emptyList())
         }
 
         val rows = buildList {
@@ -922,7 +967,7 @@ class UnifiedCatalogRepository @Inject constructor(
         val windowStart = today.minusDays(60).toString()
         val windowEnd = today.toString()
         val windowed = fetchTop10Matching(availabilityFilter) { page ->
-            runCatching {
+            runCatchingCancellable {
                 seerrApi.getDiscoverMovies(
                     page = page,
                     language = metaLang,
@@ -939,7 +984,7 @@ class UnifiedCatalogRepository @Inject constructor(
 
         // Fallback if Seerr server ignores date bounds
         return fetchTop10Matching(availabilityFilter) { page ->
-            runCatching { seerrApi.getDiscoverMovies(page = page, language = metaLang).results }
+            runCatchingCancellable { seerrApi.getDiscoverMovies(page = page, language = metaLang).results }
                 .getOrDefault(emptyList())
                 .filter { isReleasedOnOrBefore(it.releaseDate, today) }
                 .map { mapSeerrResult(it, MediaType.MOVIE) }
@@ -952,7 +997,7 @@ class UnifiedCatalogRepository @Inject constructor(
     ): List<UnifiedMediaItem> = coroutineScope {
         val airingDeferred = async {
             fetchTop10Matching(availabilityFilter) { page ->
-                runCatching { seerrApi.getUpcomingTv(page = page, language = metaLang).results }
+                runCatchingCancellable { seerrApi.getUpcomingTv(page = page, language = metaLang).results }
                     .getOrDefault(emptyList())
                     .filter { isReleasedOnOrBefore(it.firstAirDate, today) }
                     .map { mapSeerrResult(it, MediaType.SERIES) }
@@ -963,7 +1008,7 @@ class UnifiedCatalogRepository @Inject constructor(
 
         // Supplement with currently popular TV shows released on or before today
         val fallbackPool = fetchTop10Matching(availabilityFilter) { page ->
-            runCatching {
+            runCatchingCancellable {
                 seerrApi.getDiscoverTv(
                     page = page,
                     language = metaLang,
@@ -986,7 +1031,7 @@ class UnifiedCatalogRepository @Inject constructor(
         val windowStart = today.minusDays(60).toString()
         val windowEnd = today.toString()
         return fetchTop10Matching(availabilityFilter) { page ->
-            runCatching {
+            runCatchingCancellable {
                 seerrApi.getDiscoverTv(
                     page = page,
                     language = metaLang,
@@ -1004,7 +1049,7 @@ class UnifiedCatalogRepository @Inject constructor(
         genreId: Int,
         availabilityFilter: AvailabilityFilter
     ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
-        runCatching { seerrApi.getMoviesByGenre(genreId, page = page, language = metaLang).results }
+        runCatchingCancellable { seerrApi.getMoviesByGenre(genreId, page = page, language = metaLang).results }
             .getOrDefault(emptyList())
             .map { mapSeerrResult(it, MediaType.MOVIE) }
     }
@@ -1013,7 +1058,7 @@ class UnifiedCatalogRepository @Inject constructor(
         genreId: Int,
         availabilityFilter: AvailabilityFilter
     ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
-        runCatching { seerrApi.getTvByGenre(genreId, page = page, language = metaLang).results }
+        runCatchingCancellable { seerrApi.getTvByGenre(genreId, page = page, language = metaLang).results }
             .getOrDefault(emptyList())
             .map { mapSeerrResult(it, MediaType.SERIES) }
     }
@@ -1063,7 +1108,7 @@ class UnifiedCatalogRepository @Inject constructor(
     private fun isReleasedOnOrBefore(dateStr: String?, cutoff: LocalDate): Boolean {
         val prefix = dateStr?.trim()?.take(10)
         if (prefix.isNullOrBlank()) return true
-        val parsed = runCatching { LocalDate.parse(prefix) }.getOrNull() ?: return true
+        val parsed = runCatchingCancellable { LocalDate.parse(prefix) }.getOrNull() ?: return true
         return !parsed.isAfter(cutoff)
     }
 
@@ -1080,7 +1125,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 activeProfile
             )
         }
-        val raw = runCatching { seerrApi.getTrending(language = metaLang).results }
+        val raw = runCatchingCancellable { seerrApi.getTrending(language = metaLang).results }
             .getOrDefault(emptyList())
             .mapNotNull { res ->
                 val type = when (res.mediaType) {
@@ -1113,12 +1158,12 @@ class UnifiedCatalogRepository @Inject constructor(
         }
         val movieDeferred = async {
             genre.movieGenreId?.let { id ->
-                runCatching { seerrApi.getMoviesByGenre(id, language = metaLang).results }.getOrDefault(emptyList())
+                runCatchingCancellable { seerrApi.getMoviesByGenre(id, language = metaLang).results }.getOrDefault(emptyList())
             }.orEmpty()
         }
         val tvDeferred = async {
             genre.tvGenreId?.let { id ->
-                runCatching { seerrApi.getTvByGenre(id, language = metaLang).results }.getOrDefault(emptyList())
+                runCatchingCancellable { seerrApi.getTvByGenre(id, language = metaLang).results }.getOrDefault(emptyList())
             }.orEmpty()
         }
         val movies = movieDeferred.await().map { mapSeerrResult(it, MediaType.MOVIE) }
@@ -1134,17 +1179,17 @@ class UnifiedCatalogRepository @Inject constructor(
         tmdbId: Int?,
         jellyfinId: String?,
         mediaType: MediaType
-    ): Result<UnifiedMediaItem> = runCatching {
+    ): Result<UnifiedMediaItem> = runCatchingCancellable {
         val cacheKey = "${userId}_${mediaType.name}_${tmdbId ?: ""}_${jellyfinId ?: ""}"
-        getCachedDetails(cacheKey)?.let { return@runCatching it }
+        getCachedDetails(cacheKey)?.let { return@runCatchingCancellable it }
 
         coroutineScope {
             val resolvedType = if (mediaType == MediaType.EPISODE) MediaType.SERIES else mediaType
             var jfItem: JellyfinItemDto? = jellyfinId?.let { id ->
-                runCatching { jellyfinApi.getItemDetails(userId, id) }.getOrNull()
+                runCatchingCancellable { jellyfinApi.getItemDetails(userId, id) }.getOrNull()
             }
             if (jfItem?.type.equals("Episode", ignoreCase = true) && !jfItem?.seriesId.isNullOrBlank()) {
-                val parentSeries = runCatching { jellyfinApi.getItemDetails(userId, jfItem!!.seriesId!!) }.getOrNull()
+                val parentSeries = runCatchingCancellable { jellyfinApi.getItemDetails(userId, jfItem!!.seriesId!!) }.getOrNull()
                 if (parentSeries != null) {
                     jfItem = parentSeries
                 }
@@ -1164,7 +1209,7 @@ class UnifiedCatalogRepository @Inject constructor(
 
             val extrasDeferred = async {
                 jfItem?.id?.let { id ->
-                    runCatching { jellyfinApi.getSpecialFeatures(id, userId) }.getOrDefault(emptyList())
+                    runCatchingCancellable { jellyfinApi.getSpecialFeatures(id, userId) }.getOrDefault(emptyList())
                 }.orEmpty().map { extra ->
                     ExtrasItem(
                         id = extra.id,
@@ -1179,13 +1224,13 @@ class UnifiedCatalogRepository @Inject constructor(
 
             val localTrailerDeferred = async {
                 jfItem?.id?.let { id ->
-                    runCatching { jellyfinApi.getLocalTrailers(id, userId).firstOrNull()?.id }.getOrNull()
+                    runCatchingCancellable { jellyfinApi.getLocalTrailers(id, userId).firstOrNull()?.id }.getOrNull()
                 }
             }
 
             val seerrMergedItem: UnifiedMediaItem? = if (resolvedTmdbId != null && isSeerrEnabled) {
                 if (resolvedType == MediaType.MOVIE) {
-                    val seerrMovieResult = runCatching {
+                    val seerrMovieResult = runCatchingCancellable {
                         seerrApi.getMovieDetails(resolvedTmdbId, language = metaLang)
                     }
                     val seerrMovie = seerrMovieResult.getOrNull()
@@ -1202,13 +1247,13 @@ class UnifiedCatalogRepository @Inject constructor(
                         null
                     }
                 } else {
-                    val seerrTvResult = runCatching {
+                    val seerrTvResult = runCatchingCancellable {
                         seerrApi.getTvDetails(resolvedTmdbId, language = metaLang)
                     }
                     val seerrTv = seerrTvResult.getOrNull()
                     if (seerrTv != null) {
                         val jfSeasons = jfItem?.id?.let { id ->
-                            runCatching { jellyfinApi.getSeasons(id, userId).items }.getOrDefault(emptyList())
+                            runCatchingCancellable { jellyfinApi.getSeasons(id, userId).items }.getOrDefault(emptyList())
                         }.orEmpty()
                         mergeTvDetails(seerrTv, jfItem, jfSeasons, localTrailerDeferred.await())
                     } else if (jfItem == null) {
@@ -1228,7 +1273,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 val mapped = mapJellyfinItem(jfItem)
                 val localTrailerId = localTrailerDeferred.await()
                 if (resolvedType == MediaType.SERIES) {
-                    val jfSeasons = runCatching { jellyfinApi.getSeasons(jfItem.id, userId).items }.getOrDefault(emptyList())
+                    val jfSeasons = runCatchingCancellable { jellyfinApi.getSeasons(jfItem.id, userId).items }.getOrDefault(emptyList())
                     val mappedSeasons = jfSeasons.map { s ->
                         SeasonSummary(
                             seasonNumber = s.indexNumber ?: 1,
@@ -1283,7 +1328,7 @@ class UnifiedCatalogRepository @Inject constructor(
     ): List<EpisodeSummary> = coroutineScope {
         val jfEpisodesDeferred = async {
             if (jellyfinSeriesId != null) {
-                runCatching {
+                runCatchingCancellable {
                     jellyfinApi.getEpisodes(
                         seriesId = jellyfinSeriesId,
                         userId = userId,
@@ -1294,7 +1339,7 @@ class UnifiedCatalogRepository @Inject constructor(
         }
         val seerrSeasonDeferred = async {
             if (isSeerrEnabled && tmdbId != null) {
-                runCatching { seerrApi.getTvSeasonDetails(tmdbId, seasonNumber, language = metaLang) }.getOrNull()
+                runCatchingCancellable { seerrApi.getTvSeasonDetails(tmdbId, seasonNumber, language = metaLang) }.getOrNull()
             } else null
         }
 
@@ -1346,7 +1391,7 @@ class UnifiedCatalogRepository @Inject constructor(
         activeProfile: UserProfile? = null
     ): List<UnifiedMediaItem> {
         if (isSeerrEnabled && tmdbId != null) {
-            val results = runCatching {
+            val results = runCatchingCancellable {
                 if (mediaType == MediaType.MOVIE) {
                     seerrApi.getMovieRecommendations(tmdbId, language = metaLang).results
                 } else {
@@ -1361,7 +1406,7 @@ class UnifiedCatalogRepository @Inject constructor(
             }
         }
         if (jellyfinId != null) {
-            val similar = runCatching {
+            val similar = runCatchingCancellable {
                 jellyfinApi.getSimilarItems(jellyfinId, userId).items.map { mapJellyfinItem(it) }
             }.getOrDefault(emptyList())
             return ContentRatingHelper.filterForProfile(similar, activeProfile)
@@ -1369,8 +1414,12 @@ class UnifiedCatalogRepository @Inject constructor(
         return emptyList()
     }
 
-    suspend fun searchUnified(userId: String, query: String): List<UnifiedMediaItem> =
-        searchUnifiedWithPeople(userId, query).first
+    suspend fun searchUnified(
+        userId: String,
+        query: String,
+        activeProfile: UserProfile? = null
+    ): List<UnifiedMediaItem> =
+        searchUnifiedWithPeople(userId, query, activeProfile).first
 
     suspend fun searchUnifiedWithPeople(
         userId: String,
@@ -1379,11 +1428,11 @@ class UnifiedCatalogRepository @Inject constructor(
     ): Pair<List<UnifiedMediaItem>, List<PersonSearchResult>> = coroutineScope {
         if (query.isBlank()) return@coroutineScope emptyList<UnifiedMediaItem>() to emptyList()
         val seerrDeferred = async {
-            if (isSeerrEnabled) runCatching { seerrApi.search(query, language = metaLang).results }.getOrDefault(emptyList())
+            if (isSeerrEnabled) runCatchingCancellable { seerrApi.search(query, language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
         }
         val jfDeferred = async {
-            runCatching { jellyfinApi.searchItems(userId, query).items }.getOrDefault(emptyList())
+            runCatchingCancellable { jellyfinApi.searchItems(userId, query).items }.getOrDefault(emptyList())
         }
 
         val rawSeerr = seerrDeferred.await()
@@ -1423,7 +1472,7 @@ class UnifiedCatalogRepository @Inject constructor(
         if (tmdbToJellyfinMovie.isEmpty() && tmdbToJellyfinSeries.isEmpty()) {
             refreshLibraryIndex(userId, activeProfile)
         }
-        val credits = runCatching { seerrApi.getPersonCredits(personId, language = metaLang) }.getOrNull()
+        val credits = runCatchingCancellable { seerrApi.getPersonCredits(personId, language = metaLang) }.getOrNull()
             ?: return@coroutineScope emptyList()
         val combined = (credits.cast + credits.crew)
             .mapNotNull { res ->
@@ -1438,12 +1487,12 @@ class UnifiedCatalogRepository @Inject constructor(
         ContentRatingHelper.filterForProfile(combined, activeProfile)
     }
 
-    suspend fun has4kServerConfigured(mediaType: MediaType): Boolean = runCatching {
-        if (!isSeerrEnabled) return@runCatching false
+    suspend fun has4kServerConfigured(mediaType: MediaType): Boolean = runCatchingCancellable {
+        if (!isSeerrEnabled) return@runCatchingCancellable false
         val now = System.currentTimeMillis()
         if (now - last4kCheckTimestampMs < 300_000L) {
             val cached = if (mediaType == MediaType.MOVIE) cachedHas4kMovie else cachedHas4kTv
-            if (cached != null) return@runCatching cached
+            if (cached != null) return@runCatchingCancellable cached
         }
         val servers = if (mediaType == MediaType.MOVIE) {
             seerrApi.getRadarrServers()
@@ -1462,13 +1511,13 @@ class UnifiedCatalogRepository @Inject constructor(
 
     suspend fun loadArrServers(mediaType: MediaType): List<ArrServerOption> = coroutineScope {
         if (!isSeerrEnabled) return@coroutineScope emptyList()
-        val servers = runCatching {
+        val servers = runCatchingCancellable {
             if (mediaType == MediaType.MOVIE) seerrApi.getRadarrServers() else seerrApi.getSonarrServers()
         }.getOrDefault(emptyList())
 
         servers.map { srv ->
             async {
-                val detail = runCatching {
+                val detail = runCatchingCancellable {
                     if (mediaType == MediaType.MOVIE) {
                         seerrApi.getRadarrServerDetails(srv.id)
                     } else {
@@ -1500,11 +1549,11 @@ class UnifiedCatalogRepository @Inject constructor(
         serverId: Int? = null,
         profileId: Int? = null,
         rootFolder: String? = null
-    ): Result<Unit> = runCatching {
+    ): Result<Unit> = runCatchingCancellable {
         check(isSeerrEnabled) { "Seerr is not configured (Jellyfin-Only Mode)" }
         invalidateDetailsCache()
         val resolvedSeasons = if (mediaType == MediaType.SERIES) {
-            seasons?.takeIf { it.isNotEmpty() } ?: runCatching {
+            seasons?.takeIf { it.isNotEmpty() } ?: runCatchingCancellable {
                 seerrApi.getTvDetails(tmdbId, language = metaLang).seasons
                     .map { it.seasonNumber }
                     .filter { it > 0 }
@@ -1526,21 +1575,22 @@ class UnifiedCatalogRepository @Inject constructor(
         Unit
     }.recoverCatching { throw IllegalStateException(formatHttpError(it, "Request failed"), it) }
 
-    suspend fun approveRequest(requestId: Int): Result<Unit> = runCatching {
+    suspend fun approveRequest(requestId: Int): Result<Unit> = runCatchingCancellable {
         check(isSeerrEnabled) { "Seerr is not configured" }
         seerrApi.approveRequest(requestId)
-        Unit
+        invalidateDetailsCache()
     }.recoverCatching { throw IllegalStateException(formatHttpError(it, "Approve failed"), it) }
 
-    suspend fun declineRequest(requestId: Int): Result<Unit> = runCatching {
+    suspend fun declineRequest(requestId: Int): Result<Unit> = runCatchingCancellable {
         check(isSeerrEnabled) { "Seerr is not configured" }
         seerrApi.declineRequest(requestId)
-        Unit
+        invalidateDetailsCache()
     }.recoverCatching { throw IllegalStateException(formatHttpError(it, "Decline failed"), it) }
 
-    suspend fun cancelRequest(requestId: Int): Result<Unit> = runCatching {
+    suspend fun cancelRequest(requestId: Int): Result<Unit> = runCatchingCancellable {
         check(isSeerrEnabled) { "Seerr is not configured" }
         seerrApi.deleteRequest(requestId)
+        invalidateDetailsCache()
     }.recoverCatching { throw IllegalStateException(formatHttpError(it, "Cancel failed"), it) }
 
     suspend fun reportIssue(
@@ -1548,7 +1598,7 @@ class UnifiedCatalogRepository @Inject constructor(
         mediaType: MediaType,
         issueType: SeerrIssueType,
         message: String
-    ): Result<Unit> = runCatching {
+    ): Result<Unit> = runCatchingCancellable {
         check(isSeerrEnabled) { "Seerr is not configured" }
         val seerrMediaId = if (mediaType == MediaType.MOVIE) {
             seerrApi.getMovieDetails(tmdbId, language = metaLang).mediaInfo?.id
@@ -1565,8 +1615,8 @@ class UnifiedCatalogRepository @Inject constructor(
         )
     }.recoverCatching { throw IllegalStateException(formatHttpError(it, "Failed to report issue"), it) }
 
-    suspend fun loadRequestsHub(): Result<List<MediaRequestSummary>> = runCatching {
-        if (!isSeerrEnabled) return@runCatching emptyList()
+    suspend fun loadRequestsHub(): Result<List<MediaRequestSummary>> = runCatchingCancellable {
+        if (!isSeerrEnabled) return@runCatchingCancellable emptyList()
         val page = seerrApi.getRequests(take = 50, skip = 0, filter = "all", sort = "added")
         coroutineScope {
             page.results.map { req ->
@@ -1589,7 +1639,7 @@ class UnifiedCatalogRepository @Inject constructor(
 
                     if (tmdbId > 0) {
                         if (type == MediaType.MOVIE) {
-                            runCatching { seerrApi.getMovieDetails(tmdbId, language = metaLang) }.getOrNull()?.let { m ->
+                            runCatchingCancellable { seerrApi.getMovieDetails(tmdbId, language = metaLang) }.getOrNull()?.let { m ->
                                 title = m.title
                                 posterPath = m.posterPath
                                 backdropPath = m.backdropPath
@@ -1599,7 +1649,7 @@ class UnifiedCatalogRepository @Inject constructor(
                                 }
                             }
                         } else {
-                            runCatching { seerrApi.getTvDetails(tmdbId, language = metaLang) }.getOrNull()?.let { tv ->
+                            runCatchingCancellable { seerrApi.getTvDetails(tmdbId, language = metaLang) }.getOrNull()?.let { tv ->
                                 title = tv.name
                                 posterPath = tv.posterPath
                                 backdropPath = tv.backdropPath
@@ -1639,10 +1689,10 @@ class UnifiedCatalogRepository @Inject constructor(
 
     suspend fun loadLiveTvChannelsAndPrograms(userId: String): List<LiveTvChannel> = coroutineScope {
         val channelsDeferred = async {
-            runCatching { jellyfinApi.getLiveTvChannels(userId).items }.getOrDefault(emptyList())
+            runCatchingCancellable { jellyfinApi.getLiveTvChannels(userId).items }.getOrDefault(emptyList())
         }
         val programsDeferred = async {
-            runCatching { jellyfinApi.getLiveTvPrograms(userId).items }.getOrDefault(emptyList())
+            runCatchingCancellable { jellyfinApi.getLiveTvPrograms(userId).items }.getOrDefault(emptyList())
         }
         val channels = channelsDeferred.await()
         val programsByChannel = programsDeferred.await().groupBy { it.channelId }
@@ -1701,14 +1751,16 @@ class UnifiedCatalogRepository @Inject constructor(
     }
 
     suspend fun loadLiveTvRecordings(userId: String): List<UnifiedMediaItem> {
-        return runCatching {
+        return runCatchingCancellable {
             jellyfinApi.getLiveTvRecordings(userId).items.map { mapJellyfinItem(it) }
         }.getOrDefault(emptyList())
     }
 
     private fun parseIsoMillis(iso: String?): Long {
         if (iso.isNullOrBlank()) return 0L
-        return runCatching { Instant.parse(iso).toEpochMilli() }.getOrDefault(0L)
+        return runCatchingCancellable { Instant.parse(iso).toEpochMilli() }
+            .recoverCatching { OffsetDateTime.parse(iso).toInstant().toEpochMilli() }
+            .getOrDefault(0L)
     }
 
     private fun mapJellyfinItem(dto: JellyfinItemDto): UnifiedMediaItem {
@@ -1797,7 +1849,7 @@ class UnifiedCatalogRepository @Inject constructor(
         return reminderKeys.mapNotNull { key ->
             val sep = key.lastIndexOf('_')
             if (sep <= 0) return@mapNotNull null
-            val type = runCatching { MediaType.valueOf(key.substring(0, sep)) }.getOrNull() ?: return@mapNotNull null
+            val type = runCatchingCancellable { MediaType.valueOf(key.substring(0, sep)) }.getOrNull() ?: return@mapNotNull null
             val tmdbId = key.substring(sep + 1).toIntOrNull() ?: return@mapNotNull null
             val matchedDto = when (type) {
                 MediaType.MOVIE -> tmdbToJellyfinMovie[tmdbId]
@@ -1815,7 +1867,7 @@ class UnifiedCatalogRepository @Inject constructor(
         today: LocalDate = LocalDate.now()
     ): List<UnifiedMediaItem> {
         val base = jfBaseUrl
-        val upcomingDtos = runCatching {
+        val upcomingDtos = runCatchingCancellable {
             jellyfinApi.getUpcomingEpisodes(userId = userId).items
         }.getOrDefault(emptyList())
         return upcomingDtos.map { dto ->
@@ -1828,8 +1880,9 @@ class UnifiedCatalogRepository @Inject constructor(
                 today = today
             )
             val seriesItemId = dto.seriesId ?: dto.id
-            val tmdbId = dto.providerIds["Tmdb"]?.toIntOrNull()
-                ?: dto.providerIds["tmdb"]?.toIntOrNull()
+            // These are Episode DTOs: their ProviderIds["Tmdb"] is the episode id, not the show's,
+            // and this card is presented (and opened) as the SERIES. Resolve via the series instead.
+            val tmdbId = seriesTmdbIdFor(dto.seriesId)
             UnifiedMediaItem(
                 id = "jf_upcoming_${dto.id}",
                 tmdbId = tmdbId,
@@ -1857,7 +1910,7 @@ class UnifiedCatalogRepository @Inject constructor(
 
     suspend fun loadBoxSetCollections(userId: String): List<CollectionSummary> {
         val base = jfBaseUrl
-        val boxSets = runCatching {
+        val boxSets = runCatchingCancellable {
             jellyfinApi.getCollections(userId = userId).items
         }.getOrDefault(emptyList())
         return boxSets.map { dto ->
@@ -1891,7 +1944,7 @@ class UnifiedCatalogRepository @Inject constructor(
         if (tmdbToJellyfinMovie.isEmpty() && tmdbToJellyfinSeries.isEmpty()) {
             refreshLibraryIndex(userId)
         }
-        val ownedDtos = runCatching {
+        val ownedDtos = runCatchingCancellable {
             jellyfinApi.getCollectionItems(userId = userId, parentId = boxSetId).items
         }.getOrDefault(emptyList())
         val ownedItems = ownedDtos
@@ -1903,7 +1956,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 .firstOrNull { it.mediaType == MediaType.MOVIE && it.tmdbId != null }
                 ?.tmdbId
                 ?.let { movieTmdb ->
-                    runCatching { seerrApi.getMovieDetails(movieTmdb, language = metaLang).resolvedCollection?.id }.getOrNull()
+                    runCatchingCancellable { seerrApi.getMovieDetails(movieTmdb, language = metaLang).resolvedCollection?.id }.getOrNull()
                 }
         } else null
 
@@ -1952,7 +2005,7 @@ class UnifiedCatalogRepository @Inject constructor(
         if (tmdbToJellyfinMovie.isEmpty() && tmdbToJellyfinSeries.isEmpty()) {
             refreshLibraryIndex(userId, activeProfile)
         }
-        val dto = runCatching { seerrApi.getCollectionDetails(collectionId, language = metaLang) }.getOrNull() ?: return null
+        val dto = runCatchingCancellable { seerrApi.getCollectionDetails(collectionId, language = metaLang) }.getOrNull() ?: return null
         val items = ContentRatingHelper.filterForProfile(
             dto.parts
                 .map { mapSeerrResult(it, MediaType.MOVIE) }
@@ -2014,6 +2067,9 @@ class UnifiedCatalogRepository @Inject constructor(
             releaseYear = rawReleaseDate?.take(4),
             releaseDate = rawReleaseDate,
             upcomingBadgeLabel = upcomingBadge,
+            // Seerr list results carry no certification; use the owned copy's rating when we have
+            // one so parental filtering can see it.
+            maturityRating = matchedJf?.officialRating,
             voteAverage = res.voteAverage,
             posterUrl = MediaImageUrls.tmdbPoster(res.posterPath)
                 ?: matchedJf?.let { MediaImageUrls.jellyfinPrimary(jfBase, it.id) },
@@ -2060,7 +2116,7 @@ class UnifiedCatalogRepository @Inject constructor(
             collectionId = collection?.id,
             collectionName = collection?.name,
             runtimeMinutes = seerr.runtime ?: jf?.runTimeTicks?.let { (it / 600_000_000L).toInt() },
-            maturityRating = jf?.officialRating,
+            maturityRating = jf?.officialRating ?: seerr.certification(),
             voteAverage = seerr.voteAverage,
             genres = seerr.genres.map { it.name },
             posterUrl = MediaImageUrls.tmdbPoster(seerr.posterPath)
@@ -2144,7 +2200,7 @@ class UnifiedCatalogRepository @Inject constructor(
             tagline = seerr.tagline,
             releaseYear = seerr.firstAirDate?.take(4),
             runtimeMinutes = seerr.episodeRunTime.firstOrNull(),
-            maturityRating = jf?.officialRating,
+            maturityRating = jf?.officialRating ?: seerr.certification(),
             voteAverage = seerr.voteAverage,
             genres = seerr.genres.map { it.name },
             posterUrl = MediaImageUrls.tmdbPoster(seerr.posterPath)
@@ -2228,6 +2284,9 @@ class UnifiedCatalogRepository @Inject constructor(
         YouTubeUrlParser.extractVideoKey(url)
 
     companion object {
+        private const val LIBRARY_INDEX_PAGE_SIZE = 1000
+        private const val MAX_LIBRARY_INDEX_ITEMS = 20_000
+
         fun extractMediaBadges(streams: List<JellyfinMediaStreamDto>): List<String> {
             if (streams.isEmpty()) return emptyList()
             val badges = linkedSetOf<String>()
@@ -2298,4 +2357,16 @@ class UnifiedCatalogRepository @Inject constructor(
             }
         }
     }
+}
+
+/**
+ * Like [runCatching], but never swallows coroutine cancellation: a cancelled caller must not get a
+ * `Result.failure(CancellationException)` back (which would surface as a bogus error / empty state).
+ */
+internal inline fun <R> runCatchingCancellable(block: () -> R): Result<R> = try {
+    Result.success(block())
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Throwable) {
+    Result.failure(e)
 }

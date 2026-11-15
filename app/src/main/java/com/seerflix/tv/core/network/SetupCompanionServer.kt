@@ -9,11 +9,13 @@ import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
 
 data class CompanionFormResult(
     val jellyfinUrl: String = "",
@@ -38,16 +40,26 @@ class SetupCompanionServer {
     ): String? {
         stop()
         val lanIp = findLanIpv4Address() ?: return null
-        val socket = runCatching { ServerSocket(0) }.getOrNull() ?: return null
+        // Bind only to the LAN interface we advertise (not 0.0.0.0, which would also expose the
+        // form on VPN/other interfaces).
+        val socket = runCatching {
+            ServerSocket(0, 8, InetAddress.getByName(lanIp))
+        }.getOrNull() ?: return null
         serverSocket = socket
-        val url = "http://$lanIp:${socket.localPort}/"
+        // Unguessable path segment shown only in the on-screen QR/URL: other devices on the LAN
+        // can neither read the pre-filled form (which may contain the Seerr API key) nor push
+        // server URLs to the TV.
+        val token = generateAccessToken()
+        val url = "http://$lanIp:${socket.localPort}/$token/"
         companionUrl = url
 
         acceptJob = scope.launch {
             while (isActive && !socket.isClosed) {
                 val client = runCatching { socket.accept() }.getOrNull() ?: break
                 launch {
-                    handleClient(client, currentValues, onSubmitted)
+                    // Never let one bad connection crash the app (uncaught exception in scope).
+                    runCatching { handleClient(client, token, currentValues, onSubmitted) }
+                    runCatching { client.close() }
                 }
             }
         }
@@ -64,6 +76,7 @@ class SetupCompanionServer {
 
     private fun handleClient(
         socket: Socket,
+        token: String,
         defaults: CompanionFormResult,
         onSubmitted: (CompanionFormResult) -> Unit
     ) {
@@ -78,7 +91,13 @@ class SetupCompanionServer {
             val method = parts.getOrNull(0)?.uppercase().orEmpty()
             val path = parts.getOrNull(1).orEmpty()
 
-            if (method == "POST" && path.startsWith("/save")) {
+            if (!isAuthorizedPath(path, token)) {
+                writeHttpResponse(client, status = "404 Not Found", html = "<!doctype html><title>Not found</title>")
+                return
+            }
+
+            val subPath = path.removePrefix("/$token").substringBefore('?')
+            if (method == "POST" && subPath.startsWith("/save")) {
                 val body = if (headerEnd >= 0) rawRequest.substring(headerEnd + 4) else ""
                 val parsed = parseFormBody(body)
                 onSubmitted(parsed)
@@ -91,7 +110,7 @@ class SetupCompanionServer {
                 writeHttpResponse(
                     client,
                     status = "200 OK",
-                    html = buildFormHtml(defaults)
+                    html = buildFormHtml(defaults, token)
                 )
             }
         }
@@ -151,7 +170,7 @@ class SetupCompanionServer {
         }
     }
 
-    private fun buildFormHtml(defaults: CompanionFormResult): String = """
+    private fun buildFormHtml(defaults: CompanionFormResult, token: String): String = """
         <!doctype html>
         <html lang="en">
         <head>
@@ -170,15 +189,15 @@ class SetupCompanionServer {
         <body>
           <h1>Lumen TV Companion</h1>
           <p>Paste your server URLs from your phone to send them straight to your TV.</p>
-          <form method="POST" action="/save">
+          <form method="POST" action="/$token/save">
             <label>Jellyfin URL (Remote or Primary)</label>
-            <input type="url" name="jellyfinUrl" placeholder="https://jf.example.com" value="${escapeHtml(defaults.jellyfinUrl)}"/>
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="jellyfinUrl" placeholder="https://jf.example.com" value="${escapeHtml(defaults.jellyfinUrl)}"/>
             <label>Jellyfin Local LAN URL (Optional)</label>
-            <input type="url" name="jellyfinLocalUrl" placeholder="http://192.168.1.50:8096" value="${escapeHtml(defaults.jellyfinLocalUrl)}"/>
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="jellyfinLocalUrl" placeholder="http://192.168.1.50:8096" value="${escapeHtml(defaults.jellyfinLocalUrl)}"/>
             <label>Seerr / Jellyseerr URL (Optional — leave blank for Jellyfin-Only Mode)</label>
-            <input type="url" name="seerrUrl" placeholder="https://seerr.example.com" value="${escapeHtml(defaults.seerrUrl)}"/>
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrUrl" placeholder="https://seerr.example.com" value="${escapeHtml(defaults.seerrUrl)}"/>
             <label>Seerr Local LAN URL (Optional)</label>
-            <input type="url" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
             <label>Seerr API Key (Optional)</label>
             <input type="text" name="seerrApiKey" placeholder="Optional X-Api-Key from Seerr Settings" value="${escapeHtml(defaults.seerrApiKey)}"/>
             <label class="check">
@@ -216,6 +235,20 @@ class SetupCompanionServer {
             .replace(">", "&gt;")
 
     companion object {
+        private val secureRandom = SecureRandom()
+
+        internal fun generateAccessToken(): String {
+            val bytes = ByteArray(12)
+            secureRandom.nextBytes(bytes)
+            return bytes.joinToString("") { "%02x".format(it) }
+        }
+
+        internal fun isAuthorizedPath(path: String, token: String): Boolean {
+            if (token.isBlank()) return false
+            val prefix = "/$token"
+            return path == prefix || path.startsWith("$prefix/") || path.startsWith("$prefix?")
+        }
+
         fun parseFormBody(body: String): CompanionFormResult {
             val fields = mutableMapOf<String, String>()
             body.split("&").forEach { pair ->

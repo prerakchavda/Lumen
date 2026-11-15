@@ -49,9 +49,17 @@ class SeerflixSearchProvider : ContentProvider() {
             )
             runBlocking {
                 withTimeoutOrNull(3_500L) {
-                    val userId = entryPoint.authRepository().activeProfileFlow.first()?.jellyfinUserId
+                    val authRepository = entryPoint.authRepository()
+                    // Cold process (system search): make sure server URLs/token are loaded first.
+                    authRepository.warmup()
+                    val profile = authRepository.activeProfileFlow.first()
                         ?: return@withTimeoutOrNull emptyList()
-                    entryPoint.catalogRepository().searchUnified(userId, rawQuery.trim())
+                    // Global search must honour the active profile's parental controls.
+                    entryPoint.catalogRepository().searchUnified(
+                        userId = profile.jellyfinUserId,
+                        query = rawQuery.trim(),
+                        activeProfile = profile
+                    )
                 }.orEmpty()
             }
         }.getOrDefault(emptyList())

@@ -3,6 +3,7 @@ package com.seerflix.tv.feature.details
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -35,6 +37,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Theaters
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -69,6 +72,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.ArrServerOption
@@ -84,6 +90,7 @@ import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.components.NetflixPosterCard
 import com.seerflix.tv.ui.theme.SeerflixTokens
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 
 @Composable
@@ -97,10 +104,24 @@ fun DetailsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, viewModel) {
+        // Pause the 15s request/download polling while the player (or anything else) covers this
+        // screen, and refresh resume/watched state when coming back.
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.onScreenVisible()
+            try {
+                awaitCancellation()
+            } finally {
+                viewModel.onScreenHidden()
+            }
+        }
+    }
 
     DetailsContent(
         state = state,
         onBack = onBack,
+        onRetry = viewModel::loadAll,
         onPlayItem = onPlayItem,
         onOpenDetails = onOpenDetails,
         onOpenRequestModal = viewModel::openRequestModal,
@@ -163,7 +184,8 @@ fun DetailsContent(
     onRemoveFromContinueWatching: () -> Unit = {},
     onSearchActor: (name: String, personId: Int?) -> Unit = { _, _ -> },
     onRequestCollectionItem: (UnifiedMediaItem) -> Unit = {},
-    onRequestAllMissingInCollection: () -> Unit = {}
+    onRequestAllMissingInCollection: () -> Unit = {},
+    onRetry: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
@@ -191,13 +213,30 @@ fun DetailsContent(
                 ) {
                     Text(state.errorMessage ?: "Title not found", color = colors.accent, fontSize = 16.sp)
                     Spacer(Modifier.height(16.dp))
-                    HeroPillButton(
-                        text = "Go Back",
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        isPrimary = true,
-                        onClick = onBack,
-                        modifier = Modifier.focusRequester(errorBackFocusRequester)
-                    )
+                    // A transient network error used to dead-end here with only "Go Back".
+                    // (Parental-control blocks get only "Go Back"; retrying can't help.)
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (!state.isBlockedByParentalControls) {
+                            HeroPillButton(
+                                text = "Retry",
+                                icon = Icons.Filled.Refresh,
+                                isPrimary = true,
+                                onClick = onRetry,
+                                modifier = Modifier.focusRequester(errorBackFocusRequester)
+                            )
+                        }
+                        HeroPillButton(
+                            text = "Go Back",
+                            icon = if (state.isBlockedByParentalControls) Icons.Filled.Lock else Icons.AutoMirrored.Filled.ArrowBack,
+                            isPrimary = state.isBlockedByParentalControls,
+                            onClick = onBack,
+                            modifier = if (state.isBlockedByParentalControls) {
+                                Modifier.focusRequester(errorBackFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                    }
                 }
             }
             else -> {
@@ -216,12 +255,17 @@ fun DetailsContent(
                             feedbackBanner = state.feedbackBanner,
                             onBack = onBack,
                             onPlay = {
+                                // Series: pass the series id so the playback manager resumes the
+                                // in-progress / next-up episode. The old code played the first
+                                // episode of whichever season tab happened to be selected (S1E1 by
+                                // default), ignoring where the viewer actually left off.
                                 val playableId = if (item.mediaType == MediaType.SERIES) {
-                                    state.episodes.firstOrNull { it.isAvailableInJellyfin }?.id ?: item.jellyfinId
+                                    item.jellyfinId ?: state.episodes.firstOrNull { it.isAvailableInJellyfin }?.id
                                 } else {
                                     item.jellyfinId
                                 }
-                                playableId?.let { id -> onPlayItem(id, state.selectedMediaSourceId) }
+                                val sourceId = if (item.mediaType == MediaType.SERIES) null else state.selectedMediaSourceId
+                                playableId?.let { id -> onPlayItem(id, sourceId) }
                             },
                             onRequestClick = onOpenRequestModal,
                             onWatchTrailer = {
@@ -274,7 +318,9 @@ fun DetailsContent(
                                 )
                                 Spacer(Modifier.height(12.dp))
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    items(item.seasons, key = { it.seasonNumber }) { season ->
+                                    // Index-qualified key: Jellyfin-only seasons without an IndexNumber
+                                    // all map to seasonNumber 1, and a duplicate key crashes the row.
+                                    itemsIndexed(item.seasons, key = { idx, s -> "season_${idx}_${s.seasonNumber}" }) { _, season ->
                                         SeasonTabChip(
                                             label = season.name,
                                             isSelected = season.seasonNumber == state.selectedSeasonNumber,
@@ -356,7 +402,7 @@ fun DetailsContent(
                                     contentPadding = PaddingValues(horizontal = 48.dp),
                                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    items(item.relatedVideos, key = { "${it.title}_${it.youtubeKey}_${it.localTrailerItemId}" }) { video ->
+                                    itemsIndexed(item.relatedVideos, key = { idx, v -> "video_${idx}_${v.youtubeKey}_${v.localTrailerItemId}" }) { _, video ->
                                         RelatedVideoCard(
                                             video = video,
                                             fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
@@ -385,7 +431,8 @@ fun DetailsContent(
                                     contentPadding = PaddingValues(horizontal = 48.dp),
                                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    items(item.cast, key = { "${it.name}_${it.role}" }) { member ->
+                                    // TMDB can list the same actor/role twice; name+role alone isn't unique.
+                                    itemsIndexed(item.cast, key = { idx, m -> "cast_${idx}_${m.name}" }) { _, member ->
                                         var castFocused by remember { mutableStateOf(false) }
                                         Column(
                                             modifier = Modifier
@@ -441,6 +488,7 @@ fun DetailsContent(
                             val missingCount = remember(saga.items) {
                                 saga.items.count { !it.isPlayable && it.canRequestHd }
                             }
+                            val sagaFirstFocusRequester = remember { FocusRequester() }
                             Column(modifier = Modifier.padding(top = 28.dp)) {
                                 Row(
                                     modifier = Modifier
@@ -449,15 +497,21 @@ fun DetailsContent(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    // Weighted so a long saga name ellipsizes instead of pushing the
+                                    // completion badge and "Request Missing" button off-screen.
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.weight(1f, fill = false)
                                     ) {
                                         Text(
                                             text = "Part of ${saga.name}",
                                             color = colors.white,
                                             fontSize = 18.sp,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
                                         Box(
                                             modifier = Modifier
@@ -480,7 +534,12 @@ fun DetailsContent(
                                             text = "Request Missing ($missingCount)",
                                             icon = Icons.Filled.Add,
                                             isPrimary = false,
-                                            onClick = onRequestAllMissingInCollection
+                                            onClick = {
+                                                onRequestAllMissingInCollection()
+                                                // The button disappears once nothing is missing;
+                                                // move focus into the saga row rather than losing it.
+                                                runCatching { sagaFirstFocusRequester.requestFocus() }
+                                            }
                                         )
                                     }
                                 }
@@ -496,7 +555,12 @@ fun DetailsContent(
                                             onClick = { onOpenDetails(part) },
                                             onOptionsMenu = if (!part.isPlayable && part.canRequestHd && state.isSeerrConfigured && state.canSubmitRequests) {
                                                 { onRequestCollectionItem(part) }
-                                            } else null
+                                            } else null,
+                                            modifier = if (part.id == saga.items.firstOrNull()?.id) {
+                                                Modifier.focusRequester(sagaFirstFocusRequester)
+                                            } else {
+                                                Modifier
+                                            }
                                         )
                                     }
                                 }
@@ -886,132 +950,164 @@ private fun DetailsHeaderSection(
             val primaryActionFocusRequester = remember { FocusRequester() }
             val canPlay = item.isPlayable || episodes.any { it.isAvailableInJellyfin }
             val showReqButton = isSeerrConfigured && item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)
+            val showWatched = item.jellyfinId != null
+            val showRemind = !canPlay && item.overallAvailability == AvailabilityTier.UNKNOWN && item.tmdbId != null
+            val showTrailer = !item.youtubeTrailerKey.isNullOrBlank() || !item.localTrailerItemId.isNullOrBlank()
+            val showIssue = isSeerrConfigured && canPlay && item.tmdbId != null
+            val showRmProgress = item.resumePositionTicks > 0L && item.jellyfinId != null
+            val pendingReqId = item.uhdRequestId ?: item.hdRequestId
+            val showCancelReq = pendingReqId != null && !canPlay && item.overallAvailability.isRequestedOrDownloading
             LaunchedEffect(item.id) {
                 delay(60L)
                 runCatching { primaryActionFocusRequester.requestFocus() }
             }
 
-            LazyRow(
+            // Several actions remove their own button (Remove Progress, Cancel Request, Request once
+            // fulfilled, or a live-poll status change). When the focused button vanishes the remote
+            // is left with nothing focused, so hand focus back to the primary action. A plain var
+            // (not state) tracks the focused key so focus callbacks don't trigger recomposition.
+            val focusTracker = remember { ActionFocusTracker() }
+            val visibleActionKeys = buildSet {
+                if (canPlay) { add("act_play"); add("act_ext_player") }
+                if (showReqButton) add("act_req")
+                add("act_mylist")
+                if (showWatched) add("act_watched")
+                if (showRemind) add("act_remind")
+                if (showTrailer) add("act_trailer")
+                if (showIssue) add("act_issue")
+                if (showRmProgress) add("act_rm_progress")
+                if (showCancelReq) add("act_cancel_req")
+            }
+            val lostFocusKey = focusTracker.focusedKey?.takeIf { it !in visibleActionKeys }
+            LaunchedEffect(lostFocusKey) {
+                if (lostFocusKey != null) {
+                    focusTracker.focusedKey = null
+                    runCatching { primaryActionFocusRequester.requestFocus() }
+                }
+            }
+            fun Modifier.trackActionFocus(key: String): Modifier = onFocusChanged { fs ->
+                if (fs.isFocused) {
+                    focusTracker.focusedKey = key
+                } else if (focusTracker.focusedKey == key) {
+                    focusTracker.focusedKey = null
+                }
+            }
+
+            // A scrollable Row instead of a LazyRow: with ~10 buttons on a 960dp-wide TV screen the
+            // LazyRow disposed the off-screen Play button, so focus requests on it silently failed.
+            Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
             ) {
                 if (canPlay) {
-                    item(key = "act_play") {
-                        HeroPillButton(
-                            text = if (item.resumePositionTicks > 0L) strings.actionResume else strings.actionPlay,
-                            icon = Icons.Filled.PlayArrow,
-                            isPrimary = true,
-                            onClick = onPlay,
-                            modifier = Modifier.focusRequester(primaryActionFocusRequester)
-                        )
-                    }
-                    item(key = "act_ext_player") {
-                        HeroPillButton(
-                            text = strings.actionExternalPlayer,
-                            icon = Icons.AutoMirrored.Filled.OpenInNew,
-                            isPrimary = false,
-                            onClick = onOpenExternalPlayer
-                        )
-                    }
-                }
-
-                if (showReqButton) {
-                    item(key = "act_req") {
-                        if (canSubmitRequests) {
-                            HeroPillButton(
-                                text = if (canPlay) "Request 4K / More" else "Request HD / 4K",
-                                icon = Icons.Filled.Add,
-                                isPrimary = !canPlay,
-                                onClick = onRequestClick,
-                                modifier = if (!canPlay) Modifier.focusRequester(primaryActionFocusRequester) else Modifier
-                            )
-                        } else {
-                            HeroPillButton(
-                                text = strings.labelKidsLocked,
-                                icon = Icons.Filled.Lock,
-                                isPrimary = false,
-                                onClick = onRequestClick,
-                                modifier = if (!canPlay) Modifier.focusRequester(primaryActionFocusRequester) else Modifier
-                            )
-                        }
-                    }
-                }
-
-                item(key = "act_mylist") {
                     HeroPillButton(
-                        text = if (item.isInMyList) "In My List" else "My List",
-                        icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                        text = if (item.resumePositionTicks > 0L) strings.actionResume else strings.actionPlay,
+                        icon = Icons.Filled.PlayArrow,
+                        isPrimary = true,
+                        onClick = onPlay,
+                        modifier = Modifier
+                            .focusRequester(primaryActionFocusRequester)
+                            .trackActionFocus("act_play")
+                    )
+                    HeroPillButton(
+                        text = strings.actionExternalPlayer,
+                        icon = Icons.AutoMirrored.Filled.OpenInNew,
                         isPrimary = false,
-                        onClick = onToggleMyList,
-                        modifier = if (!canPlay && !showReqButton) Modifier.focusRequester(primaryActionFocusRequester) else Modifier
+                        onClick = onOpenExternalPlayer,
+                        modifier = Modifier.trackActionFocus("act_ext_player")
                     )
                 }
 
-                if (item.jellyfinId != null) {
-                    item(key = "act_watched") {
+                if (showReqButton) {
+                    val reqModifier = (if (!canPlay) Modifier.focusRequester(primaryActionFocusRequester) else Modifier)
+                        .trackActionFocus("act_req")
+                    if (canSubmitRequests) {
                         HeroPillButton(
-                            text = if (item.isWatched) strings.actionMarkUnwatched else strings.actionMarkWatched,
-                            icon = if (item.isWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                            text = if (canPlay) "Request 4K / More" else "Request HD / 4K",
+                            icon = Icons.Filled.Add,
+                            isPrimary = !canPlay,
+                            onClick = onRequestClick,
+                            modifier = reqModifier
+                        )
+                    } else {
+                        HeroPillButton(
+                            text = strings.labelKidsLocked,
+                            icon = Icons.Filled.Lock,
                             isPrimary = false,
-                            onClick = onToggleWatched
+                            onClick = onRequestClick,
+                            modifier = reqModifier
                         )
                     }
                 }
 
-                if (!canPlay && item.overallAvailability == AvailabilityTier.UNKNOWN && item.tmdbId != null) {
-                    item(key = "act_remind") {
-                        HeroPillButton(
-                            text = if (item.isReminderSet) "Reminder Set" else "Remind Me",
-                            icon = if (item.isReminderSet) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
-                            isPrimary = false,
-                            onClick = onToggleReminder
-                        )
-                    }
+                HeroPillButton(
+                    text = if (item.isInMyList) "In My List" else "My List",
+                    icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                    isPrimary = false,
+                    onClick = onToggleMyList,
+                    modifier = (if (!canPlay && !showReqButton) Modifier.focusRequester(primaryActionFocusRequester) else Modifier)
+                        .trackActionFocus("act_mylist")
+                )
+
+                if (showWatched) {
+                    HeroPillButton(
+                        text = if (item.isWatched) strings.actionMarkUnwatched else strings.actionMarkWatched,
+                        icon = if (item.isWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                        isPrimary = false,
+                        onClick = onToggleWatched,
+                        modifier = Modifier.trackActionFocus("act_watched")
+                    )
                 }
 
-                if (!item.youtubeTrailerKey.isNullOrBlank() || !item.localTrailerItemId.isNullOrBlank()) {
-                    item(key = "act_trailer") {
-                        HeroPillButton(
-                            text = strings.actionTrailer,
-                            icon = Icons.Filled.Theaters,
-                            isPrimary = false,
-                            onClick = onWatchTrailer
-                        )
-                    }
+                if (showRemind) {
+                    HeroPillButton(
+                        text = if (item.isReminderSet) "Reminder Set" else "Remind Me",
+                        icon = if (item.isReminderSet) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
+                        isPrimary = false,
+                        onClick = onToggleReminder,
+                        modifier = Modifier.trackActionFocus("act_remind")
+                    )
                 }
 
-                if (isSeerrConfigured && canPlay && item.tmdbId != null) {
-                    item(key = "act_issue") {
-                        HeroPillButton(
-                            text = strings.actionReportIssue,
-                            icon = Icons.Filled.Flag,
-                            isPrimary = false,
-                            onClick = onOpenReportIssue
-                        )
-                    }
+                if (showTrailer) {
+                    HeroPillButton(
+                        text = strings.actionTrailer,
+                        icon = Icons.Filled.Theaters,
+                        isPrimary = false,
+                        onClick = onWatchTrailer,
+                        modifier = Modifier.trackActionFocus("act_trailer")
+                    )
                 }
 
-                if (item.resumePositionTicks > 0L && item.jellyfinId != null) {
-                    item(key = "act_rm_progress") {
-                        HeroPillButton(
-                            text = "Remove Progress",
-                            icon = Icons.Filled.DeleteOutline,
-                            isPrimary = false,
-                            onClick = onRemoveFromContinueWatching
-                        )
-                    }
+                if (showIssue) {
+                    HeroPillButton(
+                        text = strings.actionReportIssue,
+                        icon = Icons.Filled.Flag,
+                        isPrimary = false,
+                        onClick = onOpenReportIssue,
+                        modifier = Modifier.trackActionFocus("act_issue")
+                    )
                 }
 
-                val pendingReqId = item.uhdRequestId ?: item.hdRequestId
-                if (pendingReqId != null && !canPlay && item.overallAvailability.isRequestedOrDownloading) {
-                    item(key = "act_cancel_req") {
-                        HeroPillButton(
-                            text = "Cancel Request",
-                            icon = Icons.Filled.Close,
-                            isPrimary = false,
-                            onClick = { onCancelRequest(pendingReqId) }
-                        )
-                    }
+                if (showRmProgress) {
+                    HeroPillButton(
+                        text = "Remove Progress",
+                        icon = Icons.Filled.DeleteOutline,
+                        isPrimary = false,
+                        onClick = onRemoveFromContinueWatching,
+                        modifier = Modifier.trackActionFocus("act_rm_progress")
+                    )
+                }
+
+                if (showCancelReq && pendingReqId != null) {
+                    HeroPillButton(
+                        text = "Cancel Request",
+                        icon = Icons.Filled.Close,
+                        isPrimary = false,
+                        onClick = { onCancelRequest(pendingReqId) },
+                        modifier = Modifier.trackActionFocus("act_cancel_req")
+                    )
                 }
             }
         }
@@ -1289,8 +1385,19 @@ private fun RequestQualityModal(
     val spec = SeerflixTokens.spec
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
 
-    var requestHd by remember { mutableStateOf(!item.hasHd) }
-    var request4k by remember { mutableStateOf(item.hasHd && !item.has4k && has4kServer) }
+    // Movies: a tier that is already requested/downloading (PENDING/PROCESSING) isn't "in library"
+    // yet, so the old !hasHd check pre-ticked and allowed re-requesting it (Seerr then 409s).
+    // Only offer tiers Seerr will accept. Series keep per-season requests enabled.
+    val isSeries = item.mediaType == MediaType.SERIES
+    val hdRequestable = if (isSeries) true else item.canRequestHd
+    val uhdRequestable = if (isSeries) true else item.canRequest4k
+    var requestHd by remember { mutableStateOf(if (isSeries) !item.hasHd else item.canRequestHd) }
+    var request4k by remember {
+        mutableStateOf(
+            if (isSeries) item.hasHd && !item.has4k && has4kServer
+            else !item.canRequestHd && item.canRequest4k && has4kServer
+        )
+    }
 
     val hdServers = remember(arrServers) { arrServers.filter { !it.is4k } }
     val uhdServers = remember(arrServers) { arrServers.filter { it.is4k } }
@@ -1351,9 +1458,13 @@ private fun RequestQualityModal(
             // HD Option
             QualityToggleRow(
                 title = "HD (1080p)",
-                subtitle = if (item.hasHd && item.mediaType == MediaType.MOVIE) "Already in library" else (selectedHdServer?.name ?: "Standard Radarr / Sonarr profile"),
-                checked = requestHd,
-                enabled = item.mediaType == MediaType.SERIES || !item.hasHd,
+                subtitle = when {
+                    !isSeries && item.hasHd -> "Already in library"
+                    !hdRequestable -> "Already requested"
+                    else -> selectedHdServer?.name ?: "Standard Radarr / Sonarr profile"
+                },
+                checked = requestHd && hdRequestable,
+                enabled = hdRequestable,
                 onToggle = { requestHd = !requestHd }
             )
 
@@ -1373,9 +1484,13 @@ private fun RequestQualityModal(
             if (has4kServer) {
                 QualityToggleRow(
                     title = "4K Ultra HD (2160p)",
-                    subtitle = if (item.has4k && item.mediaType == MediaType.MOVIE) "Already in library" else (selectedUhdServer?.name ?: "4K Radarr / Sonarr profile"),
-                    checked = request4k,
-                    enabled = item.mediaType == MediaType.SERIES || !item.has4k,
+                    subtitle = when {
+                        !isSeries && item.has4k -> "Already in library"
+                        !uhdRequestable -> "Already requested"
+                        else -> selectedUhdServer?.name ?: "4K Radarr / Sonarr profile"
+                    },
+                    checked = request4k && uhdRequestable,
+                    enabled = uhdRequestable,
                     onToggle = { request4k = !request4k }
                 )
 
@@ -1404,7 +1519,7 @@ private fun RequestQualityModal(
                     fontWeight = FontWeight.SemiBold
                 )
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(item.seasons, key = { it.seasonNumber }) { s ->
+                    itemsIndexed(item.seasons, key = { idx, season -> "req_season_${idx}_${season.seasonNumber}" }) { _, s ->
                         val isPicked = s.seasonNumber in selectedSeasons
                         SeasonTabChip(
                             label = "S${s.seasonNumber}",
@@ -1434,11 +1549,18 @@ private fun RequestQualityModal(
                     icon = Icons.Filled.Check,
                     isPrimary = true,
                     onClick = {
-                        if (!isSubmitting && (requestHd || request4k)) {
-                            val seasonsList = if (item.mediaType == MediaType.SERIES) selectedSeasons.toList() else null
+                        // has4kServer can flip to false after the modal opened (it loads async and
+                        // defaults to true): never submit a hidden 4K tier.
+                        val effectiveHd = requestHd && hdRequestable
+                        val effective4k = request4k && uhdRequestable && has4kServer
+                        // An empty season selection would be sent as "no seasons", which the
+                        // repository expands to *every* season. Require at least one.
+                        val seasonsOk = !isSeries || item.seasons.isEmpty() || selectedSeasons.isNotEmpty()
+                        if (!isSubmitting && (effectiveHd || effective4k) && seasonsOk) {
+                            val seasonsList = if (isSeries) selectedSeasons.toList() else null
                             onSubmit(
-                                requestHd,
-                                request4k,
+                                effectiveHd,
+                                effective4k,
                                 seasonsList,
                                 selectedHdServer?.id,
                                 selectedHdProfileId,
@@ -1452,7 +1574,7 @@ private fun RequestQualityModal(
                     modifier = Modifier.weight(1f).focusRequester(sendRequestFocusRequester)
                 )
                 HeroPillButton(
-                    text = "Cancel",
+                    text = AppStrings.current.actionCancel,
                     icon = Icons.Filled.Close,
                     isPrimary = false,
                     onClick = onDismiss,
@@ -1588,7 +1710,7 @@ private fun ReportIssueModal(
                     modifier = Modifier.weight(1f).focusRequester(submitIssueFocusRequester)
                 )
                 HeroPillButton(
-                    text = "Cancel",
+                    text = AppStrings.current.actionCancel,
                     icon = Icons.Filled.Close,
                     isPrimary = false,
                     onClick = onDismiss,
@@ -1637,4 +1759,9 @@ private fun QualityToggleRow(
             Text(subtitle, color = colors.textSecondary, fontSize = 12.sp)
         }
     }
+}
+
+/** Holds which header action button currently has focus; deliberately not snapshot state. */
+private class ActionFocusTracker {
+    var focusedKey: String? = null
 }

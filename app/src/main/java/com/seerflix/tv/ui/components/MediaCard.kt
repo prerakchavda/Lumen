@@ -760,7 +760,9 @@ fun ContinueWatchingCard(
                         text = item.episodeLabel,
                         color = colors.white,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }

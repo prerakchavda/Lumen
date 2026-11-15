@@ -63,7 +63,8 @@ interface JellyfinApi {
         @Query("SortOrder") sortOrder: String = "Descending",
         @Query("Limit") limit: Int = 500,
         @Query("ParentId") parentId: String? = null,
-        @Query("MaxOfficialRating") maxOfficialRating: String? = null
+        @Query("MaxOfficialRating") maxOfficialRating: String? = null,
+        @Query("StartIndex") startIndex: Int? = null
     ): JellyfinItemsResponse
 
     @GET("Users/{userId}/Items")
@@ -154,7 +155,9 @@ interface JellyfinApi {
         @Path("seriesId") seriesId: String,
         @Query("UserId") userId: String,
         @Query("SeasonId") seasonId: String? = null,
-        @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData"
+        @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData",
+        // Exclude missing/virtual (not yet downloaded) episodes so Up Next never picks one.
+        @Query("IsMissing") isMissing: Boolean? = false
     ): JellyfinItemsResponse
 
     @GET("Items/{itemId}/Similar")

@@ -22,23 +22,27 @@ import com.seerflix.tv.core.model.SyncPlayGroup
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
+import com.seerflix.tv.core.network.MediaClient
 import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.player.ResolvedPreviewStream
 import com.seerflix.tv.core.player.SyncPlayManager
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import com.seerflix.tv.core.tv.TvChannelSyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
 import javax.inject.Inject
 
 enum class HomeTab(val label: String, val filter: MediaType?) {
@@ -114,7 +118,9 @@ class HomeViewModel @Inject constructor(
     private val tvChannelSyncManager: TvChannelSyncManager,
     private val syncPlayManager: SyncPlayManager,
     private val appUpdateChecker: AppUpdateChecker,
-    private val prefs: SessionPreferences
+    private val prefs: SessionPreferences,
+    /** Honours the self-signed-certificate toggle; used by the hero trailer preview player. */
+    @MediaClient val previewHttpClient: OkHttpClient
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -122,6 +128,16 @@ class HomeViewModel @Inject constructor(
 
     private var focusPreviewJob: Job? = null
     private var feedbackJob: Job? = null
+    private var catalogJob: Job? = null
+    private var collectionJob: Job? = null
+
+    /** Monotonic token so a superseded catalog load can never overwrite a newer one. */
+    @Volatile
+    private var catalogGeneration = 0
+
+    /** Tab whose content is currently held in [HomeUiState.rows]/collections/live TV. */
+    @Volatile
+    private var lastLoadedTab: HomeTab? = null
 
     init {
         viewModelScope.launch {
@@ -259,6 +275,10 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.leaveGroup()
                 .onSuccess { showActionFeedback("Left SyncPlay room") }
+                .onFailure { err ->
+                    if (err is CancellationException) throw err
+                    showActionFeedback("Could not leave SyncPlay: ${err.message ?: "Error"}")
+                }
         }
     }
 
@@ -282,12 +302,16 @@ class HomeViewModel @Inject constructor(
 
     fun selectTab(tab: HomeTab) {
         val state = _uiState.value
-        val alreadyLoaded = when (tab) {
-            HomeTab.COLLECTIONS -> state.collections.isNotEmpty()
-            HomeTab.LIVE_TV -> state.liveTvChannels.isNotEmpty() || state.liveTvRecordings.isNotEmpty()
-            else -> state.rows.isNotEmpty()
+        if (state.activeTab == tab) {
+            // Re-selecting the tab that is already loading: don't restart the same request.
+            if (state.isLoading && catalogJob?.isActive == true) return
+            val alreadyLoaded = lastLoadedTab == tab && when (tab) {
+                HomeTab.COLLECTIONS -> state.collections.isNotEmpty()
+                HomeTab.LIVE_TV -> state.liveTvChannels.isNotEmpty() || state.liveTvRecordings.isNotEmpty()
+                else -> state.rows.isNotEmpty()
+            }
+            if (alreadyLoaded) return
         }
-        if (state.activeTab == tab && alreadyLoaded) return
         loadCatalog(tab, GenreFilterOption.ALL_GENRES.first(), state.availabilityFilter)
     }
 
@@ -310,6 +334,53 @@ class HomeViewModel @Inject constructor(
             availabilityFilter = _uiState.value.availabilityFilter,
             forceRefresh = true
         )
+    }
+
+    private var continueWatchingJob: Job? = null
+
+    /**
+     * Called whenever Home becomes visible again (e.g. back from the player). Only swaps the
+     * Continue Watching row in place so focus and the rest of the page stay put.
+     */
+    fun refreshContinueWatching() {
+        val state = _uiState.value
+        if (state.activeTab != HomeTab.HOME || state.availabilityFilter != AvailabilityFilter.ALL) return
+        if (lastLoadedTab != HomeTab.HOME || state.isLoading || catalogJob?.isActive == true) return
+        if (continueWatchingJob?.isActive == true) return
+        val profile = state.profile ?: return
+        continueWatchingJob = viewModelScope.launch(Dispatchers.IO) {
+            val items = try {
+                catalogRepository.loadContinueWatchingItems(profile.jellyfinUserId, profile)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return@launch
+            }
+            _uiState.update { s ->
+                if (s.activeTab != HomeTab.HOME || s.isLoading) return@update s
+                val idx = s.rows.indexOfFirst { it.id == "continue_watching" }
+                val newRows = when {
+                    idx >= 0 && items.isEmpty() -> s.rows.filterIndexed { i, _ -> i != idx }
+                    idx >= 0 -> s.rows.toMutableList().also { it[idx] = it[idx].copy(items = items) }
+                    items.isNotEmpty() -> {
+                        val insertAt = if (s.rows.firstOrNull()?.id == "ready_to_watch") 1 else 0
+                        s.rows.toMutableList().also {
+                            it.add(
+                                insertAt,
+                                CatalogRow(
+                                    id = "continue_watching",
+                                    title = "Continue Watching",
+                                    style = RowStyle.CONTINUE_WATCHING,
+                                    items = items
+                                )
+                            )
+                        }
+                    }
+                    else -> s.rows
+                }
+                if (newRows == s.rows) s else s.copy(rows = newRows)
+            }
+        }
     }
 
     fun togglePreviewMute() {
@@ -376,6 +447,9 @@ class HomeViewModel @Inject constructor(
                                     row.items.filterNot { it.id == target.id }
                                 }
                                 row.copy(items = nextItems)
+                            } else if (!inList && (row.id == "my_list_shows" || row.id == "my_list_movies")) {
+                                // My List tab split rows must also drop the removed title.
+                                row.copy(items = row.items.filterNot { it.id == target.id })
                             } else {
                                 row.copy(
                                     items = row.items.map {
@@ -391,6 +465,10 @@ class HomeViewModel @Inject constructor(
                         if (inList) "Added \"${target.title}\" to My List"
                         else "Removed \"${target.title}\" from My List"
                     )
+                }
+                .onFailure { err ->
+                    if (err is CancellationException) throw err
+                    showActionFeedback("Couldn't update My List: ${err.message ?: "Error"}")
                 }
         }
     }
@@ -485,6 +563,10 @@ class HomeViewModel @Inject constructor(
                         state.copy(rows = nextRows)
                     }
                 }
+                .onFailure { err ->
+                    if (err is CancellationException) throw err
+                    showActionFeedback("Couldn't remove from Continue Watching: ${err.message ?: "Error"}")
+                }
         }
     }
 
@@ -500,13 +582,22 @@ class HomeViewModel @Inject constructor(
                 collectionDetailsLoading = true
             )
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            val details = catalogRepository.loadBoxSetDetails(
-                userId = profile.jellyfinUserId,
-                boxSetId = boxSetId,
-                fallbackTitle = title,
-                tmdbCollectionIdHint = tmdbCollectionId
-            )
+        collectionJob?.cancel()
+        collectionJob = viewModelScope.launch(Dispatchers.IO) {
+            val details = try {
+                catalogRepository.loadBoxSetDetails(
+                    userId = profile.jellyfinUserId,
+                    boxSetId = boxSetId,
+                    fallbackTitle = title,
+                    tmdbCollectionIdHint = tmdbCollectionId
+                )
+            } catch (e: CancellationException) {
+                ensureActive() // rethrow if the dialog was dismissed / superseded
+                null
+            } catch (e: Exception) {
+                // Never leave the dialog spinning forever (or crash the app) on a network error.
+                null
+            }
             _uiState.update { state ->
                 if (state.activeCollectionDetails?.id != boxSetId) state
                 else state.copy(
@@ -518,6 +609,7 @@ class HomeViewModel @Inject constructor(
     }
 
     fun dismissCollectionDetails() {
+        collectionJob?.cancel()
         _uiState.update { it.copy(activeCollectionDetails = null, collectionDetailsLoading = false) }
     }
 
@@ -678,7 +770,11 @@ class HomeViewModel @Inject constructor(
         availabilityFilter: AvailabilityFilter,
         forceRefresh: Boolean = false
     ) {
-        viewModelScope.launch(Dispatchers.IO) {
+        // Cancel any in-flight load so rapid tab/filter switching can't race and let a stale
+        // (slower) response overwrite the rows of the tab the user actually selected.
+        catalogJob?.cancel()
+        val generation = ++catalogGeneration
+        catalogJob = viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     activeTab = tab,
@@ -696,8 +792,8 @@ class HomeViewModel @Inject constructor(
             }
             _uiState.update { it.copy(profile = profile, isSeerrConfigured = prefs.isSeerrConfigured) }
 
-            runCatching {
-                coroutineScope {
+            val result: Result<CatalogLoadBundle> = try {
+                Result.success(coroutineScope {
                     val collectionsDeferred = async {
                         if (tab == HomeTab.COLLECTIONS) {
                             catalogRepository.loadBoxSetCollections(profile.jellyfinUserId)
@@ -796,8 +892,21 @@ class HomeViewModel @Inject constructor(
                         has4kMovie = has4kMovieDeferred.await(),
                         has4kTv = has4kTvDeferred.await()
                     )
-                }
-            }.onSuccess { bundle ->
+                })
+            } catch (e: CancellationException) {
+                // Superseded by a newer load (or ViewModel cleared): rethrow, never surface as an
+                // error. A stray CancellationException from a child (e.g. a timeout) while this job
+                // is still active is a real failure and must not leave isLoading stuck at true.
+                ensureActive()
+                Result.failure(e)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            ensureActive()
+            if (generation != catalogGeneration) return@launch
+
+            result.onSuccess { bundle ->
+                lastLoadedTab = tab
                 _uiState.update {
                     it.copy(
                         rows = bundle.rows,
@@ -824,11 +933,31 @@ class HomeViewModel @Inject constructor(
                     }
                 }
             }.onFailure { err ->
+                val message = UnifiedCatalogRepository.formatHttpError(err, "Failed to load catalog")
+                val keepsCurrentContent = lastLoadedTab == tab
                 _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load catalog")
-                    )
+                    if (keepsCurrentContent) {
+                        // Refresh of the visible tab failed: keep what's on screen.
+                        it.copy(isLoading = false, errorMessage = message)
+                    } else {
+                        // The content on screen belongs to another tab; clear it so the
+                        // error + Retry state is shown instead of mislabelled stale rows.
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = message,
+                            rows = emptyList(),
+                            collections = emptyList(),
+                            liveTvChannels = emptyList(),
+                            liveTvRecordings = emptyList(),
+                            featuredItem = null,
+                            previewStream = null
+                        )
+                    }
+                }
+                if (keepsCurrentContent) {
+                    // The full-screen error UI only appears when nothing is loaded, so tell the
+                    // user a background refresh failed instead of failing silently.
+                    showActionFeedback(message)
                 }
             }
         }

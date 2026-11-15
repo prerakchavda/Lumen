@@ -10,13 +10,14 @@ import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -33,6 +34,8 @@ data class RequestsUiState(
     val allRequests: List<MediaRequestSummary> = emptyList(),
     val isAdmin: Boolean = false,
     val isSeerrConfigured: Boolean = true,
+    /** Kids profile that isn't allowed to request: hide the household's request list entirely. */
+    val isKidsLocked: Boolean = false,
     val busyRequestId: Int? = null,
     val actionMessage: String? = null,
     val isLoading: Boolean = true,
@@ -63,13 +66,27 @@ class RequestsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(RequestsUiState())
     val uiState: StateFlow<RequestsUiState> = _uiState.asStateFlow()
 
+    private var refreshJob: Job? = null
+    private var hasBeenVisible = false
+
     init {
         refresh()
-        viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                delay(15_000L)
-                refresh(silent = true)
-            }
+    }
+
+    /**
+     * Polls every 15s for as long as the caller's coroutine is active. The screen runs this inside
+     * repeatOnLifecycle(STARTED), so polling stops while Details/Player is on top of Requests (the
+     * old init-loop kept hitting Seerr every 15s for as long as the entry sat in the back stack).
+     */
+    suspend fun autoRefreshWhileVisible() {
+        if (hasBeenVisible) {
+            // Coming back (e.g. after requesting from Details): refresh right away.
+            refresh(silent = true)
+        }
+        hasBeenVisible = true
+        while (true) {
+            delay(15_000L)
+            refresh(silent = true)
         }
     }
 
@@ -77,15 +94,27 @@ class RequestsViewModel @Inject constructor(
         _uiState.update { it.copy(filter = filter) }
     }
 
-    fun refresh(silent: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val isAdmin = authRepository.activeProfileFlow.first()?.isAdmin == true
+    /**
+     * @param force replace an in-flight refresh. Background polls never interrupt a running load
+     * (cancelling a user-triggered load would otherwise leave the spinner up).
+     */
+    fun refresh(silent: Boolean = false, force: Boolean = !silent) {
+        if (!force && refreshJob?.isActive == true) return
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch(Dispatchers.IO) {
+            val profile = authRepository.activeProfileFlow.first()
+            val kidsMode = profile?.kidsMode == true
+            // Approve/Decline are admin actions; never expose them on a kids profile even if the
+            // underlying Jellyfin account is an admin.
+            val isAdmin = profile?.isAdmin == true && !kidsMode
+            val kidsLocked = profile != null && !profile.canSubmitRequests
             val seerrConfigured = sessionPreferences.isSeerrConfigured
-            if (!seerrConfigured) {
+            if (!seerrConfigured || kidsLocked) {
                 _uiState.update {
                     it.copy(
                         isAdmin = isAdmin,
-                        isSeerrConfigured = false,
+                        isSeerrConfigured = seerrConfigured,
+                        isKidsLocked = kidsLocked,
                         allRequests = emptyList(),
                         isLoading = false,
                         errorMessage = null
@@ -94,22 +123,37 @@ class RequestsViewModel @Inject constructor(
                 return@launch
             }
             if (!silent) {
-                _uiState.update { it.copy(isLoading = true, errorMessage = null, isAdmin = isAdmin, isSeerrConfigured = true) }
+                _uiState.update {
+                    it.copy(
+                        isLoading = true,
+                        errorMessage = null,
+                        isAdmin = isAdmin,
+                        isSeerrConfigured = true,
+                        isKidsLocked = false
+                    )
+                }
             }
-            catalogRepository.loadRequestsHub()
+            val result = catalogRepository.loadRequestsHub()
+            // loadRequestsHub() wraps everything (CancellationException included) in a Result, so
+            // bail out here rather than writing a superseded or cancelled result into the state.
+            ensureActive()
+            result
                 .onSuccess { list ->
                     _uiState.update {
                         it.copy(
-                            allRequests = list,
+                            allRequests = list.distinctBy { req -> req.requestId },
                             isAdmin = isAdmin,
                             isSeerrConfigured = true,
+                            isKidsLocked = false,
                             isLoading = false,
                             errorMessage = null
                         )
                     }
                 }
                 .onFailure { err ->
-                    if (!silent) {
+                    // Background polls stay quiet, unless they replaced a load that was showing the
+                    // spinner (otherwise it would spin forever).
+                    if (!silent || _uiState.value.isLoading) {
                         _uiState.update {
                             it.copy(
                                 isLoading = false,
@@ -122,12 +166,21 @@ class RequestsViewModel @Inject constructor(
     }
 
     fun approveRequest(requestId: Int) {
+        if (_uiState.value.busyRequestId != null) return
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
             catalogRepository.approveRequest(requestId)
                 .onSuccess {
-                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Request #$requestId approved") }
-                    refresh(silent = true)
+                    // Reflect the new status immediately (Seerr: 2 = approved) so the admin buttons
+                    // go away together with the busy state, then reconcile with the server.
+                    _uiState.update {
+                        it.copy(
+                            busyRequestId = null,
+                            actionMessage = "Request #$requestId approved",
+                            allRequests = it.allRequests.withRequestStatus(requestId, 2)
+                        )
+                    }
+                    refresh(silent = true, force = true)
                 }
                 .onFailure { err ->
                     _uiState.update {
@@ -141,12 +194,20 @@ class RequestsViewModel @Inject constructor(
     }
 
     fun declineRequest(requestId: Int) {
+        if (_uiState.value.busyRequestId != null) return
         viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
             catalogRepository.declineRequest(requestId)
                 .onSuccess {
-                    _uiState.update { it.copy(busyRequestId = null, actionMessage = "Request #$requestId declined") }
-                    refresh(silent = true)
+                    // Seerr: 3 = declined.
+                    _uiState.update {
+                        it.copy(
+                            busyRequestId = null,
+                            actionMessage = "Request #$requestId declined",
+                            allRequests = it.allRequests.withRequestStatus(requestId, 3)
+                        )
+                    }
+                    refresh(silent = true, force = true)
                 }
                 .onFailure { err ->
                     _uiState.update {
@@ -158,5 +219,8 @@ class RequestsViewModel @Inject constructor(
                 }
         }
     }
+
+    private fun List<MediaRequestSummary>.withRequestStatus(requestId: Int, status: Int) =
+        map { if (it.requestId == requestId) it.copy(requestStatus = status) else it }
 }
 

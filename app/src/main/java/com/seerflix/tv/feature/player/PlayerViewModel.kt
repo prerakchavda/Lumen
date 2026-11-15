@@ -16,7 +16,7 @@ import com.seerflix.tv.core.model.QualityPreset
 import com.seerflix.tv.core.model.RemoteSubtitleOption
 import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.SyncPlayGroup
-import com.seerflix.tv.core.network.GeneralClient
+import com.seerflix.tv.core.network.MediaClient
 import com.seerflix.tv.core.player.AssCue
 import com.seerflix.tv.core.player.AssSubtitleParser
 import com.seerflix.tv.core.player.ExternalPlayerHelper
@@ -25,6 +25,7 @@ import com.seerflix.tv.core.player.SyncPlayManager
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -81,7 +82,9 @@ class PlayerViewModel @Inject constructor(
     private val catalogRepository: UnifiedCatalogRepository,
     private val trailerResolver: YouTubeTrailerResolver,
     private val syncPlayManager: SyncPlayManager,
-    @GeneralClient private val okHttpClient: OkHttpClient
+    // Honours the per-server self-signed certificate toggle; also handed to ExoPlayer so
+    // streams and side-loaded subtitles work against homelab HTTPS servers.
+    @MediaClient val mediaHttpClient: OkHttpClient
 ) : ViewModel() {
 
     private val initialItemId: String = savedStateHandle.get<String>("itemId").orEmpty()
@@ -95,6 +98,10 @@ class PlayerViewModel @Inject constructor(
 
     private var activeUserId: String = ""
     private var activeSeriesTmdbId: Int? = null
+
+    /** The in-flight item/trailer load; a newer load cancels it so a stale result can't win. */
+    private var loadJob: Job? = null
+    private var assLoadJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -110,11 +117,13 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun loadTrailer(title: String, localTrailerId: String?, youtubeKey: String?) {
-        viewModelScope.launch {
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null, subtitleOffsetMs = 0L, activeAssCues = emptyList()) }
             val resolved = trailerResolver.resolvePreview(
                 localTrailerId = localTrailerId,
-                youtubeKey = youtubeKey
+                youtubeKey = youtubeKey,
+                timeoutMs = TRAILER_RESOLVE_TIMEOUT_MS
             )
             if (resolved == null) {
                 _uiState.update {
@@ -155,7 +164,9 @@ class PlayerViewModel @Inject constructor(
             return
         }
         val isSameItem = _uiState.value.session?.itemId == itemId
-        viewModelScope.launch {
+        if (!isSameItem) assLoadJob?.cancel()
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     isLoading = true,
@@ -233,14 +244,17 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun retryPlayback() {
+    fun retryPlayback(currentPosMs: Long = 0L) {
         val currentSession = _uiState.value.session
         if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
+            // A cached YouTube stream URL may have expired (403) — resolve a fresh one.
+            trailerResolver.evict(trailerYoutubeKey)
             loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
         } else {
             loadItem(
                 itemId = currentSession?.itemId ?: initialItemId,
                 qualityOverride = _uiState.value.selectedQuality,
+                resumeOverrideMs = currentPosMs.takeIf { it > 0L && currentSession != null },
                 mediaSourceIdOverride = _uiState.value.selectedMediaSourceId ?: initialMediaSourceId
             )
         }
@@ -294,11 +308,12 @@ class PlayerViewModel @Inject constructor(
     }
 
     private fun loadAssSubtitleFile(extFile: ExternalSubtitleFile) {
-        viewModelScope.launch {
+        assLoadJob?.cancel()
+        assLoadJob = viewModelScope.launch {
             val cues = withContext(Dispatchers.IO) {
                 runCatching {
                     val req = Request.Builder().url(extFile.url).build()
-                    okHttpClient.newCall(req).execute().use { resp ->
+                    mediaHttpClient.newCall(req).execute().use { resp ->
                         if (!resp.isSuccessful) emptyList()
                         else AssSubtitleParser.parse(resp.body?.string().orEmpty())
                     }
@@ -316,6 +331,7 @@ class PlayerViewModel @Inject constructor(
     fun selectExternalAssTrack(extFile: ExternalSubtitleFile?, currentPosMs: Long) {
         val session = _uiState.value.session ?: return
         if (extFile == null) {
+            assLoadJob?.cancel()
             val wasBurnIn = _uiState.value.burnInSubtitleIndex != null
             _uiState.update {
                 it.copy(activeAssCues = emptyList(), activeAssSubtitleIndex = null, burnInSubtitleIndex = null)
@@ -366,7 +382,9 @@ class PlayerViewModel @Inject constructor(
                 }
             }
             AssSubtitleMode.PLAIN -> {
-                if (_uiState.value.burnInSubtitleIndex != null) {
+                // ASS/SSA files are only side-loaded into ExoPlayer as plain text tracks when the
+                // media item is built in PLAIN mode, so the item has to be reloaded for them to appear.
+                if (_uiState.value.burnInSubtitleIndex != null || firstAss != null) {
                     reportStopped(currentPosMs)
                     loadItem(session.itemId, resumeOverrideMs = currentPosMs, burnInSubtitleOverride = null)
                 }
@@ -606,8 +624,11 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun reportProgress(positionMs: Long, isPaused: Boolean) {
-        val session = _uiState.value.session ?: return
-        if (session.isTrailer) return
+        val state = _uiState.value
+        val session = state.session ?: return
+        // While a new item/version is loading the old session has already been reported as stopped;
+        // a late progress report would resurrect it on the server.
+        if (session.isTrailer || state.isLoading || state.errorMessage != null) return
         viewModelScope.launch {
             playbackManager.reportProgress(session, positionMs * 10_000L, isPaused)
         }
@@ -616,9 +637,13 @@ class PlayerViewModel @Inject constructor(
     fun reportStopped(positionMs: Long) {
         val session = _uiState.value.session ?: return
         if (session.isTrailer) return
-        viewModelScope.launch {
-            playbackManager.reportStopped(session, positionMs * 10_000L)
-        }
+        // Not viewModelScope: this is called from the screen's onDispose right before the
+        // ViewModel is cleared, which would cancel the request before it is sent.
+        playbackManager.reportStoppedDetached(session, positionMs.coerceAtLeast(0L) * 10_000L)
+    }
+
+    private companion object {
+        const val TRAILER_RESOLVE_TIMEOUT_MS = 15_000L
     }
 }
 

@@ -1,9 +1,11 @@
 package com.seerflix.tv.feature.profiles
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -47,14 +51,22 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
+import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.ui.theme.SeerflixTokens
@@ -66,6 +78,10 @@ fun ProfilePickerScreen(
     viewModel: ProfilePickerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    // Back leaves "Manage Profiles" mode first instead of popping (or exiting) the whole screen.
+    BackHandler(enabled = state.isManageMode && state.editingProfile == null && state.pinChallengeProfile == null) {
+        viewModel.toggleManageMode()
+    }
     ProfilePickerContent(
         state = state,
         onOpenSettings = onOpenSettings,
@@ -162,9 +178,15 @@ fun ProfilePickerContent(
 
             Spacer(Modifier.height(40.dp))
 
+            // Scrollable so households with many profiles don't push tiles (and "Add Profile")
+            // off-screen where D-pad focus can reach them but the user can't see them. The inner
+            // padding leaves room for the 1.08x focus scale so edge tiles aren't clipped.
             Row(
                 horizontalArrangement = Arrangement.spacedBy(28.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 48.dp, vertical = 12.dp)
             ) {
                 state.profiles.forEachIndexed { idx, profile ->
                     NetflixAvatarTile(
@@ -207,10 +229,12 @@ fun ProfilePickerContent(
     if (state.showAuthDialog) {
         val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
         val authFocusRequester = remember { FocusRequester() }
-        LaunchedEffect(state.usePasswordMode) {
-            runCatching { authFocusRequester.requestFocus() }
-        }
         Dialog(onDismissRequest = onCloseAuthDialog) {
+            // Requested from inside the dialog's own composition so the target exists in the
+            // dialog window when focus is requested.
+            LaunchedEffect(state.usePasswordMode) {
+                runCatching { authFocusRequester.requestFocus() }
+            }
             Column(
                 modifier = Modifier
                     .width(480.dp)
@@ -291,6 +315,7 @@ fun ProfilePickerContent(
                         onValueChange = onUpdateUsername,
                         label = { Text("Jellyfin Username") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = colors.white,
                             unfocusedTextColor = colors.textPrimary,
@@ -305,6 +330,12 @@ fun ProfilePickerContent(
                         label = { Text("Password") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
+                        // Password keyboard (no suggestions) and "Done" submits straight from the IME.
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(onDone = { onSignInWithPassword() }),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedTextColor = colors.white,
                             unfocusedTextColor = colors.textPrimary,
@@ -338,7 +369,7 @@ fun ProfilePickerContent(
                             .then(if (!state.usePasswordMode) Modifier.focusRequester(authFocusRequester) else Modifier)
                     )
                     DialogButton(
-                        text = "Cancel",
+                        text = AppStrings.current.actionCancel,
                         isPrimary = false,
                         onClick = onCloseAuthDialog,
                         modifier = Modifier.weight(1f)
@@ -436,6 +467,34 @@ fun PinEntryCard(
             .clip(dialogShape)
             .background(colors.dialogSurface)
             .border(1.dp, colors.badgeBorder, dialogShape)
+            // Accept the remote's number keys (and Del) directly, not just the on-screen keypad.
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val digit = when (event.key) {
+                    Key.Zero, Key.NumPad0 -> "0"
+                    Key.One, Key.NumPad1 -> "1"
+                    Key.Two, Key.NumPad2 -> "2"
+                    Key.Three, Key.NumPad3 -> "3"
+                    Key.Four, Key.NumPad4 -> "4"
+                    Key.Five, Key.NumPad5 -> "5"
+                    Key.Six, Key.NumPad6 -> "6"
+                    Key.Seven, Key.NumPad7 -> "7"
+                    Key.Eight, Key.NumPad8 -> "8"
+                    Key.Nine, Key.NumPad9 -> "9"
+                    else -> null
+                }
+                when {
+                    digit != null -> {
+                        onDigit(digit)
+                        true
+                    }
+                    event.key == Key.Backspace -> {
+                        onBackspace()
+                        true
+                    }
+                    else -> false
+                }
+            }
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -502,7 +561,7 @@ fun PinEntryCard(
         }
 
         DialogButton(
-            text = "Cancel",
+            text = AppStrings.current.actionCancel,
             isPrimary = false,
             onClick = onDismiss,
             modifier = Modifier.fillMaxWidth()
@@ -521,9 +580,6 @@ private fun ProfileSettingsDialog(
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val saveFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        runCatching { saveFocusRequester.requestFocus() }
-    }
 
     var activeSection by remember(profile.id) { mutableStateOf(0) } // 0=Appearance, 1=Theater, 2=Kids&PIN
 
@@ -548,8 +604,15 @@ private fun ProfileSettingsDialog(
     var allowKidsRequests by remember(profile.id) { mutableStateOf(profile.allowKidsRequests) }
     var pinCode by remember(profile.id) { mutableStateOf("") }
     var clearPin by remember(profile.id) { mutableStateOf(false) }
+    var pinValidationError by remember(profile.id) { mutableStateOf<String?>(null) }
+    var confirmDelete by remember(profile.id) { mutableStateOf(false) }
 
     Dialog(onDismissRequest = onDismiss) {
+        // Requested from inside the dialog's own composition so the Save button exists in the
+        // dialog window when focus is requested.
+        LaunchedEffect(Unit) {
+            runCatching { saveFocusRequester.requestFocus() }
+        }
         Column(
             modifier = Modifier
                 .width(620.dp)
@@ -771,11 +834,16 @@ private fun ProfileSettingsDialog(
                             onValueChange = { raw ->
                                 val digits = raw.filter { it.isDigit() }.take(4)
                                 pinCode = digits
+                                pinValidationError = null
                                 if (digits.isNotEmpty()) clearPin = false
                             },
                             placeholder = { Text(if (profile.hasPin && !clearPin) "•••• (enter new 4 digits)" else "4 digits (optional)") },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.NumberPassword,
+                                imeAction = ImeAction.Done
+                            ),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = colors.white,
                                 unfocusedTextColor = colors.textPrimary,
@@ -788,10 +856,20 @@ private fun ProfileSettingsDialog(
                             DialogButton(
                                 text = "Remove PIN",
                                 isPrimary = false,
-                                onClick = { clearPin = true; pinCode = "" },
+                                onClick = {
+                                    clearPin = true
+                                    pinCode = ""
+                                    pinValidationError = null
+                                    // This button disappears once clicked; move focus to Save
+                                    // instead of leaving the remote with nothing focused.
+                                    runCatching { saveFocusRequester.requestFocus() }
+                                },
                                 modifier = Modifier.width(120.dp)
                             )
                         }
+                    }
+                    pinValidationError?.let { err ->
+                        Text(err, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -802,6 +880,13 @@ private fun ProfileSettingsDialog(
                     text = "Save",
                     isPrimary = true,
                     onClick = {
+                        // Previously a 1–3 digit PIN was silently ignored on save, leaving the
+                        // profile unlocked while the user believed it was protected.
+                        if (pinCode.isNotEmpty() && pinCode.length != 4) {
+                            pinValidationError = "PIN must be exactly 4 digits."
+                            activeSection = 2
+                            return@DialogButton
+                        }
                         val updated = profile.copy(
                             autoplayNextEpisode = autoplayNext,
                             autoplayPreviews = autoplayPreviews,
@@ -825,14 +910,17 @@ private fun ProfileSettingsDialog(
                     },
                     modifier = Modifier.weight(1f).focusRequester(saveFocusRequester)
                 )
+                // Two-step delete: one stray OK press shouldn't wipe a profile and its My List.
                 DialogButton(
-                    text = "Delete Profile",
+                    text = if (confirmDelete) "Confirm Delete" else "Delete Profile",
                     isPrimary = false,
-                    onClick = onRemove,
+                    onClick = {
+                        if (confirmDelete) onRemove() else confirmDelete = true
+                    },
                     modifier = Modifier.weight(1f)
                 )
                 DialogButton(
-                    text = "Cancel",
+                    text = AppStrings.current.actionCancel,
                     isPrimary = false,
                     onClick = onDismiss,
                     modifier = Modifier.weight(1f)

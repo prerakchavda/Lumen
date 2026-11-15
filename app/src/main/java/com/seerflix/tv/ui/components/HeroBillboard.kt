@@ -43,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,22 +61,31 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import coil3.compose.AsyncImage
+import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.player.ResolvedPreviewStream
 import com.seerflix.tv.ui.theme.NavLayoutStyle
 import com.seerflix.tv.ui.theme.SeerflixTokens
+import okhttp3.OkHttpClient
+
+private const val PREVIEW_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -87,10 +97,21 @@ fun HeroBillboard(
     onPrimaryAction: () -> Unit,
     onMoreInfo: () -> Unit,
     onToggleMyList: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * When provided, the caller owns initial focus (Home requests it once). When null the
+     * billboard focuses its primary action itself whenever it enters composition.
+     */
+    primaryFocusRequester: FocusRequester? = null,
+    /**
+     * Client for the trailer preview (honours the self-signed-certificate toggle). Falls back to
+     * Media3's DefaultHttpDataSource when null (e.g. screenshot tests).
+     */
+    previewHttpClient: OkHttpClient? = null
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     var isVideoReady by remember(item.id, previewStream?.videoUrl) { mutableStateOf(false) }
 
     Box(
@@ -110,6 +131,7 @@ fun HeroBillboard(
         if (previewStream != null) {
             HeroPreviewVideoLayer(
                 previewStream = previewStream,
+                previewHttpClient = previewHttpClient,
                 isMuted = isMuted,
                 isVideoReady = isVideoReady,
                 onFirstFrame = { isVideoReady = true }
@@ -156,9 +178,11 @@ fun HeroBillboard(
                 .align(Alignment.BottomStart)
                 .padding(
                     start = spec.contentStartPaddingDp.dp,
-                    bottom = if (spec.preset == UiPreset.APPLE_TV) 28.dp else 24.dp,
-                    end = 340.dp
+                    bottom = if (spec.preset == UiPreset.APPLE_TV) 28.dp else 24.dp
                 )
+                // Proportional instead of a fixed 340dp end inset: with the Netflix rail expanded
+                // the fixed inset left too little width and the CTA pills wrapped/clipped.
+                .fillMaxWidth(0.62f)
         ) {
             // Preset-aware micro-header
             Row(
@@ -306,9 +330,12 @@ fun HeroBillboard(
 
             Spacer(Modifier.height(16.dp))
 
-            val primaryActionFocusRequester = remember { FocusRequester() }
-            LaunchedEffect(Unit) {
-                runCatching { primaryActionFocusRequester.requestFocus() }
+            val ownFocusRequester = remember { FocusRequester() }
+            val primaryActionFocusRequester = primaryFocusRequester ?: ownFocusRequester
+            if (primaryFocusRequester == null) {
+                LaunchedEffect(Unit) {
+                    runCatching { primaryActionFocusRequester.requestFocus() }
+                }
             }
 
             Row(
@@ -316,11 +343,11 @@ fun HeroBillboard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 val primaryLabel = when {
-                    item.isPlayable && item.resumePositionTicks > 0L -> "Resume"
-                    item.isPlayable -> "Play"
+                    item.isPlayable && item.resumePositionTicks > 0L -> strings.actionResume
+                    item.isPlayable -> strings.actionPlay
                     item.activeDownload != null || item.overallAvailability == AvailabilityTier.PROCESSING -> "View Progress"
                     item.overallAvailability == AvailabilityTier.PENDING -> "Requested"
-                    else -> "Request"
+                    else -> strings.actionRequestMore
                 }
                 val primaryIcon = if (item.isPlayable) Icons.Filled.PlayArrow else Icons.Filled.Add
 
@@ -332,14 +359,14 @@ fun HeroBillboard(
                     modifier = Modifier.focusRequester(primaryActionFocusRequester)
                 )
                 HeroPillButton(
-                    text = "More Info",
+                    text = strings.actionMoreInfo,
                     icon = Icons.Filled.Info,
                     isPrimary = false,
                     onClick = onMoreInfo
                 )
                 if (onToggleMyList != null) {
                     HeroPillButton(
-                        text = "My List",
+                        text = strings.navMyList,
                         icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
                         isPrimary = false,
                         onClick = onToggleMyList
@@ -441,7 +468,9 @@ fun HeroPillButton(
             text = text,
             color = fg,
             fontSize = 15.sp,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -450,29 +479,63 @@ fun HeroPillButton(
 @Composable
 private fun HeroPreviewVideoLayer(
     previewStream: ResolvedPreviewStream,
+    previewHttpClient: OkHttpClient?,
     isMuted: Boolean,
     isVideoReady: Boolean,
     onFirstFrame: () -> Unit
 ) {
     val context = LocalContext.current
-    val previewPlayer = remember(context) {
-        ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ONE
-            playWhenReady = true
+    // Use the app's media OkHttpClient when available so self-signed HTTPS Jellyfin servers
+    // (local trailers) work; DefaultHttpDataSource ignores the "trust self-signed" toggle.
+    val httpDataSourceFactory: DataSource.Factory = remember(previewHttpClient) {
+        if (previewHttpClient != null) {
+            OkHttpDataSource.Factory(previewHttpClient).setUserAgent(PREVIEW_USER_AGENT)
+        } else {
+            DefaultHttpDataSource.Factory().setUserAgent(PREVIEW_USER_AGENT)
+        }
+    }
+    val previewPlayer = remember(context, httpDataSourceFactory) {
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(DefaultDataSource.Factory(context, httpDataSourceFactory))
+            )
+            .build()
+            .apply {
+                repeatMode = Player.REPEAT_MODE_ONE
+                playWhenReady = true
+            }
+    }
+
+    val currentOnFirstFrame by rememberUpdatedState(onFirstFrame)
+    DisposableEffect(previewPlayer) {
+        // Registered once per player (it used to be re-added on every URL change, leaking
+        // listeners that each captured a stale callback).
+        val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                currentOnFirstFrame()
+            }
+        }
+        previewPlayer.addListener(listener)
+        onDispose {
+            previewPlayer.removeListener(listener)
+            previewPlayer.release()
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose { previewPlayer.release() }
+    // Home stays composed while the activity is stopped (remote Home button / screensaver), so
+    // without this the trailer kept playing — with audio if unmuted — in the background.
+    // Declared after the release effect so it is disposed (paused) before the player is released.
+    LifecycleResumeEffect(previewPlayer) {
+        previewPlayer.playWhenReady = true
+        onPauseOrDispose { previewPlayer.playWhenReady = false }
     }
 
     LaunchedEffect(previewPlayer, isMuted) {
         previewPlayer.volume = if (isMuted) 0f else 0.7f
     }
 
-    LaunchedEffect(previewStream.videoUrl) {
-        val dsFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    LaunchedEffect(previewPlayer, previewStream.videoUrl) {
+        val dsFactory = httpDataSourceFactory
         if (previewStream.audioUrl != null) {
             val vSrc = ProgressiveMediaSource.Factory(dsFactory)
                 .createMediaSource(MediaItem.fromUri(previewStream.videoUrl))
@@ -482,13 +545,8 @@ private fun HeroPreviewVideoLayer(
         } else {
             previewPlayer.setMediaItem(MediaItem.fromUri(previewStream.videoUrl))
         }
-        previewPlayer.addListener(object : Player.Listener {
-            override fun onRenderedFirstFrame() {
-                onFirstFrame()
-            }
-        })
+        // playWhenReady is driven by the lifecycle effect above; don't force play() while paused.
         previewPlayer.prepare()
-        previewPlayer.play()
     }
 
     AnimatedVisibility(

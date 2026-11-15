@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.view.KeyEvent
 import android.view.View
+import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -14,6 +15,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -87,6 +89,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -96,7 +102,9 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
@@ -146,11 +154,20 @@ fun PlayerScreen(
     val subtitleOffsetUsRef = remember { AtomicLong(0L) }
     val player = remember(context) {
         val subtitleParserFactory = OffsetSubtitleParserFactory { subtitleOffsetUsRef.get() }
-        val mediaSourceFactory = DefaultMediaSourceFactory(context)
+        val upstreamFactory = OkHttpDataSource.Factory(viewModel.mediaHttpClient)
+        val mediaSourceFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, upstreamFactory))
             .setSubtitleParserFactory(subtitleParserFactory)
             .experimentalParseSubtitlesDuringExtraction(true)
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                /* handleAudioFocus = */ true
+            )
+            .setHandleAudioBecomingNoisy(true)
             .build()
             .apply {
                 playWhenReady = true
@@ -170,17 +187,66 @@ fun PlayerScreen(
     var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
     var subtitleOffsetHudText by remember { mutableStateOf<String?>(null) }
     var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
+    var osdInteractionTick by remember { mutableIntStateOf(0) }
+    var assPositionMs by remember { mutableLongStateOf(0L) }
     val playPauseFocusRequester = remember { FocusRequester() }
+    val rootFocusRequester = remember { FocusRequester() }
+    // Window display mode before we touched it, restored on exit / when matching is turned off.
+    val originalDisplayModeId = remember(activity) { activity?.window?.attributes?.preferredDisplayModeId ?: 0 }
 
-    LaunchedEffect(osdVisible, showEpisodesDrawer, showTracksDialog) {
-        if (osdVisible && !showEpisodesDrawer && !showTracksDialog) {
-            delay(60L)
-            runCatching { playPauseFocusRequester.requestFocus() }
+    // Guard against double navigation (e.g. Back pressed twice during the exit transition popping
+    // the screen underneath the player as well).
+    var hasExited by remember { mutableStateOf(false) }
+    val exitPlayer: () -> Unit = {
+        if (!hasExited) {
+            hasExited = true
+            onBack()
         }
+    }
+
+    val togglePlayPause: () -> Unit = {
+        // playWhenReady (not isPlaying) so a press while buffering pauses instead of being a no-op.
+        if (player.playWhenReady) {
+            player.pause()
+            viewModel.notifySyncPlayPause()
+        } else {
+            player.play()
+            viewModel.notifySyncPlayUnpause()
+        }
+    }
+
+    LaunchedEffect(osdVisible, showEpisodesDrawer, showTracksDialog, state.isLoading, state.errorMessage) {
+        // The error screen focuses its own Retry button.
+        if (showEpisodesDrawer || showTracksDialog || state.errorMessage != null) return@LaunchedEffect
+        delay(60L)
+        if (osdVisible) {
+            runCatching { playPauseFocusRequester.requestFocus() }
+        } else {
+            // Keep focus on the player surface while the OSD is hidden so D-pad / media keys keep
+            // reaching onPreviewKeyEvent instead of being lost (or moving focus to a floating pill).
+            runCatching { rootFocusRequester.requestFocus() }
+        }
+    }
+
+    // Leaving the app (Home / input switch / screensaver) must not keep playing in the background.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, player) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && player.playWhenReady) {
+                player.pause()
+                osdVisible = true
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     DisposableEffect(player) {
         val listener = object : Player.Listener {
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+            }
+
             override fun onTracksChanged(tracks: Tracks) {
                 val videoRate = tracks.groups
                     .filter { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
@@ -202,6 +268,12 @@ fun PlayerScreen(
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    // Live TV fell out of the DVR window: jump back to the live edge instead of failing.
+                    player.seekToDefaultPosition()
+                    player.prepare()
+                    return
+                }
                 viewModel.onPlaybackError(error.message, player.currentPosition.coerceAtLeast(0L))
             }
         }
@@ -210,8 +282,8 @@ fun PlayerScreen(
             player.removeListener(listener)
             activity?.window?.let { win ->
                 val params = win.attributes
-                if (params.preferredDisplayModeId != 0) {
-                    params.preferredDisplayModeId = 0
+                if (params.preferredDisplayModeId != originalDisplayModeId) {
+                    params.preferredDisplayModeId = originalDisplayModeId
                     win.attributes = params
                 }
             }
@@ -227,12 +299,29 @@ fun PlayerScreen(
             hasInitializedOffsetEffect = true
             return@LaunchedEffect
         }
-        if (state.session != null && state.session?.isTrailer != true) {
-            player.seekTo(player.currentPosition.coerceAtLeast(0L))
-        }
+        // Loading a new item resets the offset to 0 — nothing to re-apply and no HUD needed.
+        if (state.isLoading) return@LaunchedEffect
         val sec = state.subtitleOffsetMs / 1000.0
         subtitleOffsetHudText = "Subtitle Sync: ${String.format(Locale.US, "%+.2fs", sec)}"
-        delay(2500L)
+        val activeSession = state.session
+        val assOverlayActive = state.assSubtitleMode == AssSubtitleMode.STYLED && state.activeAssCues.isNotEmpty()
+        val textTrackSelected = player.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
+        if (activeSession != null && !activeSession.isTrailer && !assOverlayActive && textTrackSelected) {
+            // The offset is applied when cues are parsed, and a seek inside the buffer reuses the
+            // already-parsed cues (side-loaded subtitle files are fully buffered), so a plain seekTo
+            // never applied the new offset. Reload the current item in place (debounced so repeated
+            // ±0.25s presses cause a single rebuffer).
+            delay(SUBTITLE_OFFSET_RELOAD_DEBOUNCE_MS)
+            if (!state.isLoading && state.session?.playSessionId == activeSession.playSessionId) {
+                player.currentMediaItem?.let { item ->
+                    player.setMediaItem(item, /* resetPosition = */ false)
+                    if (player.playbackState == Player.STATE_IDLE) player.prepare()
+                }
+            }
+            delay(2500L - SUBTITLE_OFFSET_RELOAD_DEBOUNCE_MS)
+        } else {
+            delay(2500L)
+        }
         subtitleOffsetHudText = null
     }
 
@@ -249,8 +338,8 @@ fun PlayerScreen(
         val win = activity?.window ?: return@LaunchedEffect
         if (isTrailer || mode != FrameRateMatchMode.ALWAYS) {
             val params = win.attributes
-            if (params.preferredDisplayModeId != 0) {
-                params.preferredDisplayModeId = 0
+            if (params.preferredDisplayModeId != originalDisplayModeId) {
+                params.preferredDisplayModeId = originalDisplayModeId
                 win.attributes = params
             }
             return@LaunchedEffect
@@ -274,10 +363,17 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(state.session?.itemId, state.session?.streamUrl) {
+    // Keyed on playSessionId too: retry, audio/downmix toggles and subtitle downloads reload the
+    // same item with an identical direct-play URL, and must still re-prepare the player (otherwise
+    // a player left in the error state stays black).
+    LaunchedEffect(state.session?.itemId, state.session?.playSessionId, state.session?.streamUrl) {
         val session = state.session ?: return@LaunchedEffect
         detectedVideoFrameRate = 0f
         autoSkipUndoPrompt = null
+        // Drop the previous item's position so auto-skip / up-next don't evaluate the new item
+        // against stale values before the progress loop catches up.
+        currentPosMs = (session.resumeTicks / 10_000L).coerceAtLeast(0L)
+        durationMs = 0L
         if (session.trailerAudioUrl != null) {
             val dsFactory = DefaultHttpDataSource.Factory()
                 .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -349,13 +445,22 @@ fun PlayerScreen(
             durationMs = player.duration.coerceAtLeast(0L)
             tick++
             if (tick % 20 == 0 && state.session != null) {
-                viewModel.reportProgress(currentPosMs, !isPlaying)
+                viewModel.reportProgress(currentPosMs, !player.playWhenReady)
             }
         }
     }
 
-    // Auto-hide Netflix OSD after 4.5s
-    LaunchedEffect(osdVisible, showTracksDialog, showEpisodesDrawer, scrubPreviewMs, isPlaying) {
+    val useAssOverlay = state.assSubtitleMode == AssSubtitleMode.STYLED && state.activeAssCues.isNotEmpty()
+    // ASS cues need finer timing than the 500ms progress loop provides.
+    LaunchedEffect(useAssOverlay) {
+        while (useAssOverlay) {
+            assPositionMs = player.currentPosition.coerceAtLeast(0L)
+            delay(100L)
+        }
+    }
+
+    // Auto-hide Netflix OSD after 4.5s of no remote interaction
+    LaunchedEffect(osdVisible, showTracksDialog, showEpisodesDrawer, scrubPreviewMs, isPlaying, osdInteractionTick) {
         if (osdVisible && !showTracksDialog && !showEpisodesDrawer && scrubPreviewMs == null && isPlaying) {
             delay(4500L)
             osdVisible = false
@@ -368,11 +473,15 @@ fun PlayerScreen(
     // Loop-safe Auto-Skip Recap & Intro
     LaunchedEffect(currentTicks, session?.itemId, state.autoSkipIntro, state.autoSkipRecap) {
         val activeSession = session ?: return@LaunchedEffect
+        // Only evaluate once the new item is actually loaded and ready; right after a session switch
+        // currentTicks can still hold the previous item's position.
+        if (state.isLoading || player.playbackState != Player.STATE_READY) return@LaunchedEffect
+        val liveTicks = player.currentPosition.coerceAtLeast(0L) * 10_000L
         if (AutoSkipHelper.shouldAutoSkip(
                 enabled = state.autoSkipRecap,
                 isTrailer = activeSession.isTrailer,
                 itemId = activeSession.itemId,
-                currentTicks = currentTicks,
+                currentTicks = liveTicks,
                 startTicks = activeSession.recapStartTicks,
                 endTicks = activeSession.recapEndTicks,
                 alreadySkippedItemId = skippedRecapItemId
@@ -388,7 +497,7 @@ fun PlayerScreen(
                 enabled = state.autoSkipIntro,
                 isTrailer = activeSession.isTrailer,
                 itemId = activeSession.itemId,
-                currentTicks = currentTicks,
+                currentTicks = liveTicks,
                 startTicks = activeSession.introStartTicks,
                 endTicks = activeSession.introEndTicks,
                 alreadySkippedItemId = skippedIntroItemId
@@ -427,8 +536,10 @@ fun PlayerScreen(
         mutableIntStateOf(5)
     }
 
-    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled) {
-        if (showNextEpisode && state.autoplayNextEpisode && !state.autoplayCancelled && session?.nextEpisodeId != null) {
+    // Keyed on isLoading so the countdown stops once "Play Now"/Next already started loading the
+    // next episode (otherwise it fired a second stopped report + loadItem).
+    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading) {
+        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && session?.nextEpisodeId != null) {
             nextEpisodeCountdown = 5
             while (nextEpisodeCountdown > 0) {
                 delay(1000L)
@@ -439,29 +550,56 @@ fun PlayerScreen(
         }
     }
 
+    // Back closes the episodes drawer, then hides the OSD, and only then leaves the player.
+    // (The settings Dialog handles Back itself via onDismissRequest.)
+    val playerSurfaceActive = session != null && !state.isLoading && state.errorMessage == null
+    BackHandler(enabled = !hasExited && (showEpisodesDrawer || (osdVisible && playerSurfaceActive))) {
+        if (showEpisodesDrawer) {
+            showEpisodesDrawer = false
+        } else {
+            osdVisible = false
+        }
+    }
+
+    val seekBy: (Long) -> Unit = { deltaMs ->
+        val target = (player.currentPosition + deltaMs).coerceAtLeast(0L)
+        player.seekTo(target)
+        viewModel.notifySyncPlaySeek(target)
+        currentPosMs = target
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                    // Any remote interaction restarts the OSD auto-hide timer.
+                    osdInteractionTick++
+                    // Loading spinner / error screen: let the Retry/Back buttons get normal key handling.
+                    if (!playerSurfaceActive) return@onPreviewKeyEvent false
                     when (keyEvent.nativeKeyEvent.keyCode) {
-                        KeyEvent.KEYCODE_BACK -> {
-                            when {
-                                showEpisodesDrawer -> { showEpisodesDrawer = false; true }
-                                showTracksDialog -> { showTracksDialog = false; true }
-                                else -> false
-                            }
-                        }
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                            if (player.isPlaying) {
-                                player.pause()
-                                viewModel.notifySyncPlayPause()
-                            } else {
-                                player.play()
-                                viewModel.notifySyncPlayUnpause()
-                            }
+                            togglePlayPause()
                             osdVisible = true
+                            true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                            if (!player.playWhenReady) togglePlayPause()
+                            osdVisible = true
+                            true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                            if (player.playWhenReady) togglePlayPause()
+                            osdVisible = true
+                            true
+                        }
+                        KeyEvent.KEYCODE_MEDIA_FAST_FORWARD,
+                        KeyEvent.KEYCODE_MEDIA_REWIND -> {
+                            if (session?.isLiveTv != true) {
+                                seekBy(if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_MEDIA_REWIND) -10_000L else 10_000L)
+                                osdVisible = true
+                            }
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER,
@@ -480,20 +618,14 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (!osdVisible && session?.isLiveTv != true) {
-                                val target = (player.currentPosition - 10_000L).coerceAtLeast(0L)
-                                player.seekTo(target)
-                                viewModel.notifySyncPlaySeek(target)
-                                currentPosMs = target
+                                seekBy(-10_000L)
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             if (!osdVisible && session?.isLiveTv != true) {
-                                val target = player.currentPosition + 10_000L
-                                player.seekTo(target)
-                                viewModel.notifySyncPlaySeek(target)
-                                currentPosMs = target
+                                seekBy(10_000L)
                                 osdVisible = true
                                 true
                             } else false
@@ -502,6 +634,8 @@ fun PlayerScreen(
                     }
                 } else false
             }
+            .focusRequester(rootFocusRequester)
+            .focusable()
     ) {
         when {
             state.isLoading -> {
@@ -529,7 +663,7 @@ fun PlayerScreen(
                             text = "Retry",
                             icon = Icons.Filled.Refresh,
                             isPrimary = true,
-                            onClick = { viewModel.retryPlayback() },
+                            onClick = { viewModel.retryPlayback(currentPosMs) },
                             modifier = Modifier.focusRequester(errorRetryFocusRequester)
                         )
                         if (session != null && !session.isTrailer) {
@@ -544,13 +678,12 @@ fun PlayerScreen(
                             text = "Back",
                             icon = Icons.AutoMirrored.Filled.ArrowBack,
                             isPrimary = false,
-                            onClick = onBack
+                            onClick = exitPlayer
                         )
                     }
                 }
             }
             else -> {
-                val useAssOverlay = state.assSubtitleMode == AssSubtitleMode.STYLED && state.activeAssCues.isNotEmpty()
                 AndroidView(
                     factory = { ctx ->
                         PlayerView(ctx).apply {
@@ -560,6 +693,8 @@ fun PlayerScreen(
                     },
                     update = { view ->
                         if (view.player !== player) view.player = player
+                        // Stop the TV screensaver / sleep timer from kicking in mid-movie.
+                        view.keepScreenOn = isPlaying
                         view.subtitleView?.let { sv ->
                             sv.visibility = if (useAssOverlay) View.GONE else View.VISIBLE
                             sv.setApplyEmbeddedStyles(false)
@@ -578,13 +713,17 @@ fun PlayerScreen(
                             )
                         }
                     },
+                    // The view is dropped while loading/erroring; detach it so the player doesn't keep
+                    // a listener + surface reference to a dead PlayerView.
+                    onRelease = { view -> view.player = null },
                     modifier = Modifier.fillMaxSize()
                 )
 
                 if (useAssOverlay) {
                     AssSubtitleOverlay(
                         cues = state.activeAssCues,
-                        positionMs = currentPosMs + state.subtitleOffsetMs,
+                        // Same sign as the ExoPlayer path: a positive offset delays subtitles.
+                        positionMs = assPositionMs - state.subtitleOffsetMs,
                         fontScale = state.subtitleFontScale,
                         backgroundAlpha = state.subtitleBackgroundAlpha
                     )
@@ -704,7 +843,7 @@ fun PlayerScreen(
                                 .padding(horizontal = 48.dp, vertical = 28.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                PlayerControlIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = onBack)
+                                PlayerControlIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = exitPlayer)
                                 Spacer(Modifier.width(18.dp))
                                 Column {
                                     Text(
@@ -839,35 +978,19 @@ fun PlayerScreen(
                                     PlayerControlIcon(
                                         icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                         label = if (isPlaying) "Pause" else "Play",
-                                        onClick = {
-                                            if (player.isPlaying) {
-                                                player.pause()
-                                                viewModel.notifySyncPlayPause()
-                                            } else {
-                                                player.play()
-                                                viewModel.notifySyncPlayUnpause()
-                                            }
-                                        },
+                                        onClick = togglePlayPause,
                                         modifier = Modifier.focusRequester(playPauseFocusRequester)
                                     )
                                     if (session?.isLiveTv != true) {
                                         PlayerControlIcon(
                                             icon = Icons.Filled.Replay10,
                                             label = "Back 10s",
-                                            onClick = {
-                                                val target = (player.currentPosition - 10_000L).coerceAtLeast(0L)
-                                                player.seekTo(target)
-                                                viewModel.notifySyncPlaySeek(target)
-                                            }
+                                            onClick = { seekBy(-10_000L) }
                                         )
                                         PlayerControlIcon(
                                             icon = Icons.Filled.Forward10,
                                             label = "Forward 10s",
-                                            onClick = {
-                                                val target = player.currentPosition + 10_000L
-                                                player.seekTo(target)
-                                                viewModel.notifySyncPlaySeek(target)
-                                            }
+                                            onClick = { seekBy(10_000L) }
                                         )
                                     }
                                     Spacer(Modifier.width(12.dp))
@@ -1562,6 +1685,9 @@ private fun PlayerSettingsDialog(
                                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                                 .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
                                 .build()
+                            // The styled ASS overlay hides ExoPlayer's SubtitleView; drop it so the
+                            // chosen track is actually visible.
+                            if (activeAssSubtitleIndex != null) onSelectExternalAssTrack(null)
                             onDismiss()
                         }
                     )
@@ -1840,6 +1966,8 @@ private fun TrackChoiceRow(
         }
     }
 }
+
+private const val SUBTITLE_OFFSET_RELOAD_DEBOUNCE_MS = 800L
 
 private fun formatMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)

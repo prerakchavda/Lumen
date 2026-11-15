@@ -70,6 +70,32 @@ class ParentalControlsAndConfigTest {
     }
 
     @Test
+    fun `ContentRatingHelper ranks country-prefixed and age-based ratings`() {
+        assertEquals(4, ContentRatingHelper.ratingRank("DE-16"))
+        assertEquals(4, ContentRatingHelper.ratingRank("FSK-18"))
+        assertEquals(4, ContentRatingHelper.ratingRank("GB-15"))
+        assertEquals(4, ContentRatingHelper.ratingRank("AU-MA15+"))
+        assertEquals(3, ContentRatingHelper.ratingRank("GB-12A"))
+        assertEquals(3, ContentRatingHelper.ratingRank("AU-M"))
+        assertEquals(2, ContentRatingHelper.ratingRank("US-PG"))
+        assertEquals(1, ContentRatingHelper.ratingRank("DE-0"))
+        assertEquals(3, ContentRatingHelper.ratingRank("PG-13"))
+        assertEquals(4, ContentRatingHelper.ratingRank("TV-MA"))
+        assertEquals(1, ContentRatingHelper.ratingRank("TV-Y7-FV"))
+        assertEquals(2, ContentRatingHelper.ratingRank(null))
+
+        val pgProfile = UserProfile(
+            id = "k1",
+            name = "Kids",
+            jellyfinUserId = "jf_k1",
+            jellyfinToken = "tok",
+            maxContentRating = ContentRatingLimit.PG
+        )
+        val germanMature = UnifiedMediaItem(id = "x", mediaType = MediaType.MOVIE, title = "X", maturityRating = "DE-16")
+        assertFalse(ContentRatingHelper.isAllowed(germanMature, pgProfile))
+    }
+
+    @Test
     fun `stringsForLanguage provides localized UI strings for supported locales`() {
         assertEquals("Home", stringsForLanguage("en").navHome)
         assertEquals("Inicio", stringsForLanguage("es").navHome)

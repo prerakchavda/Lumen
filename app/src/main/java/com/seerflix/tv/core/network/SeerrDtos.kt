@@ -74,7 +74,7 @@ data class SeerrMediaResultDto(
 @Serializable
 data class SeerrPersonDetailsDto(
     val id: Int,
-    val name: String,
+    val name: String = "",
     val biography: String? = null,
     val profilePath: String? = null,
     val knownForDepartment: String? = null
@@ -142,7 +142,7 @@ data class SeerrRequestedSeasonDto(
 @Serializable
 data class SeerrGenreDto(
     val id: Int,
-    val name: String
+    val name: String = ""
 )
 
 @Serializable
@@ -158,7 +158,7 @@ data class SeerrRelatedVideoDto(
 @Serializable
 data class SeerrCastDto(
     val id: Int? = null,
-    val name: String,
+    val name: String = "",
     val character: String? = null,
     val profilePath: String? = null
 )
@@ -199,7 +199,7 @@ data class SeerrEpisodeDto(
 @Serializable
 data class SeerrBelongsToCollectionDto(
     val id: Int,
-    val name: String,
+    val name: String = "",
     val posterPath: String? = null,
     val backdropPath: String? = null
 )
@@ -207,7 +207,7 @@ data class SeerrBelongsToCollectionDto(
 @Serializable
 data class SeerrCollectionDetailsDto(
     val id: Int,
-    val name: String,
+    val name: String = "",
     val overview: String? = null,
     val posterPath: String? = null,
     val backdropPath: String? = null,
@@ -217,7 +217,7 @@ data class SeerrCollectionDetailsDto(
 @Serializable
 data class SeerrMovieDetailsDto(
     val id: Int,
-    val title: String,
+    val title: String = "",
     val overview: String? = null,
     val tagline: String? = null,
     val releaseDate: String? = null,
@@ -232,16 +232,55 @@ data class SeerrMovieDetailsDto(
     val externalIds: SeerrExternalIdsDto? = null,
     val mediaInfo: SeerrMediaInfoDto? = null,
     val collection: SeerrBelongsToCollectionDto? = null,
-    val belongsToCollection: SeerrBelongsToCollectionDto? = null
+    val belongsToCollection: SeerrBelongsToCollectionDto? = null,
+    val releases: SeerrReleasesDto? = null
 ) {
     val resolvedCollection: SeerrBelongsToCollectionDto?
         get() = collection ?: belongsToCollection
+
+    /** First non-blank theatrical/home certification (e.g. "PG-13"), preferring [country]. */
+    fun certification(country: String = "US"): String? {
+        val byCountry = releases?.results.orEmpty()
+        val ordered = byCountry.filter { it.countryCode.equals(country, ignoreCase = true) } +
+            byCountry.filterNot { it.countryCode.equals(country, ignoreCase = true) }
+        return ordered.asSequence()
+            .flatMap { it.releaseDates.asSequence() }
+            .mapNotNull { it.certification?.trim()?.takeIf { c -> c.isNotEmpty() } }
+            .firstOrNull()
+    }
 }
+
+@Serializable
+data class SeerrReleasesDto(
+    val results: List<SeerrReleaseCountryDto> = emptyList()
+)
+
+@Serializable
+data class SeerrReleaseCountryDto(
+    @SerialName("iso_3166_1") val countryCode: String? = null,
+    @SerialName("release_dates") val releaseDates: List<SeerrReleaseDateDto> = emptyList()
+)
+
+@Serializable
+data class SeerrReleaseDateDto(
+    val certification: String? = null
+)
+
+@Serializable
+data class SeerrContentRatingsDto(
+    val results: List<SeerrContentRatingDto> = emptyList()
+)
+
+@Serializable
+data class SeerrContentRatingDto(
+    @SerialName("iso_3166_1") val countryCode: String? = null,
+    val rating: String? = null
+)
 
 @Serializable
 data class SeerrTvDetailsDto(
     val id: Int,
-    val name: String,
+    val name: String = "",
     val overview: String? = null,
     val tagline: String? = null,
     val firstAirDate: String? = null,
@@ -254,8 +293,16 @@ data class SeerrTvDetailsDto(
     val relatedVideos: List<SeerrRelatedVideoDto> = emptyList(),
     val externalIds: SeerrExternalIdsDto? = null,
     val seasons: List<SeerrSeasonDetailDto> = emptyList(),
-    val mediaInfo: SeerrMediaInfoDto? = null
-)
+    val mediaInfo: SeerrMediaInfoDto? = null,
+    val contentRatings: SeerrContentRatingsDto? = null
+) {
+    /** TV content rating (e.g. "TV-14"), preferring [country]. */
+    fun certification(country: String = "US"): String? {
+        val all = contentRatings?.results.orEmpty()
+        return (all.filter { it.countryCode.equals(country, ignoreCase = true) } + all)
+            .firstNotNullOfOrNull { it.rating?.trim()?.takeIf { r -> r.isNotEmpty() } }
+    }
+}
 
 @Serializable
 data class SeerrCreateRequestBody(

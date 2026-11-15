@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.QrCode2
@@ -46,6 +47,8 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -96,7 +99,9 @@ fun SetupContent(
         state.companionUrl?.let { QrCodeGenerator.generate(it, 200) }
     }
     val connectButtonFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(state.statusMessage) {
+    // Initial focus, plus a jump to Connect when the phone companion pushes new values. Keyed on a
+    // counter (not statusMessage) so finishing a LAN scan doesn't yank focus out of a text field.
+    LaunchedEffect(state.companionUpdateCount) {
         runCatching { connectButtonFocusRequester.requestFocus() }
     }
 
@@ -211,7 +216,9 @@ fun SetupContent(
                         value = state.seerrApiKey,
                         onValueChange = onSeerrApiKeyChange,
                         label = "Seerr API Key (Optional — from Seerr Settings)",
-                        placeholder = "Leave blank to sign in automatically with your Jellyfin account"
+                        placeholder = "Leave blank to sign in automatically with your Jellyfin account",
+                        // Password keyboard type: no IME suggestions/learning of the secret.
+                        keyboardType = KeyboardType.Password
                     )
                 }
 
@@ -251,7 +258,8 @@ fun SetupContent(
                         .then(if (btnFocused) Modifier.border(2.dp, colors.focusBorder, buttonCorner) else Modifier)
                         .focusRequester(connectButtonFocusRequester)
                         .onFocusChanged { btnFocused = it.isFocused }
-                        .clickable(enabled = !state.isTesting, onClick = onConnectClick),
+                        // Stay focusable while testing (a disabled clickable drops D-pad focus).
+                        .clickable { if (!state.isTesting) onConnectClick() },
                     contentAlignment = Alignment.Center
                 ) {
                     if (state.isTesting) {
@@ -400,7 +408,8 @@ private fun SetupUrlField(
     value: String,
     onValueChange: (String) -> Unit,
     label: String,
-    placeholder: String
+    placeholder: String,
+    keyboardType: KeyboardType = KeyboardType.Uri
 ) {
     val colors = SeerflixTokens.colors
     OutlinedTextField(
@@ -409,6 +418,9 @@ private fun SetupUrlField(
         label = { Text(label, fontSize = 12.sp) },
         placeholder = { Text(placeholder, fontSize = 12.sp) },
         singleLine = true,
+        // URL keyboard + "Next" so the TV IME's action key advances to the next field instead of
+        // doing nothing (the default action for a single-line field).
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Next),
         colors = OutlinedTextFieldDefaults.colors(
             focusedTextColor = colors.white,
             unfocusedTextColor = colors.textPrimary,
@@ -480,7 +492,8 @@ private fun ScanButton(isScanning: Boolean, onClick: () -> Unit) {
             .background(if (focused) colors.surfaceElevated else colors.dialogSurface)
             .border(1.dp, if (focused) colors.focusBorder else colors.badgeBorder, RoundedCornerShape(6.dp))
             .onFocusChanged { focused = it.isFocused }
-            .clickable(enabled = !isScanning, onClick = onClick)
+            // Keep the button focusable while scanning so D-pad focus isn't dropped mid-scan.
+            .clickable { if (!isScanning) onClick() }
             .padding(horizontal = 10.dp, vertical = 6.dp)
     ) {
         Icon(

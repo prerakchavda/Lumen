@@ -13,9 +13,9 @@ import com.seerflix.tv.core.network.SeerrJellyfinLoginRequest
 import com.seerflix.tv.core.network.SeerrQuickConnectAuthRequest
 import com.seerflix.tv.core.network.SessionPreferences
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.absoluteValue
 
 @Singleton
 class AuthRepository @Inject constructor(
@@ -36,7 +36,35 @@ class AuthRepository @Inject constructor(
         seerrLocalUrl: String = "",
         trustSelfSignedCerts: Boolean = false,
         seerrApiKey: String = ""
-    ): Result<Pair<String, String>> = runCatching {
+    ): Result<Pair<String, String>> {
+        // The API clients resolve their base URL from prefs, so the new URLs must be saved to be
+        // tested. If the test fails, put back the previous working config so backing out of
+        // Settings doesn't leave the app pointed at a broken server.
+        val previous = prefs.serverConfigFlow.first()
+        val result = testAndSaveServersInternal(
+            jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
+        )
+        if (result.isFailure && previous.isConfigured) {
+            prefs.saveServerUrls(
+                jellyfinUrl = previous.jellyfinUrl,
+                seerrUrl = previous.seerrUrl,
+                jellyfinLocalUrl = previous.jellyfinLocalUrl,
+                seerrLocalUrl = previous.seerrLocalUrl,
+                trustSelfSignedCerts = previous.trustSelfSignedCerts,
+                seerrApiKey = previous.seerrApiKey
+            )
+        }
+        return result
+    }
+
+    private suspend fun testAndSaveServersInternal(
+        jellyfinUrl: String,
+        seerrUrl: String,
+        jellyfinLocalUrl: String,
+        seerrLocalUrl: String,
+        trustSelfSignedCerts: Boolean,
+        seerrApiKey: String
+    ): Result<Pair<String, String>> = runCatchingCancellable {
         prefs.saveServerUrls(
             jellyfinUrl = jellyfinUrl,
             seerrUrl = seerrUrl,
@@ -56,11 +84,19 @@ class AuthRepository @Inject constructor(
         jfName to seerrVer
     }
 
-    suspend fun fetchPublicUsers(): Result<List<JellyfinUserDto>> = runCatching {
+    suspend fun fetchPublicUsers(): Result<List<JellyfinUserDto>> = runCatchingCancellable {
         jellyfinApi.getPublicUsers()
     }
 
-    suspend fun signInWithPassword(username: String, password: String): Result<UserProfile> = runCatching {
+    suspend fun signInWithPassword(username: String, password: String): Result<UserProfile> {
+        // A failed sign-in (wrong password, cancelled "add profile") must not log the still-active
+        // profile out of Seerr for the rest of the session.
+        val previousSeerrCookie = prefs.cachedSeerrCookie
+        return signInWithPasswordInternal(username, password)
+            .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+    }
+
+    private suspend fun signInWithPasswordInternal(username: String, password: String): Result<UserProfile> = runCatchingCancellable {
         prefs.setImmediateSeerrCookie(null)
         val jfAuth = jellyfinApi.authenticateByName(
             JellyfinAuthRequest(username = username.trim(), password = password)
@@ -68,13 +104,13 @@ class AuthRepository @Inject constructor(
         val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
         if (prefs.isSeerrConfigured) {
             // Best-effort Seerr v3+ login using the same Jellyfin credentials
-            val primaryAttempt = runCatching {
+            val primaryAttempt = runCatchingCancellable {
                 seerrApi.loginWithJellyfin(
                     SeerrJellyfinLoginRequest(username = username.trim(), password = password)
                 )
             }
             if (primaryAttempt.isFailure && activeJfBase.isNotBlank()) {
-                runCatching {
+                runCatchingCancellable {
                     seerrApi.loginWithJellyfin(
                         SeerrJellyfinLoginRequest(
                             username = username.trim(),
@@ -101,9 +137,9 @@ class AuthRepository @Inject constructor(
         profile
     }
 
-    suspend fun initiateQuickConnect(): Result<JellyfinQuickConnectState> = runCatching {
+    suspend fun initiateQuickConnect(): Result<JellyfinQuickConnectState> = runCatchingCancellable {
         val seerrQc = if (prefs.isSeerrConfigured) {
-            runCatching { seerrApi.initiateQuickConnect() }.getOrNull()
+            runCatchingCancellable { seerrApi.initiateQuickConnect() }.getOrNull()
         } else null
         if (seerrQc != null) {
             JellyfinQuickConnectState(
@@ -116,19 +152,25 @@ class AuthRepository @Inject constructor(
         }
     }
 
-    suspend fun pollAndCompleteQuickConnect(secret: String): Result<UserProfile?> = runCatching {
+    suspend fun pollAndCompleteQuickConnect(secret: String): Result<UserProfile?> {
+        val previousSeerrCookie = prefs.cachedSeerrCookie
+        return pollAndCompleteQuickConnectInternal(secret)
+            .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+    }
+
+    private suspend fun pollAndCompleteQuickConnectInternal(secret: String): Result<UserProfile?> = runCatchingCancellable {
         val seerrCheck = if (prefs.isSeerrConfigured) {
-            runCatching { seerrApi.checkQuickConnect(secret) }.getOrNull()
+            runCatchingCancellable { seerrApi.checkQuickConnect(secret) }.getOrNull()
         } else null
         val isReady = seerrCheck?.authenticated ?: jellyfinApi.checkQuickConnect(secret).authenticated
-        if (!isReady) return@runCatching null
+        if (!isReady) return@runCatchingCancellable null
 
         prefs.setImmediateSeerrCookie(null)
         val jfAuth = jellyfinApi.authenticateWithQuickConnect(
             JellyfinQuickConnectAuthRequest(secret = secret)
         )
         if (prefs.isSeerrConfigured) {
-            runCatching {
+            runCatchingCancellable {
                 seerrApi.authenticateQuickConnect(SeerrQuickConnectAuthRequest(secret = secret))
             }
         }
@@ -204,7 +246,8 @@ class AuthRepository @Inject constructor(
             0xFF46D369L, // Emerald
             0xFF9B51E0L  // Violet
         )
-        val idx = (name.hashCode().absoluteValue) % palette.size
+        // floorMod: Int.MIN_VALUE.absoluteValue is still negative and would index out of bounds.
+        val idx = Math.floorMod(name.hashCode(), palette.size)
         return palette[idx]
     }
 }

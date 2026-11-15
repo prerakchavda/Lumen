@@ -10,6 +10,7 @@ import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CollectionSummary
+import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.SeerrIssueType
@@ -24,6 +25,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,7 +56,9 @@ data class DetailsUiState(
     val canSubmitRequests: Boolean = true,
     val feedbackBanner: String? = null,
     val isLoading: Boolean = true,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** The active profile's parental limit disallows this title (search/cast/recs/deep link). */
+    val isBlockedByParentalControls: Boolean = false
 )
 
 @HiltViewModel
@@ -77,16 +81,45 @@ class DetailsViewModel @Inject constructor(
     val uiState: StateFlow<DetailsUiState> = _uiState.asStateFlow()
 
     private var pollingJob: Job? = null
+    private var seasonJob: Job? = null
+    private var loadJob: Job? = null
     private var activeUserId: String = ""
     private var activeProfile: UserProfile? = null
+    @Volatile private var isScreenVisible = true
+    @Volatile private var hasBeenHidden = false
 
     init {
         loadAll()
     }
 
+    /** Called by the screen when it becomes visible again (lifecycle STARTED). */
+    fun onScreenVisible() {
+        isScreenVisible = true
+        val item = _uiState.value.item ?: return
+        if (hasBeenHidden) {
+            hasBeenHidden = false
+            // Returning from the player: pick up new resume position / watched state.
+            viewModelScope.launch(Dispatchers.IO) { refreshStatusSilently() }
+        } else {
+            startLivePollingIfNeeded(item)
+        }
+    }
+
+    /**
+     * Called when the screen is covered (player, another Details page) or the app is backgrounded:
+     * stop the 15s Seerr/Jellyfin polling instead of letting it run under the player.
+     */
+    fun onScreenHidden() {
+        isScreenVisible = false
+        hasBeenHidden = true
+        pollingJob?.cancel()
+        pollingJob = null
+    }
+
     fun loadAll() {
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+        loadJob?.cancel()
+        loadJob = viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null, isBlockedByParentalControls = false) }
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null) {
                 _uiState.update { it.copy(isLoading = false, errorMessage = "No active profile") }
@@ -102,8 +135,23 @@ class DetailsViewModel @Inject constructor(
                 jellyfinId = jellyfinIdArg,
                 mediaType = mediaTypeArg
             )
+            // loadFullDetails() runCatching-wraps CancellationException; don't show it as an error.
+            ensureActive()
 
             result.onSuccess { item ->
+                // Parental gate: Details can be reached from search, cast, recommendations, a saga
+                // row or a deep link, none of which guarantee the rating was filtered upstream.
+                if (!ContentRatingHelper.isAllowed(item, profile)) {
+                    _uiState.update {
+                        it.copy(
+                            item = null,
+                            isLoading = false,
+                            errorMessage = "This title isn't available on this profile.",
+                            isBlockedByParentalControls = true
+                        )
+                    }
+                    return@onSuccess
+                }
                 val defaultSeason = item.seasons.firstOrNull()?.seasonNumber ?: 1
                 _uiState.update {
                     it.copy(
@@ -130,12 +178,15 @@ class DetailsViewModel @Inject constructor(
                         mediaType = item.mediaType,
                         activeProfile = profile
                     )
-                    _uiState.update { it.copy(recommendations = recs) }
+                    // Row keys are item ids; a duplicate (TMDB recs do repeat) would crash the LazyRow.
+                    _uiState.update { it.copy(recommendations = recs.distinctBy { r -> r.id }) }
                 }
                 item.collectionId?.let { colId ->
                     launch(Dispatchers.IO) {
                         val saga = catalogRepository.loadCollectionSaga(activeUserId, colId, activeProfile = profile)
-                        _uiState.update { it.copy(collectionSaga = saga) }
+                        _uiState.update {
+                            it.copy(collectionSaga = saga?.let { s -> s.copy(items = s.items.distinctBy { p -> p.id }) })
+                        }
                     }
                 }
                 if (profile.autoplayPreviews) {
@@ -151,7 +202,7 @@ class DetailsViewModel @Inject constructor(
                     selectSeason(defaultSeason)
                 }
 
-                startLivePollingIfNeeded(item)
+                if (isScreenVisible) startLivePollingIfNeeded(item)
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
@@ -170,8 +221,12 @@ class DetailsViewModel @Inject constructor(
     fun selectSeason(seasonNumber: Int) {
         val item = _uiState.value.item ?: return
         val season = item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
-        viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(selectedSeasonNumber = seasonNumber, episodesLoading = true) }
+        // Flipping quickly through seasons used to race: a slow earlier season could land last
+        // and show Season 1's episodes under the Season 3 tab. Cancel the previous load and
+        // only accept results that still match the selected season.
+        seasonJob?.cancel()
+        _uiState.update { it.copy(selectedSeasonNumber = seasonNumber, episodesLoading = true) }
+        seasonJob = viewModelScope.launch(Dispatchers.IO) {
             val eps = catalogRepository.loadSeasonEpisodes(
                 userId = activeUserId,
                 tmdbId = item.tmdbId,
@@ -179,7 +234,11 @@ class DetailsViewModel @Inject constructor(
                 jellyfinSeasonId = season?.jellyfinSeasonId,
                 seasonNumber = seasonNumber
             )
-            _uiState.update { it.copy(episodes = eps, episodesLoading = false) }
+            ensureActive()
+            _uiState.update {
+                if (it.selectedSeasonNumber != seasonNumber) it
+                else it.copy(episodes = eps.distinctBy { e -> e.id }, episodesLoading = false)
+            }
         }
     }
 
@@ -224,6 +283,8 @@ class DetailsViewModel @Inject constructor(
             _uiState.update { it.copy(showRequestModal = false, feedbackBanner = "Requests locked in Kids Mode") }
             return
         }
+        // Double OK-press on "Send Request" must not fire duplicate requests (Seerr answers 409).
+        if (_uiState.value.isSubmittingRequest || (!requestHd && !request4k)) return
         viewModelScope.launch {
             _uiState.update { it.copy(isSubmittingRequest = true, feedbackBanner = null) }
             var anySuccess = false
@@ -260,7 +321,7 @@ class DetailsViewModel @Inject constructor(
                 it.copy(
                     isSubmittingRequest = false,
                     showRequestModal = false,
-                    feedbackBanner = if (anySuccess) "Request sent to Seerr!" else "Request failed: $lastError"
+                    feedbackBanner = if (anySuccess) "Request sent to Seerr!" else "Request failed: ${lastError ?: "Unknown error"}"
                 )
             }
             if (anySuccess) {
@@ -273,8 +334,29 @@ class DetailsViewModel @Inject constructor(
         viewModelScope.launch {
             catalogRepository.cancelRequest(requestId)
                 .onSuccess {
-                    _uiState.update { it.copy(feedbackBanner = "Request cancelled") }
-                    refreshStatusSilently()
+                    // Reflect the cancellation locally instead of re-fetching: the repository's
+                    // details cache isn't invalidated by cancelRequest(), so a refresh (or the live
+                    // poll) would put the stale "Requested" item back for up to two minutes.
+                    _uiState.update { state ->
+                        val cur = state.item
+                        val updated = when {
+                            cur == null -> null
+                            cur.uhdRequestId == requestId -> cur.copy(
+                                uhdRequestId = null,
+                                uhdStatus = AvailabilityTier.UNKNOWN,
+                                uhdDownload = null
+                            )
+                            cur.hdRequestId == requestId -> cur.copy(
+                                hdRequestId = null,
+                                hdStatus = if (cur.jellyfinId != null) cur.hdStatus else AvailabilityTier.UNKNOWN,
+                                hdDownload = null
+                            )
+                            else -> cur
+                        }
+                        state.copy(item = updated, feedbackBanner = "Request cancelled")
+                    }
+                    pollingJob?.cancel()
+                    pollingJob = null
                 }
                 .onFailure { err ->
                     _uiState.update { it.copy(feedbackBanner = "Cancel failed: ${err.message}") }
@@ -340,6 +422,21 @@ class DetailsViewModel @Inject constructor(
                                 isWatched = nextWatched,
                                 resumePositionTicks = if (nextWatched) 0L else it.item.resumePositionTicks
                             ),
+                            // Marking a series (un)watched applies to all of its episodes on the
+                            // server; mirror that in the visible episode list instead of leaving
+                            // stale watched/progress indicators until the next reload.
+                            episodes = if (item.mediaType == MediaType.SERIES) {
+                                it.episodes.map { ep ->
+                                    if (ep.isAvailableInJellyfin) {
+                                        ep.copy(
+                                            isWatched = nextWatched,
+                                            resumePositionTicks = if (nextWatched) 0L else ep.resumePositionTicks
+                                        )
+                                    } else ep
+                                }
+                            } else {
+                                it.episodes
+                            },
                             feedbackBanner = if (nextWatched) "Marked as watched" else "Marked as unwatched"
                         )
                     }
@@ -352,8 +449,11 @@ class DetailsViewModel @Inject constructor(
 
     fun openExternalPlayer(context: Context) {
         val item = _uiState.value.item ?: return
+        // For a series, hand the series id to the playback manager: it resolves the in-progress /
+        // next-up episode. Picking the first episode of the currently selected season restarted
+        // S1E1 for someone halfway through season 3.
         val playableId = if (item.mediaType == MediaType.SERIES) {
-            _uiState.value.episodes.firstOrNull { it.isAvailableInJellyfin }?.id ?: item.jellyfinId
+            item.jellyfinId ?: _uiState.value.episodes.firstOrNull { it.isAvailableInJellyfin }?.id
         } else {
             item.jellyfinId
         } ?: return
@@ -502,41 +602,61 @@ class DetailsViewModel @Inject constructor(
         }
     }
 
+    private fun hasActiveRequestOrDownload(item: UnifiedMediaItem): Boolean =
+        item.hdStatus.isRequestedOrDownloading ||
+            item.uhdStatus.isRequestedOrDownloading ||
+            item.hdDownload != null ||
+            item.uhdDownload != null
+
     private fun startLivePollingIfNeeded(initial: UnifiedMediaItem) {
         pollingJob?.cancel()
-        val needsPolling = !initial.isPlayable ||
-            initial.hdStatus.isRequestedOrDownloading ||
-            initial.uhdStatus.isRequestedOrDownloading ||
-            initial.hdDownload != null ||
-            initial.uhdDownload != null
+        // Only poll while something is actually requested/downloading. Previously any title not in
+        // the library (`!isPlayable`) polled forever — rebuilding the Jellyfin library index and
+        // re-fetching details every 15s just for viewing an unrequested movie.
+        if (!isScreenVisible || !hasActiveRequestOrDownload(initial)) return
 
-        if (!needsPolling) return
-
-        pollingJob = viewModelScope.launch {
+        pollingJob = viewModelScope.launch(Dispatchers.IO) {
             while (isActive) {
                 delay(15_000L)
                 refreshStatusSilently()
                 val cur = _uiState.value.item ?: break
-                val stillActive = cur.hdStatus.isRequestedOrDownloading ||
-                    cur.uhdStatus.isRequestedOrDownloading ||
-                    cur.hdDownload != null ||
-                    cur.uhdDownload != null
-                if (!stillActive && cur.isPlayable) break
+                if (!hasActiveRequestOrDownload(cur)) break
             }
         }
     }
 
     private suspend fun refreshStatusSilently() {
         if (activeUserId.isBlank()) return
-        catalogRepository.refreshLibraryIndex(activeUserId)
+        // Pass the profile: without it the shared library index was rebuilt with no rating cap,
+        // leaking unrestricted titles into a Kids profile's Home/Search lookups.
+        catalogRepository.refreshLibraryIndex(activeUserId, activeProfile = activeProfile)
         val refreshed = catalogRepository.loadFullDetails(
             userId = activeUserId,
             tmdbId = tmdbIdArg,
             jellyfinId = jellyfinIdArg,
             mediaType = mediaTypeArg
         ).getOrNull() ?: return
+        if (!ContentRatingHelper.isAllowed(refreshed, activeProfile)) {
+            pollingJob?.cancel()
+            _uiState.update {
+                it.copy(
+                    item = null,
+                    errorMessage = "This title isn't available on this profile.",
+                    isBlockedByParentalControls = true
+                )
+            }
+            return
+        }
 
-        _uiState.update { it.copy(item = refreshed) }
+        _uiState.update {
+            it.copy(
+                item = refreshed,
+                // Keep the user's version choice if it still exists after the refresh.
+                selectedMediaSourceId = it.selectedMediaSourceId
+                    ?.takeIf { id -> refreshed.mediaVersions.isEmpty() || refreshed.mediaVersions.any { v -> v.id == id } }
+                    ?: refreshed.mediaVersions.firstOrNull()?.id
+            )
+        }
         if (refreshed.mediaType == MediaType.SERIES) {
             val seasonNum = _uiState.value.selectedSeasonNumber
             val season = refreshed.seasons.firstOrNull { it.seasonNumber == seasonNum }
@@ -547,7 +667,11 @@ class DetailsViewModel @Inject constructor(
                 jellyfinSeasonId = season?.jellyfinSeasonId,
                 seasonNumber = seasonNum
             )
-            _uiState.update { it.copy(episodes = eps) }
+            // The user may have switched seasons while this was loading.
+            _uiState.update {
+                if (it.selectedSeasonNumber != seasonNum || it.episodesLoading) it
+                else it.copy(episodes = eps.distinctBy { e -> e.id })
+            }
         }
         if (pollingJob?.isActive != true) {
             startLivePollingIfNeeded(refreshed)

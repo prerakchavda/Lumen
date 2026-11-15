@@ -37,7 +37,7 @@ class AppUpdateChecker @Inject constructor(
     suspend fun checkForUpdate(
         currentVersion: String = BuildConfig.VERSION_NAME
     ): AppUpdateInfo? = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             val request = Request.Builder()
                 .url(LATEST_RELEASE_URL)
                 .header("Accept", "application/vnd.github+json")
@@ -51,7 +51,7 @@ class AppUpdateChecker @Inject constructor(
     }
 
     fun parseRelease(rawJson: String, currentVersion: String): AppUpdateInfo? {
-        val dto = runCatching {
+        val dto = runCatchingCancellable {
             json.decodeFromString<GitHubReleaseDto>(rawJson)
         }.getOrNull() ?: return null
 

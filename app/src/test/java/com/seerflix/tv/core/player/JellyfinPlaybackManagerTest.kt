@@ -76,6 +76,76 @@ class JellyfinPlaybackManagerTest {
     }
 
     @Test
+    fun `buildStreamUrl prefers server remux URL for direct-stream-only sources`() {
+        val source = JellyfinMediaSourceDto(
+            id = "src1",
+            supportsDirectPlay = false,
+            supportsDirectStream = true,
+            transcodingUrl = "/Videos/item1/master.m3u8?MediaSourceId=src1&PlaySessionId=sess1"
+        )
+        val (url, isHls) = JellyfinPlaybackManager.buildStreamUrl(
+            base = "http://jf:8096",
+            token = "tok123",
+            itemId = "item1",
+            source = source,
+            playSessionId = "sess1",
+            maxBitrateBps = null
+        )
+
+        assertTrue(isHls)
+        assertEquals(
+            "http://jf:8096/Videos/item1/master.m3u8?MediaSourceId=src1&PlaySessionId=sess1&api_key=tok123",
+            url
+        )
+    }
+
+    @Test
+    fun `buildStreamUrl falls back to static stream for direct-stream source without transcodingUrl`() {
+        val source = JellyfinMediaSourceDto(
+            id = "src1",
+            supportsDirectPlay = false,
+            supportsDirectStream = true
+        )
+        val (url, isHls) = JellyfinPlaybackManager.buildStreamUrl(
+            base = "http://jf:8096",
+            token = "tok123",
+            itemId = "item1",
+            source = source,
+            playSessionId = "sess1",
+            maxBitrateBps = null
+        )
+
+        assertFalse(isHls)
+        assertEquals("http://jf:8096/Videos/item1/stream?Static=true&MediaSourceId=src1&api_key=tok123", url)
+    }
+
+    @Test
+    fun `isImageBasedSubtitle flags bitmap codecs only`() {
+        assertTrue(JellyfinPlaybackManager.isImageBasedSubtitle("PGSSUB"))
+        assertTrue(JellyfinPlaybackManager.isImageBasedSubtitle("hdmv_pgs_subtitle"))
+        assertTrue(JellyfinPlaybackManager.isImageBasedSubtitle("dvdsub"))
+        assertTrue(JellyfinPlaybackManager.isImageBasedSubtitle("dvb_subtitle"))
+        assertFalse(JellyfinPlaybackManager.isImageBasedSubtitle("subrip"))
+        assertFalse(JellyfinPlaybackManager.isImageBasedSubtitle("ass"))
+        assertFalse(JellyfinPlaybackManager.isImageBasedSubtitle("webvtt"))
+        assertFalse(JellyfinPlaybackManager.isImageBasedSubtitle(null))
+    }
+
+    @Test
+    fun `runCatchingCancellable rethrows cancellation but captures other failures`() {
+        val failure = runCatchingCancellable<Int> { throw IllegalStateException("boom") }
+        assertTrue(failure.isFailure)
+
+        var rethrown = false
+        try {
+            runCatchingCancellable<Int> { throw kotlinx.coroutines.CancellationException("cancelled") }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            rethrown = true
+        }
+        assertTrue(rethrown)
+    }
+
+    @Test
     fun `resolveRelativeJellyfinUrl normalizes slashes and appends api_key when missing`() {
         val resolvedNoKey = JellyfinPlaybackManager.resolveRelativeJellyfinUrl(
             base = "http://jf:8096/",

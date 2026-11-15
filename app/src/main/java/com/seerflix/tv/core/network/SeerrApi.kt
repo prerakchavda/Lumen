@@ -177,18 +177,20 @@ interface SeerrApi {
         @Body body: SeerrCreateIssueBody
     )
 
-    @GET("api/v1/settings/radarr")
+    // `/service/*` is available to every signed-in user and returns {server, profiles, rootFolders}
+    // for a single instance. `/settings/*` is admin-only (and has no GET-by-id route).
+    @GET("api/v1/service/radarr")
     suspend fun getRadarrServers(): List<SeerrArrServerDto>
 
-    @GET("api/v1/settings/radarr/{serverId}")
+    @GET("api/v1/service/radarr/{serverId}")
     suspend fun getRadarrServerDetails(
         @Path("serverId") serverId: Int
     ): SeerrArrServerDetailsResponseDto
 
-    @GET("api/v1/settings/sonarr")
+    @GET("api/v1/service/sonarr")
     suspend fun getSonarrServers(): List<SeerrArrServerDto>
 
-    @GET("api/v1/settings/sonarr/{serverId}")
+    @GET("api/v1/service/sonarr/{serverId}")
     suspend fun getSonarrServerDetails(
         @Path("serverId") serverId: Int
     ): SeerrArrServerDetailsResponseDto

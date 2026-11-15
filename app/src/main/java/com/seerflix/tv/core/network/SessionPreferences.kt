@@ -2,9 +2,11 @@ package com.seerflix.tv.core.network
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.seerflix.tv.core.model.MediaType
@@ -25,7 +27,11 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "seerflix_prefs")
+// A corrupted prefs file would otherwise throw from every read (crash loop on launch).
+private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "seerflix_prefs",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() }
+)
 
 @Serializable
 data class LocalMyListEntry(
@@ -564,8 +570,14 @@ class SessionPreferences private constructor(
 
         fun normalizeUrl(raw: String): String {
             var trimmed = raw.trim().trimEnd('/')
-            if (trimmed.isNotEmpty() && !trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-                trimmed = "http://$trimmed"
+            when {
+                trimmed.isEmpty() -> Unit
+                // TV keyboards often auto-capitalise ("Http://…"); OkHttp rejects "http://Http://…".
+                trimmed.startsWith("http://", ignoreCase = true) ->
+                    trimmed = "http://" + trimmed.substring("http://".length)
+                trimmed.startsWith("https://", ignoreCase = true) ->
+                    trimmed = "https://" + trimmed.substring("https://".length)
+                else -> trimmed = "http://$trimmed"
             }
             return trimmed
         }
