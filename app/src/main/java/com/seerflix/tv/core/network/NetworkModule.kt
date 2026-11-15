@@ -98,7 +98,7 @@ private class JellyfinAuthInterceptor(
             }
         }
         val request = chain.request().newBuilder()
-            .header("X-Emby-Authorization", authHeader)
+            .header("Authorization", authHeader)
             .header("Accept", "application/json")
             .build()
         return chain.proceed(request)
