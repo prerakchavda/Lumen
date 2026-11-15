@@ -9,6 +9,8 @@ import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.TrickplayInfo
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinDeviceProfileDto
+import com.seerflix.tv.core.network.JellyfinCodecProfileDto
+import com.seerflix.tv.core.network.JellyfinProfileConditionDto
 import com.seerflix.tv.core.network.JellyfinDirectPlayProfileDto
 import com.seerflix.tv.core.network.JellyfinItemDto
 import com.seerflix.tv.core.network.JellyfinMediaSegmentDto
@@ -114,7 +116,8 @@ data class NextEpisodeLookup(val next: NextEpisodeInfo?)
 @Singleton
 class JellyfinPlaybackManager @Inject constructor(
     private val jellyfinApi: JellyfinApi,
-    private val prefs: SessionPreferences
+    private val prefs: SessionPreferences,
+    private val capabilityProvider: DeviceCapabilityProvider = DeviceCapabilityProvider.Permissive
 ) {
     /**
      * Process-lifetime scope for fire-and-forget reports (e.g. "playback stopped") that must
@@ -192,9 +195,14 @@ class JellyfinPlaybackManager @Inject constructor(
                 audioPassthroughEnabled = audioPassthroughEnabled,
                 stereoDownmixEnabled = stereoDownmixEnabled,
                 assSubtitleMode = assSubtitleMode,
-                burnInSubtitleIndex = burnInSubtitleIndex
+                burnInSubtitleIndex = burnInSubtitleIndex,
+                capabilities = if (prefs.cachedMatchDeviceCapabilities) {
+                    capabilityProvider.current()
+                } else {
+                    DeviceMediaCapabilities.PERMISSIVE
+                }
             )
-            fun playbackInfoAsync(id: String): Deferred<JellyfinPlaybackInfoResponse?> = async {
+            fun playbackInfoAsync(id: String, enableDirectPlay: Boolean? = null): Deferred<JellyfinPlaybackInfoResponse?> = async {
                 runCatchingCancellable {
                     jellyfinApi.getPlaybackInfo(
                         itemId = id,
@@ -204,7 +212,8 @@ class JellyfinPlaybackManager @Inject constructor(
                             mediaSourceId = mediaSourceId,
                             subtitleStreamIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null,
                             maxAudioChannels = if (stereoDownmixEnabled) 2 else null,
-                            deviceProfile = deviceProfile
+                            deviceProfile = deviceProfile,
+                            enableDirectPlay = enableDirectPlay
                         )
                     )
                 }.getOrNull()
@@ -216,7 +225,7 @@ class JellyfinPlaybackManager @Inject constructor(
             val speculativePlayback = playbackInfoAsync(itemId)
             val requested = jellyfinApi.getItemDetails(userId, itemId, fields = PLAYBACK_ITEM_FIELDS)
             val item: JellyfinItemDto
-            val playback: JellyfinPlaybackInfoResponse?
+            var playback: JellyfinPlaybackInfoResponse?
             if (requested.type.equals("Series", ignoreCase = true) || requested.type.equals("Season", ignoreCase = true)) {
                 speculativePlayback.cancel()
                 val candidateEpisode = resolveEpisodeToPlay(userId, requested)
@@ -232,6 +241,13 @@ class JellyfinPlaybackManager @Inject constructor(
             } else {
                 item = requested
                 playback = speculativePlayback.await()
+            }
+
+            // Server quirk: when a file's audio track isn't flagged default, Jellyfin approves direct
+            // play without checking the audio codec, so e.g. DTS reaches a box that can't play it
+            // (silence). Ask again with direct play off to get a stream with converted audio.
+            if (playback != null && directPlaysUnsupportedAudio(playback, mediaSourceId, deviceProfile)) {
+                playback = playbackInfoAsync(item.id, enableDirectPlay = false).await() ?: playback
             }
 
             // Start the non-critical lookups now so they overlap with session building / player
@@ -652,25 +668,109 @@ class JellyfinPlaybackManager @Inject constructor(
             }
         }
 
+        /**
+         * The profile Jellyfin uses to decide between direct play, remux and transcode.
+         * Built from what the device reports ([capabilities]) so the server converts anything the
+         * box, screen or receiver can't handle instead of the stream failing or looking wrong.
+         */
         fun buildDeviceProfile(
             maxBitrateBps: Long? = null,
             audioPassthroughEnabled: Boolean = true,
             stereoDownmixEnabled: Boolean = false,
             assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
-            burnInSubtitleIndex: Int? = null
+            burnInSubtitleIndex: Int? = null,
+            capabilities: DeviceMediaCapabilities = DeviceMediaCapabilities.PERMISSIVE
         ): JellyfinDeviceProfileDto {
-            val directAudioCodecs = when {
-                stereoDownmixEnabled -> "aac,mp3,opus,flac,vorbis"
-                audioPassthroughEnabled -> "aac,mp3,ac3,eac3,dts,truehd,opus,flac,vorbis"
-                else -> "aac,mp3,ac3,opus,flac,vorbis"
+            val caps = capabilities
+            val baseAudio = listOf("aac", "mp3", "opus", "flac", "vorbis")
+            // Passthrough needs both the user's toggle and a sink (TV / AVR) that accepts the format;
+            // otherwise the box has to decode it, which only works with a platform decoder.
+            fun audioOk(passthrough: Boolean, decoder: Boolean) =
+                (audioPassthroughEnabled && passthrough) || decoder
+            val surroundAudio = buildList {
+                if (audioOk(caps.passthroughAc3, caps.ac3Decoder)) add("ac3")
+                if (audioOk(caps.passthroughEac3, caps.eac3Decoder)) add("eac3")
+                if (audioOk(caps.passthroughDts, caps.dtsDecoder)) { add("dts"); add("dca") }
+                if (audioOk(caps.passthroughTrueHd, caps.trueHdDecoder)) add("truehd")
+            }
+            val directAudioCodecs = if (stereoDownmixEnabled) {
+                baseAudio.joinToString(",")
+            } else {
+                (baseAudio + surroundAudio).joinToString(",")
             }
             val transcodeAudioCodecs = if (stereoDownmixEnabled) {
                 "aac,mp3"
-            } else if (audioPassthroughEnabled) {
-                "aac,ac3,eac3,mp3"
             } else {
-                "aac,mp3"
+                (listOf("aac") + surroundAudio.filter { it == "ac3" || it == "eac3" } + "mp3").joinToString(",")
             }
+
+            val directVideo = buildList {
+                add("h264")
+                if (caps.hevc) add("hevc")
+                if (caps.vp9) add("vp9")
+                if (caps.av1) add("av1")
+            }
+            val transcodeVideo = if (caps.hevc) "h264,hevc" else "h264"
+
+            val ranges = DeviceMediaCapabilities.allowedVideoRanges(caps)
+            fun rangeCondition(allowed: List<String>) =
+                JellyfinProfileConditionDto("EqualsAny", "VideoRangeType", allowed.joinToString("|"))
+            fun sizeConditions(codec: String) = caps.maxResolution[codec]?.let { (w, h) ->
+                listOf(
+                    JellyfinProfileConditionDto("LessThanEqual", "Width", w.toString()),
+                    JellyfinProfileConditionDto("LessThanEqual", "Height", h.toString())
+                )
+            }.orEmpty()
+            fun bitDepthCondition(tenBit: Boolean) = if (tenBit) emptyList() else
+                listOf(JellyfinProfileConditionDto("LessThanEqual", "VideoBitDepth", "8"))
+
+            val codecProfiles = buildList {
+                add(
+                    JellyfinCodecProfileDto(
+                        type = "Video",
+                        codec = "h264",
+                        conditions = listOf(rangeCondition(listOf("SDR"))) +
+                            bitDepthCondition(caps.h264High10) + sizeConditions("h264")
+                    )
+                )
+                if (caps.hevc) {
+                    add(
+                        JellyfinCodecProfileDto(
+                            type = "Video",
+                            codec = "hevc",
+                            // An 8-bit-only HEVC decoder can't take HDR (always 10-bit) either.
+                            conditions = listOf(
+                                rangeCondition(if (caps.hevcMain10) ranges else listOf("SDR", "DOVIWithSDR"))
+                            ) + bitDepthCondition(caps.hevcMain10) + sizeConditions("hevc")
+                        )
+                    )
+                }
+                if (caps.vp9) {
+                    add(
+                        JellyfinCodecProfileDto(
+                            type = "Video",
+                            codec = "vp9",
+                            conditions = listOf(
+                                rangeCondition(
+                                    if (caps.vp9Profile2) ranges.filterNot { it.startsWith("DOVI") } else listOf("SDR")
+                                )
+                            ) + bitDepthCondition(caps.vp9Profile2) + sizeConditions("vp9")
+                        )
+                    )
+                }
+                if (caps.av1) {
+                    add(
+                        JellyfinCodecProfileDto(
+                            type = "Video",
+                            codec = "av1",
+                            conditions = listOf(
+                                rangeCondition(if (caps.av1Main10) ranges else listOf("SDR", "DOVIWithSDR"))
+                            ) + bitDepthCondition(caps.av1Main10) + sizeConditions("av1")
+                        )
+                    )
+                }
+            }
+
             val assMethod = if (assSubtitleMode == AssSubtitleMode.BURN_IN && burnInSubtitleIndex != null) {
                 "Encode"
             } else {
@@ -682,7 +782,7 @@ class JellyfinPlaybackManager @Inject constructor(
                     JellyfinDirectPlayProfileDto(
                         type = "Video",
                         container = "mp4,m4v,mkv,webm,mov,ts",
-                        videoCodec = "h264,hevc,vp9,av1",
+                        videoCodec = directVideo.joinToString(","),
                         audioCodec = directAudioCodecs
                     )
                 ),
@@ -690,7 +790,7 @@ class JellyfinPlaybackManager @Inject constructor(
                     JellyfinTranscodingProfileDto(
                         container = "ts",
                         type = "Video",
-                        videoCodec = "h264,hevc",
+                        videoCodec = transcodeVideo,
                         audioCodec = transcodeAudioCodecs,
                         protocol = "hls"
                     )
@@ -701,8 +801,33 @@ class JellyfinPlaybackManager @Inject constructor(
                     JellyfinSubtitleProfileDto("srt", "External"),
                     JellyfinSubtitleProfileDto("vtt", "External"),
                     JellyfinSubtitleProfileDto("subrip", "External")
-                )
+                ),
+                codecProfiles = codecProfiles
             )
+        }
+
+        /**
+         * True when the server approved direct play although the source's audio (default track, else
+         * the first) is not in the profile's direct-play audio codecs.
+         */
+        fun directPlaysUnsupportedAudio(
+            playback: JellyfinPlaybackInfoResponse,
+            mediaSourceId: String?,
+            profile: JellyfinDeviceProfileDto
+        ): Boolean {
+            val source = playback.mediaSources.firstOrNull { it.id == mediaSourceId }
+                ?: playback.mediaSources.firstOrNull() ?: return false
+            if (!source.supportsDirectPlay) return false
+            val allowed = profile.directPlayProfiles
+                .flatMap { it.audioCodec.split(',') }
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            if (allowed.isEmpty()) return false
+            val audio = source.mediaStreams.filter { it.type.equals("Audio", ignoreCase = true) }
+            val chosen = audio.firstOrNull { it.isDefault } ?: audio.firstOrNull() ?: return false
+            val codec = chosen.codec?.trim()?.lowercase() ?: return false
+            return codec !in allowed
         }
 
         fun mapMediaSourceOption(source: JellyfinMediaSourceDto): MediaSourceOption {

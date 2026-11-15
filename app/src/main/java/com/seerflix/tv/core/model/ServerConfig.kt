@@ -43,6 +43,32 @@ enum class FrameRateMatchMode(val label: String) {
     ALWAYS("Always (HDMI)")
 }
 
+/** Subtitle text colour (ARGB). */
+@Serializable
+enum class SubtitleTextColor(val label: String, val argb: Long) {
+    WHITE("White", 0xFFFFFFFF),
+    YELLOW("Yellow", 0xFFFFE14D),
+    CYAN("Cyan", 0xFF7FE7FF),
+    GREEN("Green", 0xFF9CFF8A),
+    GREY("Light grey", 0xFFD0D0D0)
+}
+
+@Serializable
+enum class SubtitleEdgeStyle(val label: String) {
+    OUTLINE("Outline"),
+    DROP_SHADOW("Drop shadow"),
+    RAISED("Raised"),
+    NONE("None")
+}
+
+/** How far above the bottom edge subtitles sit, as a fraction of the video height. */
+@Serializable
+enum class SubtitlePosition(val label: String, val bottomFraction: Float) {
+    BOTTOM("Bottom", 0.08f),
+    RAISED("Raised", 0.15f),
+    HIGH("High", 0.24f)
+}
+
 @Serializable
 enum class AssSubtitleMode(val label: String) {
     STYLED("Styled (ASS)"),
@@ -87,6 +113,9 @@ data class UserProfile(
     val preferredSubtitleLang: String? = null,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
+    val subtitleTextColor: SubtitleTextColor = SubtitleTextColor.WHITE,
+    val subtitleEdgeStyle: SubtitleEdgeStyle = SubtitleEdgeStyle.OUTLINE,
+    val subtitlePosition: SubtitlePosition = SubtitlePosition.BOTTOM,
     val autoSkipIntro: Boolean = false,
     val autoSkipRecap: Boolean = false,
     val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF,

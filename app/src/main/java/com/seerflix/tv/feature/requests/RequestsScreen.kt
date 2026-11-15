@@ -54,6 +54,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaType
@@ -117,19 +118,19 @@ fun RequestsContent(
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                FocusIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack)
+                FocusIconButton(Icons.AutoMirrored.Filled.ArrowBack, strings.commonBack, onBack)
                 Column {
                     Text(
-                        text = "${strings.navRequests} & Downloads",
+                        text = strings.requestsTitle,
                         color = colors.white,
                         fontSize = 26.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = if (state.isSeerrConfigured) {
-                            "Live status synced with Seerr v3+ • Auto-refreshes every 15s"
+                            strings.requestsSubtitle
                         } else {
-                            "Jellyfin-Only Mode • Add a Seerr URL in Server Settings to enable requests"
+                            strings.requestsSubtitleJellyfinOnly
                         },
                         color = colors.textSecondary,
                         fontSize = 13.sp
@@ -137,7 +138,7 @@ fun RequestsContent(
                 }
             }
 
-            FocusIconButton(Icons.Filled.Refresh, "Refresh", onRefresh)
+            FocusIconButton(Icons.Filled.Refresh, strings.commonRefresh, onRefresh)
         }
 
         state.actionMessage?.let { msg ->
@@ -151,7 +152,7 @@ fun RequestsContent(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             RequestFilter.entries.forEach { filter ->
                 FilterChip(
-                    label = filter.label,
+                    label = filter.localized(strings),
                     selected = state.filter == filter,
                     onClick = { onSelectFilter(filter) },
                     modifier = if (state.filter == filter) Modifier.focusRequester(filterFocusRequester) else Modifier
@@ -178,13 +179,13 @@ fun RequestsContent(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Seerr Not Connected (Jellyfin-Only Mode)",
+                            text = strings.requestsSeerrNotConnected,
                             color = colors.white,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Add a Seerr URL in Server Setup to browse, submit, approve, or track media requests.",
+                            text = strings.requestsSeerrNotConnectedHint,
                             color = colors.textSecondary,
                             fontSize = 14.sp
                         )
@@ -201,7 +202,7 @@ fun RequestsContent(
                     ) {
                         Text(state.errorMessage.orEmpty(), color = colors.accent)
                         HeroPillButton(
-                            text = "Retry",
+                            text = strings.commonRetry,
                             icon = Icons.Filled.Refresh,
                             isPrimary = true,
                             onClick = onRefresh
@@ -210,7 +211,7 @@ fun RequestsContent(
                 }
                 state.visibleRequests.isEmpty() -> {
                     Text(
-                        text = "No requests in this view yet.",
+                        text = strings.requestsEmpty,
                         color = colors.textSecondary,
                         fontSize = 15.sp,
                         modifier = Modifier.align(Alignment.Center)
@@ -341,7 +342,7 @@ private fun RequestItemCard(
 
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Requested by ${req.requestedBy} • ${if (req.mediaType == MediaType.MOVIE) "Movie" else "TV Series"}",
+                text = strings.requestsRequestedBy.format(req.requestedBy, if (req.mediaType == MediaType.MOVIE) strings.commonMovie else strings.commonTvSeries),
                 color = colors.textSecondary,
                 fontSize = 12.sp
             )
@@ -465,4 +466,11 @@ private fun FocusIconButton(
     ) {
         Icon(icon, contentDescription = description, tint = colors.white)
     }
+}
+
+private fun RequestFilter.localized(s: UiStrings): String = when (this) {
+    RequestFilter.ALL -> s.libraryFilterAll
+    RequestFilter.DOWNLOADING -> s.commonDownloading
+    RequestFilter.PENDING -> s.commonRequested
+    RequestFilter.AVAILABLE -> s.requestsFilterAvailable
 }

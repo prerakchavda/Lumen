@@ -38,6 +38,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.ui.theme.SeerflixTokens
 
@@ -67,6 +69,7 @@ fun UiPresetPickerCard(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val selectedPresetFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
@@ -103,13 +106,13 @@ fun UiPresetPickerCard(
             }
             Column {
                 Text(
-                    text = "Appearance & UI Preset",
+                    text = strings.presetPickerTitle,
                     color = colors.white,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Personalize the layout and look for $profileName",
+                    text = strings.presetPickerSubtitle.format(profileName),
                     color = colors.textSecondary,
                     fontSize = 12.sp
                 )
@@ -145,7 +148,7 @@ fun UiPresetPickerCard(
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = "Close",
+                text = strings.commonClose,
                 color = colors.white,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold
@@ -162,6 +165,7 @@ private fun UiPresetOptionCard(
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     var focused by remember { mutableStateOf(false) }
     val corner = RoundedCornerShape(10.dp)
 
@@ -220,7 +224,7 @@ private fun UiPresetOptionCard(
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "Active",
+                            text = strings.commonActive,
                             color = colors.white,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
@@ -230,7 +234,7 @@ private fun UiPresetOptionCard(
             }
             Spacer(Modifier.height(3.dp))
             Text(
-                text = preset.subtitle,
+                text = preset.localizedSubtitle(strings),
                 color = colors.textSecondary,
                 fontSize = 12.sp
             )
@@ -367,4 +371,10 @@ private fun UiPresetMiniPreview(preset: UiPreset) {
             }
         }
     }
+}
+
+private fun UiPreset.localizedSubtitle(s: UiStrings): String = when (this) {
+    UiPreset.NETFLIX -> s.presetNetflixDesc
+    UiPreset.APPLE_TV -> s.presetAppleTvDesc
+    UiPreset.DISNEY_PLUS -> s.presetDisneyDesc
 }

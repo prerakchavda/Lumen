@@ -14,6 +14,8 @@ import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.JellyfinLibraryView
 import com.seerflix.tv.core.model.LiveTvChannel
 import com.seerflix.tv.core.model.LiveTvProgram
+import com.seerflix.tv.core.model.LibraryPage
+import com.seerflix.tv.core.model.ScheduledRecording
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.PersonSearchResult
@@ -1980,7 +1982,9 @@ class UnifiedCatalogRepository @Inject constructor(
                     startMs = startMs,
                     endMs = endMs,
                     timeRangeLabel = range,
-                    isSeries = p.isSeries
+                    isSeries = p.isSeries,
+                    timerId = p.timerId,
+                    seriesTimerId = p.seriesTimerId
                 )
             }.sortedBy { it.startMs }
 
@@ -1997,7 +2001,9 @@ class UnifiedCatalogRepository @Inject constructor(
                     startMs = sMs,
                     endMs = eMs,
                     timeRangeLabel = range,
-                    isSeries = cp.isSeries
+                    isSeries = cp.isSeries,
+                    timerId = cp.timerId,
+                    seriesTimerId = cp.seriesTimerId
                 )
             }
             val current = embeddedCurrent
@@ -2015,6 +2021,90 @@ class UnifiedCatalogRepository @Inject constructor(
             )
         }
     }
+
+    /** Upcoming one-off recordings plus series rules, soonest first (series rules last). */
+    suspend fun loadScheduledRecordings(): List<ScheduledRecording> = coroutineScope {
+        val timersDeferred = async {
+            runCatchingCancellable { jellyfinApi.getLiveTvTimers().items }.getOrDefault(emptyList())
+        }
+        val seriesDeferred = async {
+            runCatchingCancellable { jellyfinApi.getLiveTvSeriesTimers().items }.getOrDefault(emptyList())
+        }
+        val fmt = DateTimeFormatter.ofPattern("EEE d MMM, HH:mm").withZone(ZoneId.systemDefault())
+        val single = timersDeferred.await().map { t ->
+            val start = parseIsoMillis(t.startDate)
+            ScheduledRecording(
+                id = t.id,
+                title = t.name.orEmpty().ifBlank { "Recording" },
+                channelName = t.channelName,
+                startMs = start,
+                timeLabel = if (start > 0L) fmt.format(Instant.ofEpochMilli(start)) else "",
+                isSeriesRule = false
+            )
+        }.sortedBy { it.startMs }
+        val series = seriesDeferred.await().map { t ->
+            ScheduledRecording(
+                id = t.id,
+                title = t.name.orEmpty().ifBlank { "Series" },
+                channelName = if (t.recordAnyChannel == true) null else t.channelName,
+                startMs = Long.MAX_VALUE,
+                timeLabel = "",
+                isSeriesRule = true
+            )
+        }
+        single + series
+    }
+
+    /**
+     * Schedules [programId] (or, with [series], every airing of its series) using the server's
+     * default padding / options, the same way Jellyfin's own clients do.
+     */
+    suspend fun scheduleRecording(programId: String, series: Boolean) {
+        val defaults = jellyfinApi.getLiveTvTimerDefaults(programId)
+        if (series) jellyfinApi.createLiveTvSeriesTimer(defaults) else jellyfinApi.createLiveTvTimer(defaults)
+    }
+
+    suspend fun cancelRecording(timerId: String) = jellyfinApi.cancelLiveTvTimer(timerId)
+
+    suspend fun cancelSeriesRecording(seriesTimerId: String) = jellyfinApi.cancelLiveTvSeriesTimer(seriesTimerId)
+
+    /** One page of a library for the A-Z grid; rating-limited like every other row. */
+    suspend fun browseLibrary(
+        userId: String,
+        parentId: String?,
+        includeItemTypes: String,
+        sortBy: String,
+        sortOrder: String,
+        filters: String?,
+        genre: String?,
+        nameStartsWith: String?,
+        nameLessThan: String?,
+        maxOfficialRating: String?,
+        startIndex: Int,
+        limit: Int
+    ): LibraryPage {
+        val resp = jellyfinApi.browseItems(
+            userId = userId,
+            parentId = parentId,
+            includeItemTypes = includeItemTypes,
+            sortBy = sortBy,
+            sortOrder = sortOrder,
+            filters = filters,
+            genres = genre,
+            nameStartsWith = nameStartsWith,
+            nameLessThan = nameLessThan,
+            maxOfficialRating = maxOfficialRating,
+            startIndex = startIndex,
+            limit = limit
+        )
+        return LibraryPage(resp.items.map { mapJellyfinItem(it) }, resp.totalRecordCount)
+    }
+
+    suspend fun loadGenres(userId: String, parentId: String?, includeItemTypes: String): List<String> =
+        runCatchingCancellable {
+            jellyfinApi.getGenres(userId = userId, parentId = parentId, includeItemTypes = includeItemTypes)
+                .items.map { it.name }.filter { it.isNotBlank() }
+        }.getOrDefault(emptyList())
 
     suspend fun loadLiveTvRecordings(userId: String): List<UnifiedMediaItem> {
         return runCatchingCancellable {

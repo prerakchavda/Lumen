@@ -77,6 +77,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CastMember
@@ -106,6 +107,7 @@ fun DetailsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val strings = AppStrings.current
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner, viewModel) {
         // Pause the 15s request/download polling while the player (or anything else) covers this
@@ -136,7 +138,7 @@ fun DetailsScreen(
         },
         onWatchTrailer = { key ->
             val cur = viewModel.uiState.value.item
-            onPlayTrailer(cur?.title ?: "Trailer", key, cur?.localTrailerItemId)
+            onPlayTrailer(cur?.title ?: strings.actionTrailer, key, cur?.localTrailerItemId)
         },
         onPlayTrailer = onPlayTrailer,
         onToggleMyList = viewModel::toggleMyList,
@@ -191,6 +193,7 @@ fun DetailsContent(
     onRetry: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     // Lives outside the LazyColumn so scrolling the header away and back (or the seed -> full data
     // swap) never re-runs the initial focus request and yanks focus back to Play.
     val focusMemory = remember { DetailsFocusMemory() }
@@ -215,14 +218,14 @@ fun DetailsContent(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text(state.errorMessage ?: "Title not found", color = colors.accent, fontSize = 16.sp)
+                    Text(state.errorMessage ?: strings.detailsTitleNotFound, color = colors.accent, fontSize = 16.sp)
                     Spacer(Modifier.height(16.dp))
                     // A transient network error used to dead-end here with only "Go Back".
                     // (Parental-control blocks get only "Go Back"; retrying can't help.)
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         if (!state.isBlockedByParentalControls) {
                             HeroPillButton(
-                                text = "Retry",
+                                text = strings.commonRetry,
                                 icon = Icons.Filled.Refresh,
                                 isPrimary = true,
                                 onClick = onRetry,
@@ -230,7 +233,7 @@ fun DetailsContent(
                             )
                         }
                         HeroPillButton(
-                            text = "Go Back",
+                            text = strings.commonGoBack,
                             icon = if (state.isBlockedByParentalControls) Icons.Filled.Lock else Icons.AutoMirrored.Filled.ArrowBack,
                             isPrimary = state.isBlockedByParentalControls,
                             onClick = onBack,
@@ -278,7 +281,7 @@ fun DetailsContent(
                             },
                             onRequestClick = onOpenRequestModal,
                             onWatchTrailer = {
-                                onPlayTrailer("${item.title} • Trailer", item.youtubeTrailerKey, item.localTrailerItemId)
+                                onPlayTrailer("${item.title} • ${strings.actionTrailer}", item.youtubeTrailerKey, item.localTrailerItemId)
                             },
                             onToggleMyList = onToggleMyList,
                             onToggleReminder = onToggleReminder,
@@ -313,7 +316,7 @@ fun DetailsContent(
                         item(key = "seasons_bar") {
                             Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 12.dp)) {
                                 Text(
-                                    text = "Seasons & Episodes",
+                                    text = strings.detailsSeasonsEpisodes,
                                     color = colors.white,
                                     fontSize = 20.sp,
                                     fontWeight = FontWeight.Bold
@@ -408,7 +411,7 @@ fun DetailsContent(
                                         modifier = Modifier.weight(1f, fill = false)
                                     ) {
                                         Text(
-                                            text = "Part of ${saga.name}",
+                                            text = strings.detailsPartOf.format(saga.name),
                                             color = colors.white,
                                             fontSize = 18.sp,
                                             fontWeight = FontWeight.Bold,
@@ -434,7 +437,7 @@ fun DetailsContent(
 
                                     if (missingCount > 0 && state.isSeerrConfigured && state.canSubmitRequests) {
                                         HeroPillButton(
-                                            text = "Request Missing ($missingCount)",
+                                            text = strings.detailsRequestMissing.format(missingCount),
                                             icon = Icons.Filled.Add,
                                             isPrimary = false,
                                             onClick = {
@@ -476,7 +479,7 @@ fun DetailsContent(
                         item(key = "more_like_this") {
                             Column(modifier = Modifier.padding(top = 28.dp)) {
                                 Text(
-                                    text = "More Like This",
+                                    text = strings.detailsMoreLikeThis,
                                     color = colors.white,
                                     fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold,
@@ -594,7 +597,7 @@ private fun RelatedVideosSection(
     val colors = SeerflixTokens.colors
     Column(modifier = Modifier.padding(top = 24.dp)) {
         Text(
-            text = "Trailers & More",
+            text = AppStrings.current.detailsTrailersMore,
             color = colors.white,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
@@ -625,7 +628,7 @@ private fun CastSection(
     val colors = SeerflixTokens.colors
     Column(modifier = Modifier.padding(top = 24.dp)) {
         Text(
-            text = "Cast",
+            text = AppStrings.current.detailsCast,
             color = colors.white,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
@@ -840,7 +843,7 @@ private fun RelatedVideoCard(
             )
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
-                contentDescription = "Play Trailer",
+                contentDescription = AppStrings.current.detailsPlayTrailer,
                 tint = colors.white,
                 modifier = Modifier
                     .size(36.dp)
@@ -907,7 +910,7 @@ private fun ExtrasFeatureCard(
             )
             Icon(
                 imageVector = Icons.Filled.PlayArrow,
-                contentDescription = "Play Extra",
+                contentDescription = AppStrings.current.detailsPlayExtra,
                 tint = colors.white,
                 modifier = Modifier
                     .size(36.dp)
@@ -939,7 +942,7 @@ private fun ExtrasFeatureCard(
             overflow = TextOverflow.Ellipsis
         )
         extra.runtimeMinutes?.takeIf { it > 0 }?.let { mins ->
-            Text("${mins}m", color = colors.textMuted, fontSize = 11.sp)
+            Text(AppStrings.current.commonMinutesShort.format(mins), color = colors.textMuted, fontSize = 11.sp)
         }
     }
 }
@@ -1022,9 +1025,9 @@ private fun DetailsHeaderSection(
                 .clickable(onClick = onBack)
                 .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.white, modifier = Modifier.size(18.dp))
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.commonBack, tint = colors.white, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
-            Text("Back", color = colors.white, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.commonBack, color = colors.white, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
         }
 
         Column(
@@ -1088,7 +1091,7 @@ private fun DetailsHeaderSection(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 item.matchPercent?.let {
-                    Text("$it% Match", color = colors.matchGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(strings.commonMatchPercent.format(it), color = colors.matchGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
                 item.releaseYear?.let {
                     Text(it, color = colors.textSecondary, fontSize = 14.sp)
@@ -1245,7 +1248,7 @@ private fun DetailsHeaderSection(
                         .trackActionFocus("act_req")
                     if (canSubmitRequests) {
                         HeroPillButton(
-                            text = if (canPlay) "Request 4K / More" else "Request HD / 4K",
+                            text = if (canPlay) strings.detailsRequest4kMore else strings.detailsRequestHd4k,
                             icon = Icons.Filled.Add,
                             isPrimary = !canPlay,
                             onClick = onRequestClick,
@@ -1264,7 +1267,7 @@ private fun DetailsHeaderSection(
 
                 if (showMyList) {
                     HeroPillButton(
-                        text = if (item.isInMyList) "In My List" else "My List",
+                        text = if (item.isInMyList) strings.detailsInMyList else strings.navMyList,
                         icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
                         isPrimary = false,
                         onClick = onToggleMyList,
@@ -1292,7 +1295,7 @@ private fun DetailsHeaderSection(
 
                 if (showRemind) {
                     HeroPillButton(
-                        text = if (item.isReminderSet) "Reminder Set" else "Remind Me",
+                        text = if (item.isReminderSet) strings.detailsReminderSet else strings.detailsRemindMe,
                         icon = if (item.isReminderSet) Icons.Filled.NotificationsActive else Icons.Filled.Notifications,
                         isPrimary = false,
                         onClick = onToggleReminder,
@@ -1322,7 +1325,7 @@ private fun DetailsHeaderSection(
 
                 if (showRmProgress) {
                     HeroPillButton(
-                        text = "Remove Progress",
+                        text = strings.detailsRemoveProgress,
                         icon = Icons.Filled.DeleteOutline,
                         isPrimary = false,
                         onClick = onRemoveFromContinueWatching,
@@ -1332,7 +1335,7 @@ private fun DetailsHeaderSection(
 
                 if (showCancelReq && pendingReqId != null) {
                     HeroPillButton(
-                        text = "Cancel Request",
+                        text = strings.detailsCancelRequest,
                         icon = Icons.Filled.Close,
                         isPrimary = false,
                         onClick = { onCancelRequest(pendingReqId) },
@@ -1347,12 +1350,13 @@ private fun DetailsHeaderSection(
 @Composable
 private fun TierPill(tierName: String, status: AvailabilityTier) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     val (label, color) = when (status) {
-        AvailabilityTier.AVAILABLE -> "$tierName Available" to colors.matchGreen
-        AvailabilityTier.PARTIALLY_AVAILABLE -> "$tierName Partial" to colors.pendingAmber
-        AvailabilityTier.PROCESSING -> "$tierName Downloading" to colors.downloadingBlue
-        AvailabilityTier.PENDING -> "$tierName Requested" to colors.pendingAmber
-        else -> "$tierName Not in Library" to colors.textMuted
+        AvailabilityTier.AVAILABLE -> strings.detailsTierAvailable.format(tierName) to colors.matchGreen
+        AvailabilityTier.PARTIALLY_AVAILABLE -> strings.detailsTierPartial.format(tierName) to colors.pendingAmber
+        AvailabilityTier.PROCESSING -> strings.detailsTierDownloading.format(tierName) to colors.downloadingBlue
+        AvailabilityTier.PENDING -> strings.detailsTierRequested.format(tierName) to colors.pendingAmber
+        else -> strings.detailsTierNotInLibrary.format(tierName) to colors.textMuted
     }
     Box(
         modifier = Modifier
@@ -1475,6 +1479,7 @@ private fun EpisodeRowCard(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
 
@@ -1516,7 +1521,7 @@ private fun EpisodeRowCard(
             if (episode.isAvailableInJellyfin) {
                 Icon(
                     imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = "Play",
+                    contentDescription = strings.actionPlay,
                     tint = colors.white,
                     modifier = Modifier
                         .size(34.dp)
@@ -1561,7 +1566,7 @@ private fun EpisodeRowCard(
                 )
                 if (episode.runtimeMinutes > 0) {
                     Text(
-                        text = "${episode.runtimeMinutes}m",
+                        text = strings.commonMinutesShort.format(episode.runtimeMinutes),
                         color = colors.textSecondary,
                         fontSize = 12.sp
                     )
@@ -1573,7 +1578,7 @@ private fun EpisodeRowCard(
                             .background(colors.surfaceElevated)
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
-                        Text("Not on Server", color = colors.pendingAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        Text(strings.detailsNotOnServer, color = colors.pendingAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1613,6 +1618,7 @@ private fun RequestQualityModal(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
 
     // Movies: a tier that is already requested/downloading (PENDING/PROCESSING) isn't "in library"
@@ -1671,7 +1677,7 @@ private fun RequestQualityModal(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Request \"${item.title}\"",
+                text = strings.detailsRequestTitle.format(item.title),
                 color = colors.white,
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
@@ -1680,18 +1686,18 @@ private fun RequestQualityModal(
             )
 
             Text(
-                text = "Choose quality tier, Radarr/Sonarr server, profile & root folder:",
+                text = strings.detailsRequestIntro,
                 color = colors.textSecondary,
                 fontSize = 13.sp
             )
 
             // HD Option
             QualityToggleRow(
-                title = "HD (1080p)",
+                title = strings.detailsQualityHd,
                 subtitle = when {
-                    !isSeries && item.hasHd -> "Already in library"
-                    !hdRequestable -> "Already requested"
-                    else -> selectedHdServer?.name ?: "Standard Radarr / Sonarr profile"
+                    !isSeries && item.hasHd -> strings.detailsAlreadyInLibrary
+                    !hdRequestable -> strings.detailsAlreadyRequested
+                    else -> selectedHdServer?.name ?: strings.detailsStandardProfile
                 },
                 checked = requestHd && hdRequestable,
                 enabled = hdRequestable,
@@ -1713,11 +1719,11 @@ private fun RequestQualityModal(
             // 4K Option
             if (has4kServer) {
                 QualityToggleRow(
-                    title = "4K Ultra HD (2160p)",
+                    title = strings.detailsQuality4k,
                     subtitle = when {
-                        !isSeries && item.has4k -> "Already in library"
-                        !uhdRequestable -> "Already requested"
-                        else -> selectedUhdServer?.name ?: "4K Radarr / Sonarr profile"
+                        !isSeries && item.has4k -> strings.detailsAlreadyInLibrary
+                        !uhdRequestable -> strings.detailsAlreadyRequested
+                        else -> selectedUhdServer?.name ?: strings.details4kProfile
                     },
                     checked = request4k && uhdRequestable,
                     enabled = uhdRequestable,
@@ -1738,12 +1744,12 @@ private fun RequestQualityModal(
             }
 
             if (arrServersLoading) {
-                Text("Loading Radarr / Sonarr profiles...", color = colors.textMuted, fontSize = 12.sp)
+                Text(strings.detailsLoadingProfiles, color = colors.textMuted, fontSize = 12.sp)
             }
 
             if (item.mediaType == MediaType.SERIES && item.seasons.isNotEmpty()) {
                 Text(
-                    text = "Select Seasons (${selectedSeasons.size} selected):",
+                    text = strings.detailsSelectSeasons.format(selectedSeasons.size),
                     color = colors.textPrimary,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold
@@ -1775,7 +1781,7 @@ private fun RequestQualityModal(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 HeroPillButton(
-                    text = if (isSubmitting) "Sending..." else "Send Request",
+                    text = if (isSubmitting) strings.commonSending else strings.detailsSendRequest,
                     icon = Icons.Filled.Check,
                     isPrimary = true,
                     onClick = {
@@ -1826,6 +1832,7 @@ private fun ArrServerOverrideSection(
     onSelectRoot: (String) -> Unit
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1833,7 +1840,7 @@ private fun ArrServerOverrideSection(
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         if (servers.size > 1) {
-            Text("Server", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.detailsServer, color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(servers, key = { "srv_${it.id}" }) { srv ->
                     SeasonTabChip(
@@ -1847,7 +1854,7 @@ private fun ArrServerOverrideSection(
         }
         val profiles = selectedServer?.profiles.orEmpty()
         if (profiles.isNotEmpty()) {
-            Text("Quality Profile", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.detailsQualityProfile, color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(profiles, key = { "prof_${it.id}" }) { prof ->
                     SeasonTabChip(
@@ -1861,7 +1868,7 @@ private fun ArrServerOverrideSection(
         }
         val roots = selectedServer?.rootFolders.orEmpty()
         if (roots.isNotEmpty()) {
-            Text("Root Folder", color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.detailsRootFolder, color = colors.textMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(roots, key = { "root_$it" }) { root ->
                     SeasonTabChip(
@@ -1886,6 +1893,7 @@ private fun ReportIssueModal(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val strings = AppStrings.current
     var selectedType by remember { mutableStateOf(SeerrIssueType.VIDEO) }
     var message by remember { mutableStateOf("") }
     val submitIssueFocusRequester = remember { FocusRequester() }
@@ -1904,13 +1912,13 @@ private fun ReportIssueModal(
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text("Report Issue", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(strings.actionReportIssue, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
             Text(title, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(SeerrIssueType.entries, key = { it.name }) { type ->
                     SeasonTabChip(
-                        label = type.label,
+                        label = type.localized(strings),
                         isSelected = type == selectedType,
                         isAvailable = false,
                         onClick = { selectedType = type }
@@ -1921,7 +1929,7 @@ private fun ReportIssueModal(
             OutlinedTextField(
                 value = message,
                 onValueChange = { message = it },
-                label = { Text("Describe the playback or subtitle issue (optional)") },
+                label = { Text(strings.detailsIssueHint) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = colors.white,
                     unfocusedTextColor = colors.textPrimary,
@@ -1933,7 +1941,7 @@ private fun ReportIssueModal(
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 HeroPillButton(
-                    text = if (isSubmitting) "Reporting..." else "Submit Issue",
+                    text = if (isSubmitting) strings.detailsReporting else strings.detailsSubmitIssue,
                     icon = Icons.Filled.Flag,
                     isPrimary = true,
                     onClick = { if (!isSubmitting) onSubmit(selectedType, message) },
@@ -1989,6 +1997,13 @@ private fun QualityToggleRow(
             Text(subtitle, color = colors.textSecondary, fontSize = 12.sp)
         }
     }
+}
+
+private fun SeerrIssueType.localized(s: UiStrings): String = when (this) {
+    SeerrIssueType.VIDEO -> s.issueVideo
+    SeerrIssueType.AUDIO -> s.issueAudio
+    SeerrIssueType.SUBTITLE -> s.issueSubtitle
+    SeerrIssueType.OTHER -> s.issueOther
 }
 
 /** Holds which header action button currently has focus; deliberately not snapshot state. */

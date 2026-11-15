@@ -53,6 +53,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.DiscoveredServer
 import com.seerflix.tv.core.network.QrCodeGenerator
 import com.seerflix.tv.ui.theme.SeerflixTokens
@@ -94,6 +95,7 @@ fun SetupContent(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val buttonCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     val qrBitmap = remember(state.companionUrl) {
@@ -148,7 +150,7 @@ fun SetupContent(
                         )
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            text = "TV Server Setup",
+                            text = strings.setupTitle,
                             color = colors.textSecondary,
                             fontSize = 17.sp,
                             fontWeight = FontWeight.Medium
@@ -163,7 +165,7 @@ fun SetupContent(
                                 .padding(horizontal = 10.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "Update ${upd.latestVersion} Ready",
+                                text = strings.setupUpdateReady.format(upd.latestVersion),
                                 color = colors.matchGreen,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
@@ -173,7 +175,7 @@ fun SetupContent(
                 }
 
                 Text(
-                    text = "Add your Jellyfin server (and optional Seerr v3+ request server). Local LAN URLs auto-failover to remote URLs when away from home.",
+                    text = strings.setupIntro,
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                     lineHeight = 18.sp
@@ -182,20 +184,20 @@ fun SetupContent(
                 SetupUrlField(
                     value = state.jellyfinUrl,
                     onValueChange = onJellyfinUrlChange,
-                    label = "Jellyfin Server URL (Primary / Remote)",
-                    placeholder = "https://jellyfin.example.com or http://192.168.1.100:8096"
+                    label = strings.setupJellyfinUrl,
+                    placeholder = strings.setupJellyfinUrlPlaceholder
                 )
 
                 SetupUrlField(
                     value = state.jellyfinLocalUrl,
                     onValueChange = onJellyfinLocalUrlChange,
-                    label = "Jellyfin Local LAN URL (Optional Dual Failover)",
+                    label = strings.setupJellyfinLocalUrl,
                     placeholder = "http://192.168.1.100:8096"
                 )
 
                 SetupSwitchTile(
-                    title = "Jellyfin-Only Mode",
-                    subtitle = "Skip Seerr/Jellyseerr and browse your Jellyfin library directly",
+                    title = strings.homeJellyfinOnlyMode,
+                    subtitle = strings.setupJellyfinOnlyDesc,
                     checked = state.jellyfinOnlyMode,
                     onToggle = onToggleJellyfinOnly
                 )
@@ -204,28 +206,28 @@ fun SetupContent(
                     SetupUrlField(
                         value = state.seerrUrl,
                         onValueChange = onSeerrUrlChange,
-                        label = "Seerr v3+ / Jellyseerr URL (Primary / Remote)",
+                        label = strings.setupSeerrUrl,
                         placeholder = "http://192.168.1.100:5055"
                     )
                     SetupUrlField(
                         value = state.seerrLocalUrl,
                         onValueChange = onSeerrLocalUrlChange,
-                        label = "Seerr Local LAN URL (Optional Dual Failover)",
+                        label = strings.setupSeerrLocalUrl,
                         placeholder = "http://192.168.1.100:5055"
                     )
                     SetupUrlField(
                         value = state.seerrApiKey,
                         onValueChange = onSeerrApiKeyChange,
-                        label = "Seerr API Key (Optional — from Seerr Settings)",
-                        placeholder = "Leave blank to sign in automatically with your Jellyfin account",
+                        label = strings.setupSeerrApiKey,
+                        placeholder = strings.setupSeerrApiKeyPlaceholder,
                         // Password keyboard type: no IME suggestions/learning of the secret.
                         keyboardType = KeyboardType.Password
                     )
                 }
 
                 SetupSwitchTile(
-                    title = "Trust Self-Signed HTTPS Certificates",
-                    subtitle = "Useful for homelab reverse proxies using local CA certs",
+                    title = strings.setupSelfSigned,
+                    subtitle = strings.setupSelfSignedDesc,
                     checked = state.trustSelfSignedCerts,
                     onToggle = onToggleSelfSigned,
                     leadingIcon = Icons.Filled.Security
@@ -271,7 +273,7 @@ fun SetupContent(
                         )
                     } else {
                         Text(
-                            text = "Connect & Continue",
+                            text = strings.setupConnect,
                             color = colors.white,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
@@ -304,7 +306,7 @@ fun SetupContent(
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "LAN Auto-Discovery",
+                            text = strings.setupDiscovery,
                             color = colors.white,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold
@@ -316,9 +318,9 @@ fun SetupContent(
                 if (state.discoveredServers.isEmpty()) {
                     Text(
                         text = if (state.isScanning) {
-                            "Broadcasting Jellyfin discovery on UDP 7359…"
+                            strings.setupDiscoveryScanning
                         } else {
-                            "No servers auto-discovered yet. Press Scan to search your LAN."
+                            strings.setupDiscoveryNone
                         },
                         color = colors.textMuted,
                         fontSize = 12.sp
@@ -351,7 +353,7 @@ fun SetupContent(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "Phone Companion Setup",
+                        text = strings.setupCompanion,
                         color = colors.white,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -359,7 +361,7 @@ fun SetupContent(
                 }
 
                 Text(
-                    text = "Hate typing URLs with a TV remote? Scan with your phone on the same Wi-Fi to paste URLs directly:",
+                    text = strings.setupCompanionHint,
                     color = colors.textSecondary,
                     fontSize = 12.sp,
                     lineHeight = 16.sp
@@ -379,7 +381,7 @@ fun SetupContent(
                             ) {
                                 Image(
                                     bitmap = qrBitmap.asImageBitmap(),
-                                    contentDescription = "Setup Companion QR Code",
+                                    contentDescription = strings.setupCompanionQr,
                                     modifier = Modifier.size(144.dp)
                                 )
                             }
@@ -393,7 +395,7 @@ fun SetupContent(
                         }
                     } else {
                         Text(
-                            text = "Connect TV to Wi-Fi / Ethernet to start mobile companion web setup.",
+                            text = strings.setupCompanionOffline,
                             color = colors.textMuted,
                             fontSize = 12.sp
                         )
@@ -492,6 +494,7 @@ private fun SetupSwitchTile(
 @Composable
 private fun ScanButton(isScanning: Boolean, onClick: () -> Unit) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     var focused by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -506,13 +509,13 @@ private fun ScanButton(isScanning: Boolean, onClick: () -> Unit) {
     ) {
         Icon(
             imageVector = Icons.Filled.Refresh,
-            contentDescription = "Scan Network",
+            contentDescription = strings.setupScanNetwork,
             tint = colors.white,
             modifier = Modifier.size(14.dp)
         )
         Spacer(Modifier.width(6.dp))
         Text(
-            text = if (isScanning) "Scanning…" else "Scan",
+            text = if (isScanning) strings.setupScanning else strings.setupScan,
             color = colors.white,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold

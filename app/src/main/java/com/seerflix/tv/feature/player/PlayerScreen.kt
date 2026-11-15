@@ -113,10 +113,16 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.CaptionStyleCompat
+import androidx.media3.common.ForwardingPlayer
+import androidx.media3.common.MediaMetadata
+import androidx.media3.session.MediaSession
+import com.seerflix.tv.core.player.SyncPlayAction
+import com.seerflix.tv.core.model.SubtitleEdgeStyle
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.AssSubtitleMode
 import com.seerflix.tv.core.model.ChapterMarker
 import com.seerflix.tv.core.model.EpisodeSummary
@@ -141,6 +147,7 @@ import com.seerflix.tv.core.player.TrickplayThumbnailLoader
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.SeerflixTokens
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
@@ -152,6 +159,7 @@ fun PlayerScreen(
     viewModel: PlayerViewModel = hiltViewModel()
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val activity = remember(context) { FrameRateMatcher.findActivity(context) }
@@ -193,6 +201,7 @@ fun PlayerScreen(
     var skippedRecapItemId by remember { mutableStateOf<String?>(null) }
     var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
     var subtitleOffsetHudText by remember { mutableStateOf<String?>(null) }
+    var syncPlayNotice by remember { mutableStateOf<String?>(null) }
     var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
     // Written on every remote key press but only read inside effects (never during composition), so
     // key presses / held D-pad repeats don't recompose the whole screen.
@@ -228,12 +237,13 @@ fun PlayerScreen(
 
     val togglePlayPause: () -> Unit = {
         // playWhenReady (not isPlaying) so a press while buffering pauses instead of being a no-op.
-        if (player.playWhenReady) {
+        if (viewModel.isSyncPlayActive()) {
+            // Watching together: ask the group; the server's timed command pauses/plays every TV.
+            if (player.playWhenReady) viewModel.requestGroupPause() else viewModel.requestGroupUnpause()
+        } else if (player.playWhenReady) {
             player.pause()
-            viewModel.notifySyncPlayPause()
         } else {
             player.play()
-            viewModel.notifySyncPlayUnpause()
         }
     }
 
@@ -273,8 +283,22 @@ fun PlayerScreen(
                 isPlaying = playing
             }
 
+            // Pause / resume shows up right away in other Jellyfin apps (remote control, dashboard)
+            // instead of at the next 10 s progress report.
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                viewModel.reportProgress(player.currentPosition.coerceAtLeast(0L), !playWhenReady)
+            }
+
             override fun onPlaybackStateChanged(playbackState: Int) {
                 playbackEnded = playbackState == Player.STATE_ENDED
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> viewModel.reportSyncPlayState(
+                        ready = false, positionMs = player.currentPosition, isPlaying = player.playWhenReady
+                    )
+                    Player.STATE_READY -> viewModel.reportSyncPlayState(
+                        ready = true, positionMs = player.currentPosition, isPlaying = player.playWhenReady
+                    )
+                }
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -322,6 +346,34 @@ fun PlayerScreen(
         }
     }
 
+    // Media session: Google Assistant ("Hey Google, pause"), HDMI-CEC / Bluetooth remotes and the
+    // system "Now playing" controls drive the player through it. Play/pause/seek coming from the
+    // session go through the same SyncPlay routing as the on-screen controls.
+    val mediaSession = remember(player) {
+        val sessionPlayer = object : ForwardingPlayer(player) {
+            override fun play() {
+                if (viewModel.isSyncPlayActive()) viewModel.requestGroupUnpause() else super.play()
+            }
+
+            override fun pause() {
+                if (viewModel.isSyncPlayActive()) viewModel.requestGroupPause() else super.pause()
+            }
+
+            override fun seekTo(positionMs: Long) {
+                super.seekTo(positionMs)
+                viewModel.notifySyncPlaySeek(positionMs)
+            }
+        }
+        runCatching {
+            MediaSession.Builder(context, sessionPlayer)
+                .setId("lumen-player-${System.nanoTime()}")
+                .build()
+        }.getOrNull()
+    }
+    DisposableEffect(mediaSession) {
+        onDispose { mediaSession?.release() }
+    }
+
     // Apply live subtitle sync offset & re-parse buffered cues when user adjusts offset
     LaunchedEffect(state.subtitleOffsetMs) {
         subtitleOffsetUsRef.set(state.subtitleOffsetMs * 1000L)
@@ -332,7 +384,7 @@ fun PlayerScreen(
         // Loading a new item resets the offset to 0 — nothing to re-apply and no HUD needed.
         if (state.isLoading) return@LaunchedEffect
         val sec = state.subtitleOffsetMs / 1000.0
-        subtitleOffsetHudText = "Subtitle Sync: ${String.format(Locale.US, "%+.2fs", sec)}"
+        subtitleOffsetHudText = strings.playerSubtitleSyncHud.format(String.format(Locale.US, "%+.2fs", sec))
         val activeSession = state.session
         val assOverlayActive = state.assSubtitleMode == AssSubtitleMode.STYLED && state.activeAssCues.isNotEmpty()
         val textTrackSelected = player.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
@@ -417,7 +469,15 @@ fun PlayerScreen(
                 .createMediaSource(MediaItem.fromUri(session.trailerAudioUrl))
             player.setMediaSource(MergingMediaSource(vSrc, aSrc))
         } else {
-            val mediaItemBuilder = MediaItem.Builder().setUri(session.streamUrl)
+            val mediaItemBuilder = MediaItem.Builder()
+                .setUri(session.streamUrl)
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle(session.title)
+                        .setDisplayTitle(session.title)
+                        .setSubtitle(session.subtitle)
+                        .build()
+                )
             if (session.isHls) {
                 mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
             }
@@ -475,7 +535,12 @@ fun PlayerScreen(
             seekExact(resumeMs)
         }
         player.prepare()
-        player.play()
+        if (viewModel.isSyncPlayActive()) {
+            // The group starts playback for everyone once all members report Ready.
+            player.pause()
+        } else {
+            player.play()
+        }
         viewModel.reportStart(resumeMs)
     }
 
@@ -686,6 +751,96 @@ fun PlayerScreen(
         currentPosMs = target
     }
 
+    // SyncPlay: the server's timed commands, applied at the same wall-clock moment on every TV.
+    LaunchedEffect(player) {
+        viewModel.syncPlayActions.collect { action ->
+            when (action) {
+                is SyncPlayAction.LoadItem -> {
+                    val startMs = action.startPositionTicks / 10_000L
+                    if (viewModel.isCurrentItem(action.itemId)) {
+                        player.pause()
+                        seekExact(startMs)
+                        if (player.playbackState == Player.STATE_READY) {
+                            viewModel.reportSyncPlayState(ready = true, positionMs = startMs, isPlaying = false)
+                        }
+                    } else {
+                        viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L))
+                        viewModel.loadItem(action.itemId, resumeOverrideMs = startMs, fromSyncPlay = true)
+                    }
+                }
+                is SyncPlayAction.Command -> launch {
+                    val positionMs = action.positionTicks / 10_000L
+                    val waitMs = action.atLocalMs - System.currentTimeMillis()
+                    when (action.command) {
+                        "Unpause" -> {
+                            if (waitMs > 0) delay(waitMs)
+                            // Late (network delay): start where the group already is.
+                            val lateMs = (System.currentTimeMillis() - action.atLocalMs).coerceAtLeast(0L)
+                            val target = positionMs + lateMs
+                            if (kotlin.math.abs(player.currentPosition - target) > SYNCPLAY_DRIFT_TOLERANCE_MS) {
+                                seekExact(target)
+                            }
+                            player.play()
+                        }
+                        "Pause" -> {
+                            if (waitMs > 0) delay(waitMs)
+                            player.pause()
+                            if (kotlin.math.abs(player.currentPosition - positionMs) > SYNCPLAY_DRIFT_TOLERANCE_MS) {
+                                seekExact(positionMs)
+                            }
+                        }
+                        "Seek" -> {
+                            player.pause()
+                            seekExact(positionMs)
+                            currentPosMs = positionMs
+                        }
+                        "Stop" -> {
+                            player.pause()
+                            exitPlayer()
+                        }
+                    }
+                    osdVisible = true
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.syncPlayNotices.collect { notice -> syncPlayNotice = notice }
+    }
+    LaunchedEffect(syncPlayNotice) {
+        if (syncPlayNotice != null) {
+            delay(3500L)
+            syncPlayNotice = null
+        }
+    }
+
+    // Remote control from another Jellyfin app (phone, web) while this TV is playing.
+    LaunchedEffect(player) {
+        viewModel.remotePlaystate.collect { cmd ->
+            when (cmd.command) {
+                "Pause" -> if (player.playWhenReady) togglePlayPause()
+                "Unpause" -> if (!player.playWhenReady) togglePlayPause()
+                "PlayPause" -> togglePlayPause()
+                "Stop" -> exitPlayer()
+                "Seek" -> cmd.seekPositionTicks?.let { ticks ->
+                    val target = ticks / 10_000L
+                    seekExact(target)
+                    viewModel.notifySyncPlaySeek(target)
+                    currentPosMs = target
+                }
+                "Rewind" -> seekBy(-10_000L)
+                "FastForward" -> seekBy(10_000L)
+                "NextTrack" -> state.session?.nextEpisodeId?.let { nextId ->
+                    viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L))
+                    viewModel.loadItem(nextId)
+                }
+                "PreviousTrack" -> seekExact(0L)
+            }
+            osdVisible = true
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -778,12 +933,18 @@ fun PlayerScreen(
                     sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * state.subtitleFontScale)
                     val alphaInt = (state.subtitleBackgroundAlpha * 255f).toInt().coerceIn(0, 255)
                     val bgArgb = android.graphics.Color.argb(alphaInt, 0, 0, 0)
+                    sv.setBottomPaddingFraction(state.subtitlePosition.bottomFraction)
                     sv.setStyle(
                         CaptionStyleCompat(
-                            android.graphics.Color.WHITE,
+                            state.subtitleTextColor.argb.toInt(),
                             bgArgb,
                             android.graphics.Color.TRANSPARENT,
-                            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                            when (state.subtitleEdgeStyle) {
+                                SubtitleEdgeStyle.OUTLINE -> CaptionStyleCompat.EDGE_TYPE_OUTLINE
+                                SubtitleEdgeStyle.DROP_SHADOW -> CaptionStyleCompat.EDGE_TYPE_DROP_SHADOW
+                                SubtitleEdgeStyle.RAISED -> CaptionStyleCompat.EDGE_TYPE_RAISED
+                                SubtitleEdgeStyle.NONE -> CaptionStyleCompat.EDGE_TYPE_NONE
+                            },
                             android.graphics.Color.BLACK,
                             null
                         )
@@ -820,7 +981,7 @@ fun PlayerScreen(
                     Spacer(Modifier.height(16.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         HeroPillButton(
-                            text = "Retry",
+                            text = strings.commonRetry,
                             icon = Icons.Filled.Refresh,
                             isPrimary = true,
                             onClick = { viewModel.retryPlayback(currentPosMs) },
@@ -835,7 +996,7 @@ fun PlayerScreen(
                             )
                         }
                         HeroPillButton(
-                            text = "Back",
+                            text = strings.commonBack,
                             icon = Icons.AutoMirrored.Filled.ArrowBack,
                             isPrimary = false,
                             onClick = exitPlayer
@@ -869,7 +1030,7 @@ fun PlayerScreen(
                 }
 
                 // Subtitle Offset / Feedback Quick HUD Badge (top-center)
-                (subtitleOffsetHudText ?: state.feedbackMessage)?.let { hudText ->
+                (subtitleOffsetHudText ?: syncPlayNotice ?: state.feedbackMessage)?.let { hudText ->
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -897,7 +1058,10 @@ fun PlayerScreen(
                 ) {
                     autoSkipUndoPrompt?.let { (segmentType, seekBackMs) ->
                         HeroPillButton(
-                            text = "Skipped ${segmentType.label} • Undo",
+                            text = when (segmentType) {
+                                SkipSegmentType.RECAP -> strings.playerSkippedRecapUndo
+                                SkipSegmentType.INTRO -> strings.playerSkippedIntroUndo
+                            },
                             icon = Icons.AutoMirrored.Filled.Undo,
                             isPrimary = false,
                             onClick = {
@@ -910,7 +1074,7 @@ fun PlayerScreen(
                     }
                     if (showSkipRecap && session?.recapEndTicks != null) {
                         HeroPillButton(
-                            text = "Skip Recap",
+                            text = strings.playerSkipRecap,
                             icon = Icons.Filled.SkipNext,
                             isPrimary = true,
                             onClick = {
@@ -922,7 +1086,7 @@ fun PlayerScreen(
                     }
                     if (showSkipIntro && session?.introEndTicks != null) {
                         HeroPillButton(
-                            text = "Skip Intro",
+                            text = strings.playerSkipIntro,
                             icon = Icons.Filled.SkipNext,
                             isPrimary = true,
                             onClick = {
@@ -937,7 +1101,7 @@ fun PlayerScreen(
                 // Next Episode Overlay Card with Auto-Play Countdown
                 if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer) {
                     NextEpisodeOverlayCard(
-                        nextEpisodeTitle = session.nextEpisodeTitle ?: "Next Episode",
+                        nextEpisodeTitle = session.nextEpisodeTitle ?: strings.playerNextEpisode,
                         autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled,
                         countdownSeconds = nextEpisodeCountdown,
                         onPlayNow = {
@@ -983,7 +1147,7 @@ fun PlayerScreen(
                                 .padding(horizontal = 48.dp, vertical = 28.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                PlayerControlIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = exitPlayer)
+                                PlayerControlIcon(Icons.AutoMirrored.Filled.ArrowBack, strings.commonBack, onClick = exitPlayer)
                                 Spacer(Modifier.width(18.dp))
                                 Column {
                                     Text(
@@ -1066,19 +1230,19 @@ fun PlayerScreen(
                                 ) {
                                     PlayerControlIcon(
                                         icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                        label = if (isPlaying) "Pause" else "Play",
+                                        label = if (isPlaying) strings.playerPause else strings.actionPlay,
                                         onClick = togglePlayPause,
                                         modifier = Modifier.focusRequester(playPauseFocusRequester)
                                     )
                                     if (session?.isLiveTv != true) {
                                         PlayerControlIcon(
                                             icon = Icons.Filled.Replay10,
-                                            label = "Back 10s",
+                                            label = strings.playerBack10,
                                             onClick = { seekBy(-10_000L) }
                                         )
                                         PlayerControlIcon(
                                             icon = Icons.Filled.Forward10,
-                                            label = "Forward 10s",
+                                            label = strings.playerForward10,
                                             onClick = { seekBy(10_000L) }
                                         )
                                     }
@@ -1104,7 +1268,7 @@ fun PlayerScreen(
                                     if (state.drawerSeasons.isNotEmpty() || !session?.seriesId.isNullOrBlank()) {
                                         PlayerControlIcon(
                                             icon = Icons.AutoMirrored.Filled.List,
-                                            label = "Episodes",
+                                            label = strings.playerEpisodes,
                                             onClick = {
                                                 viewModel.ensureDrawerLoaded()
                                                 showEpisodesDrawer = true
@@ -1121,18 +1285,18 @@ fun PlayerScreen(
                                     )
                                     PlayerControlIcon(
                                         icon = Icons.Filled.Subtitles,
-                                        label = "Audio & Subtitles",
+                                        label = strings.playerAudioSubtitles,
                                         onClick = { showTracksDialog = true }
                                     )
                                     PlayerControlIcon(
                                         icon = Icons.Filled.Settings,
-                                        label = "Playback Settings",
+                                        label = strings.playerPlaybackSettings,
                                         onClick = { showTracksDialog = true }
                                     )
                                     session?.nextEpisodeId?.let { nextId ->
                                         PlayerControlIcon(
                                             icon = Icons.Filled.SkipNext,
-                                            label = "Next Episode",
+                                            label = strings.playerNextEpisode,
                                             onClick = {
                                                 viewModel.reportStopped(currentPosMs)
                                                 viewModel.loadItem(nextId)
@@ -1255,6 +1419,7 @@ fun StreamInfoOverlay(
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     val spec = SeerflixTokens.spec
     val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
     Column(
@@ -1267,16 +1432,16 @@ fun StreamInfoOverlay(
     ) {
         val videoParts = listOfNotNull(session.resolutionLabel, session.hdrFormat, session.videoCodec)
         Text(
-            text = videoParts.joinToString(" • ").ifBlank { "Video Stream" },
+            text = videoParts.joinToString(" • ").ifBlank { strings.playerVideoStream },
             color = colors.white,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
         session.audioCodec?.let {
-            Text(text = "Audio: $it", color = colors.textSecondary, fontSize = 11.sp)
+            Text(text = strings.playerAudioInfo.format(it), color = colors.textSecondary, fontSize = 11.sp)
         }
         Text(
-            text = "Quality: ${selectedQuality.label} • ${playbackSpeed}x",
+            text = strings.playerQualityInfo.format(selectedQuality.localized(strings), "${playbackSpeed}x"),
             color = colors.textSecondary,
             fontSize = 11.sp
         )
@@ -1293,6 +1458,7 @@ fun NextEpisodeOverlayCard(
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     val spec = SeerflixTokens.spec
     val corner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     Column(
@@ -1305,7 +1471,7 @@ fun NextEpisodeOverlayCard(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = if (autoplayEnabled) "Next Episode in ${countdownSeconds}s" else "Up Next",
+            text = if (autoplayEnabled) strings.playerNextIn.format(countdownSeconds) else strings.playerUpNext,
             color = if (autoplayEnabled) colors.accent else colors.textSecondary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
@@ -1320,14 +1486,14 @@ fun NextEpisodeOverlayCard(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             HeroPillButton(
-                text = "Play Now",
+                text = strings.playerPlayNow,
                 icon = Icons.Filled.SkipNext,
                 isPrimary = true,
                 onClick = onPlayNow
             )
             if (autoplayEnabled) {
                 HeroPillButton(
-                    text = "Watch Credits",
+                    text = strings.playerWatchCredits,
                     icon = Icons.Filled.Close,
                     isPrimary = false,
                     onClick = onWatchCredits
@@ -1472,7 +1638,7 @@ private fun OsdTimeText(
 ) {
     val colors = SeerflixTokens.colors
     Text(
-        text = if (isLiveTv) "LIVE" else "${formatMs(positionMs())} / ${formatMs(durationMs())}",
+        text = if (isLiveTv) AppStrings.current.playerLive else "${formatMs(positionMs())} / ${formatMs(durationMs())}",
         color = if (isLiveTv) colors.accent else colors.textSecondary,
         fontSize = 14.sp,
         fontWeight = FontWeight.SemiBold
@@ -1546,7 +1712,7 @@ private fun TrickplayPreviewCard(
             ) {
                 Image(
                     bitmap = bitmap,
-                    contentDescription = "Seek preview",
+                    contentDescription = AppStrings.current.playerSeekPreview,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -1583,6 +1749,7 @@ fun EpisodesDrawerOverlay(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val cardCorner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
 
     Box(
@@ -1606,16 +1773,16 @@ fun EpisodesDrawerOverlay(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = seriesTitle.ifBlank { "Episodes" },
+                        text = seriesTitle.ifBlank { strings.playerEpisodes },
                         color = colors.white,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("Select an episode to play", color = colors.textSecondary, fontSize = 12.sp)
+                    Text(strings.playerSelectEpisode, color = colors.textSecondary, fontSize = 12.sp)
                 }
-                PlayerControlIcon(Icons.Filled.Close, "Close", onClick = onClose)
+                PlayerControlIcon(Icons.Filled.Close, strings.commonClose, onClick = onClose)
             }
 
             if (seasons.isNotEmpty()) {
@@ -1727,9 +1894,9 @@ fun EpisodesDrawerOverlay(
                                 )
                                 Spacer(Modifier.height(3.dp))
                                 Text(
-                                    text = if (!ep.isAvailableInJellyfin) "Not available on Jellyfin"
-                                    else if (isCurrent) "Now Playing"
-                                    else ep.overview.ifBlank { "${ep.runtimeMinutes}m" },
+                                    text = if (!ep.isAvailableInJellyfin) strings.playerNotOnJellyfin
+                                    else if (isCurrent) strings.playerNowPlaying
+                                    else ep.overview.ifBlank { strings.commonMinutesShort.format(ep.runtimeMinutes) },
                                     color = if (isCurrent) colors.accent else colors.textSecondary,
                                     fontSize = 12.sp,
                                     maxLines = 2,
@@ -1818,6 +1985,7 @@ private fun PlayerSettingsDialog(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val closeDialogFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
@@ -1860,10 +2028,10 @@ private fun PlayerSettingsDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Playback Settings", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(strings.playerPlaybackSettings, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 PlayerControlIcon(
                     icon = Icons.Filled.Close,
-                    label = "Close",
+                    label = strings.commonClose,
                     onClick = onDismiss,
                     modifier = Modifier.focusRequester(closeDialogFocusRequester)
                 )
@@ -1872,7 +2040,7 @@ private fun PlayerSettingsDialog(
             // Versions & Editions (Multiple MediaSources)
             val sources = session?.mediaSources.orEmpty()
             if (!isTrailer && sources.size > 1) {
-                Text("Versions & Editions", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.labelVersions, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 sources.forEach { src ->
                     TrackChoiceRow(
                         label = src.displayLabel,
@@ -1885,7 +2053,7 @@ private fun PlayerSettingsDialog(
             // Chapter Jump List
             val chapters = session?.chapters.orEmpty()
             if (!isTrailer && chapters.isNotEmpty()) {
-                Text("Chapters (${chapters.size})", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerChaptersCount.format(chapters.size), color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 chapters.take(12).forEach { chapter ->
                     TrackChoiceRow(
                         label = "${formatMs(chapter.startPositionMs)} • ${chapter.name}",
@@ -1896,10 +2064,10 @@ private fun PlayerSettingsDialog(
             }
 
             if (audioGroups.isNotEmpty()) {
-                Text("Audio Tracks", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerAudioTracks, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 audioGroups.forEachIndexed { idx, group ->
                     val format = group.getTrackFormat(0)
-                    val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { "Audio ${idx + 1}" }
+                    val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { strings.playerAudioTrackN.format(idx + 1) }
                     TrackChoiceRow(
                         label = label,
                         selected = group.isSelected,
@@ -1915,9 +2083,9 @@ private fun PlayerSettingsDialog(
             }
 
             if (textGroups.isNotEmpty()) {
-                Text("Subtitles", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.settingsSubtitlesSection, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 TrackChoiceRow(
-                    label = "Off",
+                    label = strings.optionOff,
                     selected = textGroups.none { it.isSelected } && activeAssSubtitleIndex == null,
                     onClick = {
                         player.trackSelectionParameters = player.trackSelectionParameters
@@ -1929,7 +2097,7 @@ private fun PlayerSettingsDialog(
                 )
                 textGroups.forEachIndexed { idx, group ->
                     val format = group.getTrackFormat(0)
-                    val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { "Subtitle ${idx + 1}" }
+                    val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { strings.playerSubtitleTrackN.format(idx + 1) }
                     TrackChoiceRow(
                         label = label,
                         selected = group.isSelected,
@@ -1950,11 +2118,11 @@ private fun PlayerSettingsDialog(
 
             // ASS / SSA Anime & Styled Subtitle Engine
             if (!isTrailer && assExternalTracks.isNotEmpty()) {
-                Text("ASS / SSA Subtitle Engine", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerAssEngine, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssSubtitleMode.entries.forEach { mode ->
                         SettingChip(
-                            label = mode.label,
+                            label = mode.localized(strings),
                             selected = assSubtitleMode == mode,
                             onClick = { onSelectAssMode(mode) },
                             modifier = Modifier.weight(1f)
@@ -1964,7 +2132,7 @@ private fun PlayerSettingsDialog(
                 assExternalTracks.forEach { ext ->
                     val label = listOfNotNull(
                         ext.language?.uppercase(),
-                        ext.title.ifBlank { "ASS Track #${ext.index}" },
+                        ext.title.ifBlank { strings.playerAssTrackN.format(ext.index) },
                         ext.codec?.uppercase()
                     ).distinct().joinToString(" • ")
                     TrackChoiceRow(
@@ -1980,14 +2148,14 @@ private fun PlayerSettingsDialog(
                 val offsetSec = subtitleOffsetMs / 1000.0
                 val offsetLabel = String.format(Locale.US, "%+.2fs", offsetSec)
                 Text(
-                    text = "Subtitle Sync ($offsetLabel)",
+                    text = strings.playerSubtitleSync.format(offsetLabel),
                     color = colors.textSecondary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
                 if (isBitmapSubtitle) {
                     Text(
-                        text = "Text subtitles only — bitmap tracks (PGS/VobSub) cannot be shifted.",
+                        text = strings.playerSubtitleSyncBitmap,
                         color = Color(0xFFFFB74D),
                         fontSize = 11.sp
                     )
@@ -2001,7 +2169,7 @@ private fun PlayerSettingsDialog(
                 }
 
                 // On-Demand Jellyfin Remote Subtitle Search / Download
-                Text("Search / Download Subtitles", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerSearchSubtitles, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("eng" to "EN", "spa" to "ES", "fra" to "FR", "jpn" to "JP").forEach { (code, label) ->
                         SettingChip(
@@ -2012,7 +2180,7 @@ private fun PlayerSettingsDialog(
                         )
                     }
                     SettingChip(
-                        label = if (remoteSubtitlesLoading) "Searching…" else "Search",
+                        label = if (remoteSubtitlesLoading) strings.playerSearching else strings.navSearch,
                         selected = false,
                         onClick = { onSearchRemoteSubtitles(remoteSubtitleLanguage) },
                         modifier = Modifier.weight(1.3f)
@@ -2041,7 +2209,7 @@ private fun PlayerSettingsDialog(
             }
 
             // Playback Speed
-            Text("Playback Speed", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.playerSpeed, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEach { spd ->
                     SettingChip(
@@ -2055,10 +2223,10 @@ private fun PlayerSettingsDialog(
 
             // Quality / Bitrate Cap
             if (!isTrailer) {
-                Text("Video Quality", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerVideoQuality, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 QualityPreset.entries.forEach { preset ->
                     TrackChoiceRow(
-                        label = preset.label,
+                        label = preset.localized(strings),
                         selected = selectedQuality == preset,
                         onClick = { onSelectQuality(preset) }
                     )
@@ -2067,14 +2235,14 @@ private fun PlayerSettingsDialog(
 
             // Audio Routing & Home Theater
             if (!isTrailer) {
-                Text("Home Theater & Audio Routing", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerAudioRouting, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 TrackChoiceRow(
-                    label = "Audio Passthrough (HDMI / Atmos / DTS)",
+                    label = strings.playerPassthrough,
                     selected = audioPassthroughEnabled,
                     onClick = onToggleAudioPassthrough
                 )
                 TrackChoiceRow(
-                    label = "Stereo 2.0 Downmix (Night / Soundbar)",
+                    label = strings.playerDownmix,
                     selected = stereoDownmixEnabled,
                     onClick = onToggleStereoDownmix
                 )
@@ -2082,22 +2250,22 @@ private fun PlayerSettingsDialog(
 
             // Auto-Skip & 24fps Frame-Rate Matching
             if (!isTrailer) {
-                Text("Automation & Display", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.playerAutomation, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 TrackChoiceRow(
-                    label = "Auto-Skip Intro",
+                    label = strings.settingsAutoSkipIntroTitle,
                     selected = autoSkipIntro,
                     onClick = onToggleAutoSkipIntro
                 )
                 TrackChoiceRow(
-                    label = "Auto-Skip Recap",
+                    label = strings.settingsAutoSkipRecapTitle,
                     selected = autoSkipRecap,
                     onClick = onToggleAutoSkipRecap
                 )
-                Text("24fps Frame-Rate Matching", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(strings.settingsFrameRateTitle, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FrameRateMatchMode.entries.forEach { mode ->
                         SettingChip(
-                            label = mode.label,
+                            label = mode.localized(strings),
                             selected = frameRateMatchMode == mode,
                             onClick = { onSelectFrameRateMatchMode(mode) },
                             modifier = Modifier.weight(1f)
@@ -2107,9 +2275,9 @@ private fun PlayerSettingsDialog(
             }
 
             // Subtitle Size & Background
-            Text("Subtitle Size", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.playerSubtitleSize, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Small" to 0.8f, "Medium" to 1.0f, "Large" to 1.3f).forEach { (label, scale) ->
+                listOf(strings.sizeSmall to 0.8f, strings.sizeMedium to 1.0f, strings.sizeLarge to 1.3f).forEach { (label, scale) ->
                     SettingChip(
                         label = label,
                         selected = kotlin.math.abs(subtitleFontScale - scale) < 0.05f,
@@ -2119,9 +2287,9 @@ private fun PlayerSettingsDialog(
                 }
             }
 
-            Text("Subtitle Background", color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.playerSubtitleBackground, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("None" to 0f, "50%" to 0.5f, "80%" to 0.8f).forEach { (label, alpha) ->
+                listOf(strings.backgroundNone to 0f, "50%" to 0.5f, "80%" to 0.8f).forEach { (label, alpha) ->
                     SettingChip(
                         label = label,
                         selected = kotlin.math.abs(subtitleBackgroundAlpha - alpha) < 0.05f,
@@ -2133,13 +2301,13 @@ private fun PlayerSettingsDialog(
 
             // Stream Info Overlay toggle & External Player launch
             TrackChoiceRow(
-                label = "Stream Info Overlay",
+                label = strings.playerStreamInfo,
                 selected = showStreamInfo,
                 onClick = onToggleStreamInfo
             )
             if (!isTrailer) {
                 TrackChoiceRow(
-                    label = AppStrings.current.actionExternalPlayer,
+                    label = strings.actionExternalPlayer,
                     selected = false,
                     onClick = onOpenExternalPlayer
                 )
@@ -2216,18 +2384,37 @@ private fun TrackChoiceRow(
     ) {
         Text(label, color = colors.white, fontSize = 14.sp)
         if (selected) {
-            Text("Active", color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(AppStrings.current.commonActive, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 private const val SUBTITLE_OFFSET_RELOAD_DEBOUNCE_MS = 800L
 private const val SCRUB_SEEK_DEBOUNCE_MS = 300L
+/** SyncPlay: skip a corrective seek when already this close to the group position. */
+private const val SYNCPLAY_DRIFT_TOLERANCE_MS = 300L
 private const val ASS_TICK_MS = 100L
 private const val PROGRESS_REPORT_INTERVAL_MS = 10_000L
 
 private val OSD_TOP_SCRIM = Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent))
 private val OSD_BOTTOM_SCRIM = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)))
+
+private fun QualityPreset.localized(s: UiStrings): String = when (this) {
+    QualityPreset.AUTO -> s.qualityAuto
+    else -> label
+}
+
+private fun AssSubtitleMode.localized(s: UiStrings): String = when (this) {
+    AssSubtitleMode.STYLED -> s.assStyled
+    AssSubtitleMode.BURN_IN -> s.assBurnIn
+    AssSubtitleMode.PLAIN -> s.assPlain
+}
+
+private fun FrameRateMatchMode.localized(s: UiStrings): String = when (this) {
+    FrameRateMatchMode.OFF -> s.optionOff
+    FrameRateMatchMode.SEAMLESS_ONLY -> s.frameRateSeamless
+    FrameRateMatchMode.ALWAYS -> s.frameRateAlways
+}
 
 private fun formatMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)

@@ -3,6 +3,8 @@ package com.seerflix.tv.feature.home
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import kotlinx.coroutines.delay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -114,6 +116,8 @@ import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.HomeTabId
 import com.seerflix.tv.core.model.JellyfinLibraryView
 import com.seerflix.tv.core.model.LiveTvChannel
+import com.seerflix.tv.core.model.ScheduledRecording
+import androidx.compose.material.icons.filled.GridView
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.ReadyRequestAlert
 import com.seerflix.tv.core.model.RowStyle
@@ -131,6 +135,26 @@ import com.seerflix.tv.ui.theme.NavLayoutStyle
 import com.seerflix.tv.ui.theme.SeerflixTokens
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
+
+private fun AvailabilityFilter.localized(s: UiStrings): String = when (this) {
+    AvailabilityFilter.ALL -> s.libraryFilterAll
+    AvailabilityFilter.WATCH_NOW -> s.homeFilterWatchNow
+    AvailabilityFilter.REQUESTABLE -> s.homeFilterRequestable
+}
+
+private fun GenreFilterOption.localizedLabel(s: UiStrings): String = when (id) {
+    "all" -> s.genreAll
+    "action" -> s.genreAction
+    "comedy" -> s.genreComedy
+    "scifi" -> s.genreSciFi
+    "horror" -> s.genreHorrorMystery
+    "drama" -> s.genreDrama
+    "crime" -> s.genreCrime
+    "thriller" -> s.genreThriller
+    "documentary" -> s.genreDocumentary
+    "animation" -> s.genreAnimation
+    else -> label
+}
 
 @Composable
 private fun HomeTab.localizedLabel(strings: UiStrings): String = when (this) {
@@ -151,13 +175,14 @@ fun HomeScreen(
     onOpenRequests: () -> Unit,
     onSwitchProfile: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenLibrary: (MediaType) -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
     // Back from the player/details: pick up new Continue Watching progress (no-op on first load).
     LifecycleResumeEffect(viewModel) {
-        viewModel.refreshContinueWatching()
-        onPauseOrDispose { }
+        viewModel.onScreenResumed()
+        onPauseOrDispose { viewModel.onScreenPaused() }
     }
     HomeContent(
         state = state,
@@ -220,9 +245,28 @@ fun HomeScreen(
         onDismissReadyAlert = viewModel::dismissReadyAlert,
         onOpenUpdateDialog = viewModel::openUpdateDialog,
         onDismissUpdateDialog = viewModel::dismissUpdateDialog,
-        previewHttpClient = viewModel.previewHttpClient
+        previewHttpClient = viewModel.previewHttpClient,
+        extraActions = HomeExtraActions(
+            onBrowseAll = onOpenLibrary,
+            onOpenLiveTvMenu = viewModel::openLiveTvMenu,
+            onDismissLiveTvMenu = viewModel::dismissLiveTvMenu,
+            onRecordProgram = viewModel::recordProgram,
+            onCancelRecording = viewModel::cancelRecording,
+            onCancelSeriesRecording = viewModel::cancelSeriesRecording
+        )
     )
 }
+
+/** Library grid + DVR callbacks, bundled so they don't have to be threaded one by one. */
+@androidx.compose.runtime.Immutable
+data class HomeExtraActions(
+    val onBrowseAll: (MediaType) -> Unit = {},
+    val onOpenLiveTvMenu: (LiveTvChannel) -> Unit = {},
+    val onDismissLiveTvMenu: () -> Unit = {},
+    val onRecordProgram: (programId: String, series: Boolean) -> Unit = { _, _ -> },
+    val onCancelRecording: (timerId: String) -> Unit = {},
+    val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {}
+)
 
 @Composable
 fun HomeContent(
@@ -268,7 +312,8 @@ fun HomeContent(
     onDismissReadyAlert: (Int) -> Unit = {},
     onOpenUpdateDialog: () -> Unit = {},
     onDismissUpdateDialog: () -> Unit = {},
-    previewHttpClient: OkHttpClient? = null
+    previewHttpClient: OkHttpClient? = null,
+    extraActions: HomeExtraActions = HomeExtraActions()
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
@@ -315,6 +360,7 @@ fun HomeContent(
                     onPlayReadyAlert = onPlayReadyAlert,
                     onDismissReadyAlert = onDismissReadyAlert,
                     onBackToNav = onBackToNav,
+                    extraActions = extraActions,
                     previewHttpClient = previewHttpClient,
                     modifier = Modifier
                         .fillMaxSize()
@@ -327,7 +373,7 @@ fun HomeContent(
                     isSeerrConfigured = state.isSeerrConfigured,
                     hasActiveSyncPlay = state.activeSyncPlayGroup != null,
                     hasUpdate = state.updateInfo != null,
-                    profileName = state.profile?.name ?: "Profile",
+                    profileName = state.profile?.name ?: strings.homeProfileFallback,
                     strings = strings,
                     activeTabFocusRequester = navFocusRequester,
                     onSelectTab = onSelectTab,
@@ -365,6 +411,7 @@ fun HomeContent(
                     onPlayReadyAlert = onPlayReadyAlert,
                     onDismissReadyAlert = onDismissReadyAlert,
                     onBackToNav = onBackToNav,
+                    extraActions = extraActions,
                     previewHttpClient = previewHttpClient,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -375,7 +422,7 @@ fun HomeContent(
                     isSeerrConfigured = state.isSeerrConfigured,
                     hasActiveSyncPlay = state.activeSyncPlayGroup != null,
                     hasUpdate = state.updateInfo != null,
-                    profileName = state.profile?.name ?: "Profile",
+                    profileName = state.profile?.name ?: strings.homeProfileFallback,
                     strings = strings,
                     activeTabFocusRequester = navFocusRequester,
                     onSelectTab = onSelectTab,
@@ -406,7 +453,7 @@ fun HomeContent(
                     isSeerrConfigured = state.isSeerrConfigured,
                     hasActiveSyncPlay = state.activeSyncPlayGroup != null,
                     hasUpdate = state.updateInfo != null,
-                    profileName = state.profile?.name ?: "Profile",
+                    profileName = state.profile?.name ?: strings.homeProfileFallback,
                     strings = strings,
                     activeTabFocusRequester = navFocusRequester,
                     onSelectTab = onSelectTab,
@@ -437,6 +484,7 @@ fun HomeContent(
                     onPlayReadyAlert = onPlayReadyAlert,
                     onDismissReadyAlert = onDismissReadyAlert,
                     onBackToNav = onBackToNav,
+                    extraActions = extraActions,
                     previewHttpClient = previewHttpClient,
                     modifier = Modifier
                         .weight(1f)
@@ -506,9 +554,23 @@ fun HomeContent(
         )
     }
 
+    state.liveTvMenuChannel?.let { channel ->
+        LiveTvProgramDialog(
+            channel = channel,
+            onWatch = {
+                extraActions.onDismissLiveTvMenu()
+                onPlayDirect(channel.id)
+            },
+            onRecord = extraActions.onRecordProgram,
+            onCancel = extraActions.onCancelRecording,
+            onCancelSeries = extraActions.onCancelSeriesRecording,
+            onDismiss = extraActions.onDismissLiveTvMenu
+        )
+    }
+
     if (state.showAppearanceDialog) {
         UiPresetPickerDialog(
-            profileName = state.profile?.name ?: "Profile",
+            profileName = state.profile?.name ?: strings.homeProfileFallback,
             currentPreset = state.profile?.uiPreset ?: spec.preset,
             onSelectPreset = onSelectUiPreset,
             onDismiss = onDismissAppearance
@@ -598,10 +660,12 @@ private fun HomeMainCanvas(
     onDismissReadyAlert: (Int) -> Unit,
     onBackToNav: () -> Unit = {},
     previewHttpClient: OkHttpClient? = null,
+    extraActions: HomeExtraActions = HomeExtraActions(),
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val scope = rememberCoroutineScope()
     val hasBackDispatcher = LocalOnBackPressedDispatcherOwner.current != null
 
@@ -664,7 +728,7 @@ private fun HomeMainCanvas(
                     CircularProgressIndicator(color = colors.accent)
                     Spacer(Modifier.height(14.dp))
                     Text(
-                        text = "Loading your ${spec.preset.displayName}-style hub…",
+                        text = strings.homeLoadingHub.format(spec.preset.displayName),
                         color = colors.textSecondary,
                         fontSize = 14.sp
                     )
@@ -693,7 +757,7 @@ private fun HomeMainCanvas(
                     Spacer(Modifier.height(14.dp))
                     NavRailItem(
                         icon = Icons.Filled.Refresh,
-                        label = "Retry",
+                        label = strings.commonRetry,
                         expanded = true,
                         selected = false,
                         onClick = onRefresh,
@@ -715,8 +779,15 @@ private fun HomeMainCanvas(
                 LiveTvGuideContent(
                     channels = state.liveTvChannels,
                     recordings = state.liveTvRecordings,
+                    scheduled = state.liveTvScheduled,
+                    dvrFeedback = state.dvrFeedback,
                     onTuneChannel = onPlayDirect,
-                    onOpenRecording = onOpenDetails
+                    onOpenRecording = onOpenDetails,
+                    onOpenChannelMenu = extraActions.onOpenLiveTvMenu,
+                    onCancelScheduled = { rec ->
+                        if (rec.isSeriesRule) extraActions.onCancelSeriesRecording(rec.id)
+                        else extraActions.onCancelRecording(rec.id)
+                    }
                 )
             }
             state.activeTab == HomeTab.MY_LIST && state.rows.isEmpty() -> {
@@ -731,10 +802,10 @@ private fun HomeMainCanvas(
                         modifier = Modifier.size(48.dp)
                     )
                     Spacer(Modifier.height(14.dp))
-                    Text("Your My List is empty", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(strings.homeMyListEmpty, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        text = "Add movies and shows from the Hero banner or Details screen to find them here.",
+                        text = strings.homeMyListEmptyHint,
                         color = colors.textSecondary,
                         fontSize = 14.sp
                     )
@@ -823,7 +894,17 @@ private fun HomeMainCanvas(
                             GenreFilterBar(
                                 selectedGenre = state.selectedGenre,
                                 onSelectGenre = onSelectGenre,
-                                bringIntoViewSpec = rowBringIntoViewSpec
+                                bringIntoViewSpec = rowBringIntoViewSpec,
+                                browseAllLabel = if (state.activeTab == HomeTab.MOVIES) {
+                                    strings.libraryAllMovies
+                                } else {
+                                    strings.libraryAllShows
+                                },
+                                onBrowseAll = {
+                                    extraActions.onBrowseAll(
+                                        if (state.activeTab == HomeTab.MOVIES) MediaType.MOVIE else MediaType.SERIES
+                                    )
+                                }
                             )
                         }
                     }
@@ -840,9 +921,9 @@ private fun HomeMainCanvas(
                             ) {
                                 Text(
                                     text = if (isFiltered) {
-                                        "No titles match \"${state.availabilityFilter.label}\""
+                                        strings.homeNoTitlesMatch.format(state.availabilityFilter.localized(strings))
                                     } else {
-                                        "Nothing to show here yet"
+                                        strings.homeNothingYet
                                     },
                                     color = colors.white,
                                     fontSize = 18.sp,
@@ -851,9 +932,9 @@ private fun HomeMainCanvas(
                                 Spacer(Modifier.height(6.dp))
                                 Text(
                                     text = if (isFiltered) {
-                                        "Switch back to All or pick another genre to keep browsing."
+                                        strings.homeNoTitlesMatchHint
                                     } else {
-                                        "Your libraries returned no titles. Use Refresh in the menu to try again."
+                                        strings.homeNothingYetHint
                                     },
                                     color = colors.textSecondary,
                                     fontSize = 13.sp
@@ -1009,13 +1090,13 @@ private fun AppleTvTopGlassBar(
                 onClick = onOpenSyncPlay
             )
             TopBarUtilityIcon(Icons.Filled.Tune, strings.actionCustomizeHome, onClick = onOpenCustomizeHome)
-            TopBarUtilityIcon(Icons.Filled.Palette, "Appearance", onClick = onOpenAppearance)
+            TopBarUtilityIcon(Icons.Filled.Palette, strings.homeAppearance, onClick = onOpenAppearance)
             if (hasUpdate) {
-                TopBarUtilityIcon(Icons.Filled.SystemUpdate, "Update", highlighted = true, onClick = onOpenUpdate)
+                TopBarUtilityIcon(Icons.Filled.SystemUpdate, strings.homeUpdate, highlighted = true, onClick = onOpenUpdate)
             }
-            TopBarUtilityIcon(Icons.Filled.Refresh, "Refresh", onClick = onRefresh)
+            TopBarUtilityIcon(Icons.Filled.Refresh, strings.commonRefresh, onClick = onRefresh)
             TopBarUtilityIcon(Icons.Filled.Person, profileName, onClick = onSwitchProfile)
-            TopBarUtilityIcon(Icons.Filled.Settings, "Servers", onClick = onOpenSettings)
+            TopBarUtilityIcon(Icons.Filled.Settings, strings.navSettings, onClick = onOpenSettings)
         }
     }
 }
@@ -1100,13 +1181,13 @@ private fun DisneyTopHeaderBar(
                 onClick = onOpenSyncPlay
             )
             TopBarUtilityIcon(Icons.Filled.Tune, strings.actionCustomizeHome, onClick = onOpenCustomizeHome)
-            TopBarUtilityIcon(Icons.Filled.Palette, "Appearance", onClick = onOpenAppearance)
+            TopBarUtilityIcon(Icons.Filled.Palette, strings.homeAppearance, onClick = onOpenAppearance)
             if (hasUpdate) {
-                TopBarUtilityIcon(Icons.Filled.SystemUpdate, "Update", highlighted = true, onClick = onOpenUpdate)
+                TopBarUtilityIcon(Icons.Filled.SystemUpdate, strings.homeUpdate, highlighted = true, onClick = onOpenUpdate)
             }
-            TopBarUtilityIcon(Icons.Filled.Refresh, "Refresh", onClick = onRefresh)
+            TopBarUtilityIcon(Icons.Filled.Refresh, strings.commonRefresh, onClick = onRefresh)
             TopBarUtilityIcon(Icons.Filled.Person, profileName, onClick = onSwitchProfile)
-            TopBarUtilityIcon(Icons.Filled.Settings, "Servers", onClick = onOpenSettings)
+            TopBarUtilityIcon(Icons.Filled.Settings, strings.navSettings, onClick = onOpenSettings)
         }
     }
 }
@@ -1229,6 +1310,7 @@ private fun AvailabilityFilterBar(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1268,7 +1350,7 @@ private fun AvailabilityFilterBar(
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) {
                     Text(
-                        text = filter.label,
+                        text = filter.localized(strings),
                         color = if (selected && filter != AvailabilityFilter.REQUESTABLE) colors.deepBlack else colors.white,
                         fontSize = 12.sp,
                         fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
@@ -1279,13 +1361,13 @@ private fun AvailabilityFilterBar(
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (!isSeerrConfigured) {
-                StatusTagChip("Jellyfin-Only Mode", colors.downloadingBlue)
+                StatusTagChip(strings.homeJellyfinOnlyMode, colors.downloadingBlue)
             }
             if (isKidsMode) {
-                StatusTagChip("Kids Mode Active", colors.matchGreen)
+                StatusTagChip(strings.homeKidsModeActive, colors.matchGreen)
             }
             if (activeSyncPlayName != null) {
-                StatusTagChip("SyncPlay: $activeSyncPlayName", colors.accent)
+                StatusTagChip(strings.homeSyncPlayChip.format(activeSyncPlayName), colors.accent)
             }
         }
     }
@@ -1317,15 +1399,47 @@ private fun StatusTagChip(label: String, tint: Color) {
 private fun GenreFilterBar(
     selectedGenre: GenreFilterOption,
     onSelectGenre: (GenreFilterOption) -> Unit,
-    bringIntoViewSpec: BringIntoViewSpec? = null
+    bringIntoViewSpec: BringIntoViewSpec? = null,
+    browseAllLabel: String? = null,
+    onBrowseAll: (() -> Unit)? = null
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     WithBringIntoViewSpec(bringIntoViewSpec) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = spec.contentStartPaddingDp.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        if (onBrowseAll != null && browseAllLabel != null) {
+            item(key = "browse_all", contentType = "browse_all_chip") {
+                var focused by remember { mutableStateOf(false) }
+                val shape = RoundedCornerShape(20.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(shape)
+                        .background(if (focused) colors.white else colors.accent)
+                        .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                        .clickable { onBrowseAll() }
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.GridView,
+                        contentDescription = null,
+                        tint = if (focused) colors.deepBlack else colors.white,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = browseAllLabel,
+                        color = if (focused) colors.deepBlack else colors.white,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
         items(GenreFilterOption.ALL_GENRES, key = { it.id }, contentType = { "genre_chip" }) { genre ->
             var focused by remember { mutableStateOf(false) }
             val selected = selectedGenre.id == genre.id
@@ -1348,7 +1462,7 @@ private fun GenreFilterBar(
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 Text(
-                    text = genre.label,
+                    text = genre.localizedLabel(strings),
                     color = if (selected) colors.deepBlack else colors.white,
                     fontSize = 13.sp,
                     fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
@@ -1415,11 +1529,11 @@ private fun PosterOptionsDialog(
             )
             val subtitle = buildList {
                 item.releaseYear?.let(::add)
-                add(if (item.mediaType == MediaType.MOVIE) "Movie" else "TV Series")
+                add(if (item.mediaType == MediaType.MOVIE) strings.commonMovie else strings.commonTvSeries)
                 when {
-                    item.isPlayable -> add("In Library")
-                    item.overallAvailability.isRequestedOrDownloading -> add("Requested / Downloading")
-                    item.canRequestHd -> add("Available to Request")
+                    item.isPlayable -> add(strings.commonInLibrary)
+                    item.overallAvailability.isRequestedOrDownloading -> add(strings.homeRequestedDownloading)
+                    item.canRequestHd -> add(strings.homeAvailableToRequest)
                 }
             }.joinToString(" • ")
             Text(subtitle, color = colors.textSecondary, fontSize = 13.sp)
@@ -1457,11 +1571,11 @@ private fun PosterOptionsDialog(
             }
             ContextActionRow(
                 icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
-                label = if (item.isInMyList) "Remove from My List" else "Add to My List",
+                label = if (item.isInMyList) strings.homeRemoveFromMyList else strings.homeAddToMyList,
                 onClick = onToggleMyList,
                 modifier = firstModifier()
             )
-            ContextActionRow(Icons.Filled.Info, "Details, Cast & Trailers", onViewDetails)
+            ContextActionRow(Icons.Filled.Info, strings.homeDetailsCastTrailers, onViewDetails)
         }
     }
 }
@@ -1512,7 +1626,7 @@ private fun ContinueWatchingOptionsDialog(
                 modifier = Modifier.focusRequester(firstActionFocusRequester)
             )
             ContextActionRow(Icons.Filled.Info, strings.actionMoreInfo, onViewDetails)
-            ContextActionRow(Icons.Filled.DeleteOutline, "Remove from Continue Watching", onRemove)
+            ContextActionRow(Icons.Filled.DeleteOutline, strings.homeRemoveFromContinue, onRemove)
         }
     }
 }
@@ -1823,7 +1937,7 @@ private fun NetflixNavRail(
             )
             NavRailItem(
                 icon = Icons.Filled.Palette,
-                label = "Appearance",
+                label = strings.homeAppearance,
                 expanded = expanded,
                 selected = false,
                 onClick = onOpenAppearance
@@ -1831,7 +1945,7 @@ private fun NetflixNavRail(
             if (hasUpdate) {
                 NavRailItem(
                     icon = Icons.Filled.SystemUpdate,
-                    label = "App Update",
+                    label = strings.homeAppUpdate,
                     expanded = expanded,
                     selected = true,
                     onClick = onOpenUpdate
@@ -1839,7 +1953,7 @@ private fun NetflixNavRail(
             }
             NavRailItem(
                 icon = Icons.Filled.Refresh,
-                label = "Refresh",
+                label = strings.commonRefresh,
                 expanded = expanded,
                 selected = false,
                 onClick = onRefresh
@@ -1853,7 +1967,7 @@ private fun NetflixNavRail(
             )
             NavRailItem(
                 icon = Icons.Filled.Settings,
-                label = "Servers",
+                label = strings.navSettings,
                 expanded = expanded,
                 selected = false,
                 onClick = onOpenSettings
@@ -1958,6 +2072,7 @@ private fun CollectionsHubContent(
     onOpenCollection: (CollectionSummary) -> Unit
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     val spec = SeerflixTokens.spec
     val topPadding = if (spec.navStyle == NavLayoutStyle.TOP_GLASS_PILL) 92.dp else 28.dp
     val cardCorner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
@@ -1972,10 +2087,10 @@ private fun CollectionsHubContent(
                     modifier = Modifier.size(48.dp)
                 )
                 Spacer(Modifier.height(14.dp))
-                Text("No Jellyfin Collections found", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(strings.homeNoCollections, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "Create BoxSets in Jellyfin to browse sagas and complete missing sequels here.",
+                    text = strings.homeNoCollectionsHint,
                     color = colors.textSecondary,
                     fontSize = 14.sp
                 )
@@ -1993,14 +2108,14 @@ private fun CollectionsHubContent(
         item(key = "collections_header", contentType = "header") {
             Column {
                 Text(
-                    text = "Collections",
+                    text = strings.navCollections,
                     color = colors.white,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Black
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "Browse your Jellyfin BoxSets and discover missing entries to complete every saga.",
+                    text = strings.homeCollectionsSubtitle,
                     color = colors.textSecondary,
                     fontSize = 13.sp
                 )
@@ -2089,6 +2204,7 @@ private fun CollectionDetailsDialog(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val buttonCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     val parts = remember(collection.items) { collection.items.distinctBy { it.id } }
@@ -2147,7 +2263,7 @@ private fun CollectionDetailsDialog(
                         ) {
                             Icon(Icons.Filled.CloudDownload, contentDescription = null, tint = colors.white, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Request Missing ($missingCount)", color = colors.white, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(strings.detailsRequestMissing.format(missingCount), color = colors.white, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     var closeFocused by remember { mutableStateOf(false) }
@@ -2162,7 +2278,7 @@ private fun CollectionDetailsDialog(
                             .clickable(onClick = onDismiss),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close", tint = colors.white, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Filled.Close, contentDescription = strings.commonClose, tint = colors.white, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -2195,7 +2311,7 @@ private fun CollectionDetailsDialog(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "No titles found in this collection.",
+                        text = strings.homeCollectionEmpty,
                         color = colors.textSecondary,
                         fontSize = 14.sp
                     )
@@ -2251,10 +2367,10 @@ private fun CollectionDetailsDialog(
                                     text = listOfNotNull(
                                         part.releaseYear,
                                         when {
-                                            part.isPlayable -> "In Library"
-                                            part.overallAvailability == AvailabilityTier.PROCESSING -> "Downloading"
-                                            part.overallAvailability == AvailabilityTier.PENDING -> "Requested"
-                                            part.canRequestHd -> "Missing from Library"
+                                            part.isPlayable -> strings.commonInLibrary
+                                            part.overallAvailability == AvailabilityTier.PROCESSING -> strings.commonDownloading
+                                            part.overallAvailability == AvailabilityTier.PENDING -> strings.commonRequested
+                                            part.canRequestHd -> strings.homeMissingFromLibrary
                                             else -> null
                                         }
                                     ).joinToString(" • "),
@@ -2263,10 +2379,10 @@ private fun CollectionDetailsDialog(
                                 )
                             }
                             val actionLabel = when {
-                                part.isPlayable -> "Play"
-                                part.overallAvailability.isRequestedOrDownloading -> "Requested"
-                                part.canRequestHd -> "+ Request"
-                                else -> "Details"
+                                part.isPlayable -> strings.actionPlay
+                                part.overallAvailability.isRequestedOrDownloading -> strings.commonRequested
+                                part.canRequestHd -> "+ " + strings.actionRequestMore
+                                else -> strings.homeDetails
                             }
                             Box(
                                 modifier = Modifier
@@ -2303,6 +2419,7 @@ private fun ReadyRequestAlertsBanner(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val horizontalPad = spec.contentStartPaddingDp.dp
     Column(
         modifier = Modifier
@@ -2334,7 +2451,7 @@ private fun ReadyRequestAlertsBanner(
                     Spacer(Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Just Arrived • ${alert.title}",
+                            text = strings.homeJustArrived.format(alert.title),
                             color = colors.white,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
@@ -2342,7 +2459,7 @@ private fun ReadyRequestAlertsBanner(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "Your Seerr request finished downloading and is ready to watch.",
+                            text = strings.homeJustArrivedBody,
                             color = colors.textSecondary,
                             fontSize = 12.sp,
                             maxLines = 1,
@@ -2362,7 +2479,7 @@ private fun ReadyRequestAlertsBanner(
                             .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) {
                         Text(
-                            text = "Watch Now",
+                            text = strings.homeFilterWatchNow,
                             color = colors.deepBlack,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
@@ -2379,7 +2496,7 @@ private fun ReadyRequestAlertsBanner(
                             .padding(horizontal = 12.dp, vertical = 7.dp)
                     ) {
                         Text(
-                            text = "Dismiss",
+                            text = strings.homeDismiss,
                             color = colors.textPrimary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -2392,12 +2509,18 @@ private fun ReadyRequestAlertsBanner(
 }
 
 @Composable
+@OptIn(ExperimentalFoundationApi::class)
 private fun LiveTvGuideContent(
     channels: List<LiveTvChannel>,
     recordings: List<UnifiedMediaItem>,
     onTuneChannel: (String) -> Unit,
-    onOpenRecording: (UnifiedMediaItem) -> Unit
+    onOpenRecording: (UnifiedMediaItem) -> Unit,
+    scheduled: List<ScheduledRecording> = emptyList(),
+    dvrFeedback: String? = null,
+    onOpenChannelMenu: (LiveTvChannel) -> Unit = {},
+    onCancelScheduled: (ScheduledRecording) -> Unit = {}
 ) {
+    val strings = AppStrings.current
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val topPadding = if (spec.navStyle == NavLayoutStyle.TOP_GLASS_PILL) 92.dp else 28.dp
@@ -2413,10 +2536,10 @@ private fun LiveTvGuideContent(
                     modifier = Modifier.size(48.dp)
                 )
                 Spacer(Modifier.height(14.dp))
-                Text("No Live TV Channels Found", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text(strings.liveNoChannels, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "Configure an IPTV / HDHomeRun tuner & XMLTV guide in Jellyfin Dashboard → Live TV.",
+                    text = strings.liveNoChannelsHint,
                     color = colors.textSecondary,
                     fontSize = 14.sp
                 )
@@ -2433,14 +2556,14 @@ private fun LiveTvGuideContent(
         item(key = "live_tv_header") {
             Column {
                 Text(
-                    text = "Live TV & DVR Guide",
+                    text = strings.liveGuideTitle,
                     color = colors.white,
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Black
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = "${channels.size} channel(s) available • Select any channel to tune in live.",
+                    text = strings.liveChannelCount.format(channels.size),
                     color = colors.textSecondary,
                     fontSize = 13.sp
                 )
@@ -2461,7 +2584,11 @@ private fun LiveTvGuideContent(
                         cardCorner
                     )
                     .onFocusChanged { focused = it.isFocused || it.hasFocus }
-                    .clickable { onTuneChannel(ch.id) }
+                    // OK tunes in; holding OK opens record / cancel options for the programmes.
+                    .combinedClickable(
+                        onClick = { onTuneChannel(ch.id) },
+                        onLongClick = { onOpenChannelMenu(ch) }
+                    )
                     .padding(14.dp)
             ) {
                 // Channel number + logo
@@ -2507,8 +2634,9 @@ private fun LiveTvGuideContent(
                 // Now Playing & Progress
                 Column(modifier = Modifier.weight(1.2f)) {
                     val cur = ch.currentProgram
+                    if (cur?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
                     Text(
-                        text = cur?.title ?: "Live Stream",
+                        text = cur?.title ?: strings.liveStream,
                         color = colors.white,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
@@ -2518,7 +2646,7 @@ private fun LiveTvGuideContent(
                     if (cur != null && cur.timeRangeLabel.isNotBlank()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = "ON NOW • ${cur.timeRangeLabel}",
+                            text = strings.liveOnNow.format(cur.timeRangeLabel),
                             color = colors.matchGreen,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold
@@ -2549,8 +2677,9 @@ private fun LiveTvGuideContent(
                 // Up Next
                 Column(modifier = Modifier.weight(0.9f)) {
                     ch.nextProgram?.let { nxt ->
+                        if (nxt.isRecording) RecBadge(strings.dvrRecordingBadge)
                         Text(
-                            text = "UP NEXT",
+                            text = strings.liveUpNext,
                             color = colors.textMuted,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
@@ -2575,11 +2704,73 @@ private fun LiveTvGuideContent(
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = "Tune In",
+                        text = strings.liveTuneIn,
                         color = if (focused) colors.primaryButtonFg else colors.white,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
+                }
+            }
+        }
+
+        if (dvrFeedback != null) {
+            item(key = "dvr_feedback") {
+                val text = when {
+                    dvrFeedback == "single" -> strings.dvrRecordingSet
+                    dvrFeedback == "series" -> strings.dvrSeriesSet
+                    dvrFeedback == "cancelled" -> strings.dvrCancelled
+                    else -> strings.dvrFailed.format(dvrFeedback.removePrefix("error:"))
+                }
+                Text(text, color = colors.matchGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        item(key = "dvr_scheduled_header") {
+            Text(
+                text = strings.dvrScheduled,
+                color = colors.white,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 12.dp)
+            )
+        }
+        if (scheduled.isEmpty()) {
+            item(key = "dvr_scheduled_empty") {
+                Text(strings.dvrNoneScheduled, color = colors.textSecondary, fontSize = 14.sp)
+            }
+        } else {
+            items(scheduled, key = { "timer_${it.id}" }, contentType = { "timer" }) { rec ->
+                var focused by remember { mutableStateOf(false) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(cardCorner)
+                        .background(if (focused) colors.surfaceElevated else colors.surface)
+                        .border(if (focused) 2.dp else 1.dp, if (focused) colors.focusBorder else colors.badgeBorder, cardCorner)
+                        .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                        .clickable { onCancelScheduled(rec) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    RecBadge(strings.dvrRecordingBadge)
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(rec.title, color = colors.white, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val sub = listOfNotNull(
+                            rec.timeLabel.takeIf { it.isNotBlank() },
+                            rec.channelName,
+                            strings.dvrRecordSeries.takeIf { rec.isSeriesRule }
+                        ).joinToString(" • ")
+                        if (sub.isNotBlank()) Text(sub, color = colors.textSecondary, fontSize = 12.sp)
+                    }
+                    if (focused) {
+                        Text(
+                            if (rec.isSeriesRule) strings.dvrCancelSeries else strings.dvrCancelRecording,
+                            color = colors.accent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -2589,7 +2780,7 @@ private fun LiveTvGuideContent(
                 CatalogRowSection(
                     row = CatalogRow(
                         id = "dvr_recordings",
-                        title = "DVR Recordings",
+                        title = strings.liveDvrRecordings,
                         style = RowStyle.POSTER,
                         items = recordings
                     ),
@@ -2653,7 +2844,7 @@ private fun CustomizeHomeDialog(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Customize Home Layout • ${profile.name}",
+                text = strings.customizeTitle.format(profile.name),
                 color = colors.white,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
@@ -2661,7 +2852,7 @@ private fun CustomizeHomeDialog(
 
             if (libraries.isNotEmpty()) {
                 Text(
-                    text = "Pin Jellyfin Libraries as Home Rows",
+                    text = strings.customizePinLibraries,
                     color = colors.textSecondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
@@ -2703,7 +2894,7 @@ private fun CustomizeHomeDialog(
             }
 
             Text(
-                text = "Default Startup Tab",
+                text = strings.customizeStartupTab,
                 color = colors.textSecondary,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold
@@ -2733,7 +2924,7 @@ private fun CustomizeHomeDialog(
 
             if (orderedRows.isNotEmpty()) {
                 Text(
-                    text = "Hide / Reorder Home Rows",
+                    text = strings.customizeHideReorder,
                     color = colors.textSecondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
@@ -2765,7 +2956,7 @@ private fun CustomizeHomeDialog(
                             )
                             SmallIconAction(
                                 icon = if (hidden) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
-                                label = if (hidden) "Show" else "Hide",
+                                label = if (hidden) strings.customizeShow else strings.customizeHide,
                                 onClick = {
                                     if (hidden) hiddenRows.remove(rowId) else hiddenRows.add(rowId)
                                 }
@@ -2773,7 +2964,7 @@ private fun CustomizeHomeDialog(
                             Spacer(Modifier.width(6.dp))
                             SmallIconAction(
                                 icon = Icons.Filled.ArrowUpward,
-                                label = "Up",
+                                label = strings.customizeUp,
                                 enabled = idx > 0,
                                 onClick = {
                                     val moved = orderedRows.removeAt(idx)
@@ -2783,7 +2974,7 @@ private fun CustomizeHomeDialog(
                             Spacer(Modifier.width(6.dp))
                             SmallIconAction(
                                 icon = Icons.Filled.ArrowDownward,
-                                label = "Down",
+                                label = strings.customizeDown,
                                 enabled = idx < orderedRows.lastIndex,
                                 onClick = {
                                     val moved = orderedRows.removeAt(idx)
@@ -2802,7 +2993,7 @@ private fun CustomizeHomeDialog(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 SmallTextButton(
-                    text = "Save Layout",
+                    text = strings.customizeSave,
                     isPrimary = true,
                     onClick = {
                         onSave(
@@ -2838,7 +3029,9 @@ private fun SyncPlayDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
-    var roomName by remember { mutableStateOf("Movie Night") }
+    val strings = AppStrings.current
+    val defaultRoomName = strings.syncPlayDefaultRoom
+    var roomName by remember { mutableStateOf(defaultRoomName) }
     val createRoomFocusRequester = remember { FocusRequester() }
 
     Dialog(onDismissRequest = onDismiss) {
@@ -2863,9 +3056,9 @@ private fun SyncPlayDialog(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Groups, contentDescription = null, tint = colors.accent, modifier = Modifier.size(22.dp))
                     Spacer(Modifier.width(10.dp))
-                    Text("SyncPlay • Watch Together", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                    Text(strings.syncPlayTitle, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                 }
-                SmallIconAction(icon = Icons.Filled.Refresh, label = "Refresh", onClick = onRefresh)
+                SmallIconAction(icon = Icons.Filled.Refresh, label = strings.commonRefresh, onClick = onRefresh)
             }
 
             if (activeGroup != null) {
@@ -2880,21 +3073,21 @@ private fun SyncPlayDialog(
                         .padding(12.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Active Room: ${activeGroup.groupName}", color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(strings.syncPlayActiveRoom.format(activeGroup.groupName), color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            text = "${activeGroup.participants.size.coerceAtLeast(1)} viewer(s) • ${activeGroup.state}",
+                            text = strings.syncPlayViewers.format(activeGroup.participants.size.coerceAtLeast(1), activeGroup.state),
                             color = colors.matchGreen,
                             fontSize = 12.sp
                         )
                     }
-                    SmallTextButton(text = "Leave Room", isPrimary = false, onClick = onLeaveGroup)
+                    SmallTextButton(text = strings.syncPlayLeave, isPrimary = false, onClick = onLeaveGroup)
                 }
             }
 
             OutlinedTextField(
                 value = roomName,
                 onValueChange = { roomName = it },
-                label = { Text("New Watch Party Name") },
+                label = { Text(strings.syncPlayNewName) },
                 singleLine = true,
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = colors.white,
@@ -2906,15 +3099,15 @@ private fun SyncPlayDialog(
             )
 
             SmallTextButton(
-                text = "Create Watch Party",
+                text = strings.syncPlayCreate,
                 isPrimary = true,
                 onClick = { onCreateGroup(roomName) },
                 modifier = Modifier.fillMaxWidth().focusRequester(createRoomFocusRequester)
             )
 
-            Text("Active Jellyfin SyncPlay Rooms", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Text(strings.syncPlayRooms, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             if (groups.isEmpty()) {
-                Text("No active rooms yet. Create one above and start playing!", color = colors.textMuted, fontSize = 12.sp)
+                Text(strings.syncPlayNoRooms, color = colors.textMuted, fontSize = 12.sp)
             } else {
                 LazyColumn(
                     modifier = Modifier
@@ -2936,20 +3129,20 @@ private fun SyncPlayDialog(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(grp.groupName, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(
-                                    text = "${grp.participants.size} participant(s) • ${grp.state}",
+                                    text = strings.syncPlayParticipants.format(grp.participants.size, grp.state),
                                     color = colors.textSecondary,
                                     fontSize = 11.sp
                                 )
                             }
                             if (!isCurrent) {
-                                SmallTextButton(text = "Join", isPrimary = true, onClick = { onJoinGroup(grp.groupId) })
+                                SmallTextButton(text = strings.syncPlayJoin, isPrimary = true, onClick = { onJoinGroup(grp.groupId) })
                             }
                         }
                     }
                 }
             }
 
-            SmallTextButton(text = "Close", isPrimary = false, onClick = onDismiss, modifier = Modifier.fillMaxWidth())
+            SmallTextButton(text = strings.commonClose, isPrimary = false, onClick = onDismiss, modifier = Modifier.fillMaxWidth())
         }
     }
 }
@@ -2962,6 +3155,7 @@ private fun AppUpdateDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val strings = AppStrings.current
     val closeFocusRequester = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
         LaunchedEffect(Unit) {
@@ -2981,7 +3175,7 @@ private fun AppUpdateDialog(
                 Icon(Icons.Filled.SystemUpdate, contentDescription = null, tint = colors.matchGreen, modifier = Modifier.size(24.dp))
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    text = "Lumen ${updateInfo.latestVersion} Available",
+                    text = strings.updateAvailable.format(updateInfo.latestVersion),
                     color = colors.white,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
@@ -2997,12 +3191,12 @@ private fun AppUpdateDialog(
                 )
             }
             Text(
-                text = "GitHub Release: ${updateInfo.htmlUrl}",
+                text = strings.updateReleaseLink.format(updateInfo.htmlUrl),
                 color = colors.matchGreen,
                 fontSize = 12.sp
             )
             SmallTextButton(
-                text = "Close",
+                text = strings.commonClose,
                 isPrimary = true,
                 onClick = onDismiss,
                 modifier = Modifier.fillMaxWidth().focusRequester(closeFocusRequester)
@@ -3075,5 +3269,88 @@ private fun SmallTextButton(
     }
 }
 
+@Composable
+private fun RecBadge(label: String) {
+    Box(
+        modifier = Modifier
+            .padding(bottom = 3.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color(0xFFD32F2F))
+            .padding(horizontal = 6.dp, vertical = 1.dp)
+    ) {
+        Text(label, color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Black)
+    }
+}
 
+/** Hold-OK menu on a Live TV channel: watch, record this / next programme, record or cancel the series. */
+@Composable
+private fun LiveTvProgramDialog(
+    channel: LiveTvChannel,
+    onWatch: () -> Unit,
+    onRecord: (programId: String, series: Boolean) -> Unit,
+    onCancel: (timerId: String) -> Unit,
+    onCancelSeries: (seriesTimerId: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(80L)
+        runCatching { firstFocus.requestFocus() }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .width(560.dp)
+                .clip(RoundedCornerShape(spec.dialogCornerRadiusDp.dp))
+                .background(colors.dialogSurface)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(channel.name, color = colors.white, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(strings.dvrProgramOptions, color = colors.textSecondary, fontSize = 13.sp)
+            DvrMenuButton(strings.dvrWatchLive, onWatch, Modifier.focusRequester(firstFocus))
+            listOfNotNull(channel.currentProgram, channel.nextProgram).forEach { program ->
+                Text(
+                    "${program.title}${if (program.timeRangeLabel.isNotBlank()) "  •  ${program.timeRangeLabel}" else ""}",
+                    color = colors.white,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+                val timerId = program.timerId
+                if (!timerId.isNullOrBlank()) {
+                    DvrMenuButton(strings.dvrCancelRecording, { onCancel(timerId) })
+                } else {
+                    DvrMenuButton(strings.dvrRecord, { onRecord(program.id, false) })
+                }
+                val seriesTimerId = program.seriesTimerId
+                if (!seriesTimerId.isNullOrBlank()) {
+                    DvrMenuButton(strings.dvrCancelSeries, { onCancelSeries(seriesTimerId) })
+                } else if (program.isSeries) {
+                    DvrMenuButton(strings.dvrRecordSeries, { onRecord(program.id, true) })
+                }
+            }
+        }
+    }
+}
 
+@Composable
+private fun DvrMenuButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val colors = SeerflixTokens.colors
+    val shape = RoundedCornerShape(SeerflixTokens.spec.buttonCornerRadiusDp.dp)
+    var focused by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(if (focused) colors.white else colors.secondaryButtonBg)
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Text(label, color = if (focused) colors.deepBlack else colors.white, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}

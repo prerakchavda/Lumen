@@ -28,6 +28,11 @@ import com.seerflix.tv.core.network.MediaClient
 import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.player.ResolvedPreviewStream
 import com.seerflix.tv.core.player.SyncPlayManager
+import com.seerflix.tv.core.network.JellyfinSocketClient
+import com.seerflix.tv.core.network.ServerEvent
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filterIsInstance
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import com.seerflix.tv.core.tv.TvChannelSyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -88,6 +93,11 @@ data class HomeUiState(
     val collections: List<CollectionSummary> = emptyList(),
     val liveTvChannels: List<LiveTvChannel> = emptyList(),
     val liveTvRecordings: List<UnifiedMediaItem> = emptyList(),
+    val liveTvScheduled: List<com.seerflix.tv.core.model.ScheduledRecording> = emptyList(),
+    /** Channel whose programme options (record / cancel) are open. */
+    val liveTvMenuChannel: LiveTvChannel? = null,
+    /** "single" / "series" / "cancelled" / "error:<msg>" after a DVR change, shown briefly. */
+    val dvrFeedback: String? = null,
     val libraryViews: List<JellyfinLibraryView> = emptyList(),
     val readyAlerts: List<ReadyRequestAlert> = emptyList(),
     val syncPlayGroups: List<SyncPlayGroup> = emptyList(),
@@ -112,6 +122,7 @@ data class HomeUiState(
     val errorMessage: String? = null
 )
 
+@OptIn(FlowPreview::class)
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val authRepository: AuthRepository,
@@ -124,7 +135,8 @@ class HomeViewModel @Inject constructor(
     /** Honours the self-signed-certificate toggle; used by the hero trailer preview player. */
     @MediaClient val previewHttpClient: OkHttpClient,
     /** Last good rows per (profile, tab, genre, filter): painted instantly, then revalidated. */
-    private val homeContentCache: HomeContentCache
+    private val homeContentCache: HomeContentCache,
+    socketClient: JellyfinSocketClient
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -152,7 +164,31 @@ class HomeViewModel @Inject constructor(
     @Volatile
     private var lastLoadedTab: HomeTab? = null
 
+    /** True while Home is the screen on top (resumed). */
+    @Volatile
+    private var isScreenVisible = false
+
+    /** The server reported a library change while Home was hidden: refresh when it comes back. */
+    @Volatile
+    private var pendingLibraryRefresh = false
+
     init {
+        // Live updates pushed by the server: new / removed titles (debounced, a library scan
+        // sends bursts) and watch state changed on another device.
+        viewModelScope.launch {
+            socketClient.events
+                .filterIsInstance<ServerEvent.LibraryChanged>()
+                .debounce(LIBRARY_CHANGE_DEBOUNCE_MS)
+                .collect {
+                    if (isScreenVisible) refreshInBackground() else pendingLibraryRefresh = true
+                }
+        }
+        viewModelScope.launch {
+            socketClient.events
+                .filterIsInstance<ServerEvent.UserDataChanged>()
+                .debounce(USER_DATA_DEBOUNCE_MS)
+                .collect { if (isScreenVisible) refreshContinueWatching() }
+        }
         viewModelScope.launch {
             authRepository.activeProfileFlow.collect { active ->
                 if (active != null) {
@@ -350,6 +386,65 @@ class HomeViewModel @Inject constructor(
     }
 
     private var continueWatchingJob: Job? = null
+
+    // ---- DVR ----
+
+    fun openLiveTvMenu(channel: LiveTvChannel) {
+        _uiState.update { it.copy(liveTvMenuChannel = channel) }
+    }
+
+    fun dismissLiveTvMenu() {
+        _uiState.update { it.copy(liveTvMenuChannel = null) }
+    }
+
+    /** Record one programme, or with [series] every airing of it. */
+    fun recordProgram(programId: String, series: Boolean) = changeRecording(
+        successMessage = if (series) "series" else "single"
+    ) { catalogRepository.scheduleRecording(programId, series) }
+
+    fun cancelRecording(timerId: String) = changeRecording("cancelled") { catalogRepository.cancelRecording(timerId) }
+
+    fun cancelSeriesRecording(seriesTimerId: String) =
+        changeRecording("cancelled") { catalogRepository.cancelSeriesRecording(seriesTimerId) }
+
+    private fun changeRecording(successMessage: String, action: suspend () -> Unit) {
+        _uiState.update { it.copy(liveTvMenuChannel = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching { action() }
+            _uiState.update { it.copy(dvrFeedback = if (result.isSuccess) successMessage else "error:${result.exceptionOrNull()?.message.orEmpty()}") }
+            // Pick up the new REC badges / scheduled list without a spinner.
+            if (_uiState.value.activeTab == HomeTab.LIVE_TV) refreshInBackground()
+            delay(3500L)
+            _uiState.update { it.copy(dvrFeedback = null) }
+        }
+    }
+
+    fun onScreenResumed() {
+        isScreenVisible = true
+        if (pendingLibraryRefresh) {
+            pendingLibraryRefresh = false
+            refreshInBackground()
+        } else {
+            refreshContinueWatching()
+        }
+    }
+
+    fun onScreenPaused() {
+        isScreenVisible = false
+    }
+
+    /** Fresh rows swapped in under the user: no spinner, hero and focus stay where they are. */
+    private fun refreshInBackground() {
+        val state = _uiState.value
+        if (state.isLoading || catalogJob?.isActive == true || lastLoadedTab != state.activeTab) return
+        loadCatalog(
+            tab = state.activeTab,
+            genre = state.selectedGenre,
+            availabilityFilter = state.availabilityFilter,
+            forceRefresh = true,
+            background = true
+        )
+    }
 
     /**
      * Called whenever Home becomes visible again (e.g. back from the player). Only swaps the
@@ -781,7 +876,9 @@ class HomeViewModel @Inject constructor(
         tab: HomeTab,
         genre: GenreFilterOption,
         availabilityFilter: AvailabilityFilter,
-        forceRefresh: Boolean = false
+        forceRefresh: Boolean = false,
+        /** Server-pushed refresh: keep the current page on screen until the new rows arrive. */
+        background: Boolean = false
     ) {
         // Cancel any in-flight load so rapid tab/filter switching can't race and let a stale
         // (slower) response overwrite the rows of the tab the user actually selected.
@@ -793,9 +890,9 @@ class HomeViewModel @Inject constructor(
                     activeTab = tab,
                     selectedGenre = genre,
                     availabilityFilter = availabilityFilter,
-                    isLoading = true,
+                    isLoading = if (background) it.isLoading else true,
                     errorMessage = null,
-                    previewStream = null
+                    previewStream = if (background) it.previewStream else null
                 )
             }
             val profile = authRepository.activeProfileFlow.first()
@@ -814,7 +911,7 @@ class HomeViewModel @Inject constructor(
             val cacheKey = homeCacheKeyFor(profile, tab, genre, availabilityFilter, serverConfig)
             saveLocallyEditedRows()
             var showingCachedContent = false
-            if (cacheKey != null && !forceRefresh) {
+            if (cacheKey != null && !forceRefresh && !background) {
                 val cachedRows = try {
                     homeContentCache.read(cacheKey, currentJellyfinBase())
                 } catch (e: CancellationException) {
@@ -846,6 +943,9 @@ class HomeViewModel @Inject constructor(
                         if (tab == HomeTab.LIVE_TV) {
                             catalogRepository.loadLiveTvChannelsAndPrograms(profile.jellyfinUserId)
                         } else emptyList()
+                    }
+                    val liveTvScheduledDeferred = async {
+                        if (tab == HomeTab.LIVE_TV) catalogRepository.loadScheduledRecordings() else emptyList()
                     }
                     val liveTvRecordingsDeferred = async {
                         if (tab == HomeTab.LIVE_TV) {
@@ -904,6 +1004,7 @@ class HomeViewModel @Inject constructor(
                         collections = collectionsDeferred.await(),
                         liveChannels = liveTvChannelsDeferred.await(),
                         liveRecordings = liveTvRecordingsDeferred.await(),
+                        liveScheduled = liveTvScheduledDeferred.await(),
                         featured = pickInitialFeatured(rows)
                     )
                 })
@@ -924,7 +1025,7 @@ class HomeViewModel @Inject constructor(
                 // Background swap over cached content: keep the hero (and its enrichment / preview)
                 // when the title the user is looking at is still on the page, so nothing jumps.
                 val currentFeaturedId = _uiState.value.featuredItem?.id
-                val keepFeatured = showingCachedContent && currentFeaturedId != null &&
+                val keepFeatured = (showingCachedContent || background) && currentFeaturedId != null &&
                     bundle.rows.any { row -> row.items.any { it.id == currentFeaturedId } }
                 _uiState.update {
                     it.copy(
@@ -932,6 +1033,7 @@ class HomeViewModel @Inject constructor(
                         collections = bundle.collections,
                         liveTvChannels = bundle.liveChannels,
                         liveTvRecordings = bundle.liveRecordings,
+                        liveTvScheduled = bundle.liveScheduled,
                         featuredItem = if (keepFeatured) it.featuredItem else bundle.featured,
                         isLoading = false
                     )
@@ -976,7 +1078,7 @@ class HomeViewModel @Inject constructor(
                         )
                     }
                 }
-                if (keepsCurrentContent) {
+                if (keepsCurrentContent && !background) {
                     // The full-screen error UI only appears when nothing is loaded, so tell the
                     // user a background refresh failed instead of failing silently.
                     showActionFeedback(message)
@@ -1070,6 +1172,10 @@ class HomeViewModel @Inject constructor(
         val collections: List<CollectionSummary>,
         val liveChannels: List<LiveTvChannel>,
         val liveRecordings: List<UnifiedMediaItem>,
+        val liveScheduled: List<com.seerflix.tv.core.model.ScheduledRecording> = emptyList(),
         val featured: UnifiedMediaItem?
     )
 }
+
+private const val LIBRARY_CHANGE_DEBOUNCE_MS = 8_000L
+private const val USER_DATA_DEBOUNCE_MS = 3_000L

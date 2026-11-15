@@ -325,4 +325,95 @@ interface JellyfinApi {
         @Query("MediaTypes") mediaTypes: String = "Video",
         @Query("EnableImages") enableImages: Boolean = false
     ): JellyfinItemsResponse
+
+    // ---- Remote control / live connection ----
+
+    /** Registers what this session can do, so other Jellyfin apps can "Play on" this TV. */
+    @POST("Sessions/Capabilities/Full")
+    suspend fun postSessionCapabilities(@Body body: JellyfinSessionCapabilitiesRequest)
+
+    /** Server clock, used to line SyncPlay commands up with the other group members. */
+    @GET("GetUtcTime")
+    suspend fun getUtcTime(): JellyfinUtcTimeResponse
+
+    @POST("SyncPlay/SetNewQueue")
+    suspend fun syncPlaySetNewQueue(@Body body: JellyfinSyncPlayNewQueueRequest)
+
+    @POST("SyncPlay/Ready")
+    suspend fun syncPlayReady(@Body body: JellyfinSyncPlayBufferingRequest)
+
+    @POST("SyncPlay/Buffering")
+    suspend fun syncPlayBuffering(@Body body: JellyfinSyncPlayBufferingRequest)
+
+    @POST("SyncPlay/Ping")
+    suspend fun syncPlayPing(@Body body: JellyfinSyncPlayPingRequest)
+
+    @POST("SyncPlay/Stop")
+    suspend fun syncPlayStop()
+
+    // ---- Diagnostics ----
+
+    /** Stores a log file on the server (Dashboard > Logs); needs "Allow client log upload". */
+    @POST("ClientLog/Document")
+    suspend fun uploadClientLog(@Body body: okhttp3.RequestBody): JellyfinClientLogResponse
+
+    // ---- DVR ----
+
+    @GET("LiveTv/Timers")
+    suspend fun getLiveTvTimers(
+        @Query("IsActive") isActive: Boolean? = null,
+        @Query("IsScheduled") isScheduled: Boolean? = true
+    ): JellyfinTimersResponse
+
+    /** Recording defaults (padding, channel, times) for a programme; posted back to create a timer. */
+    @GET("LiveTv/Timers/Defaults")
+    suspend fun getLiveTvTimerDefaults(@Query("programId") programId: String): kotlinx.serialization.json.JsonObject
+
+    @POST("LiveTv/Timers")
+    suspend fun createLiveTvTimer(@Body body: kotlinx.serialization.json.JsonObject)
+
+    @DELETE("LiveTv/Timers/{timerId}")
+    suspend fun cancelLiveTvTimer(@Path("timerId") timerId: String)
+
+    @GET("LiveTv/SeriesTimers")
+    suspend fun getLiveTvSeriesTimers(): JellyfinTimersResponse
+
+    @POST("LiveTv/SeriesTimers")
+    suspend fun createLiveTvSeriesTimer(@Body body: kotlinx.serialization.json.JsonObject)
+
+    @DELETE("LiveTv/SeriesTimers/{timerId}")
+    suspend fun cancelLiveTvSeriesTimer(@Path("timerId") timerId: String)
+
+    // ---- Library browsing ----
+
+    /** One page of a library for the A-Z grid, with server-side sort and filters. */
+    @GET("Users/{userId}/Items")
+    suspend fun browseItems(
+        @Path("userId") userId: String,
+        @Query("ParentId") parentId: String? = null,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("SortBy") sortBy: String = "SortName",
+        @Query("SortOrder") sortOrder: String = "Ascending",
+        @Query("Filters") filters: String? = null,
+        @Query("Genres") genres: String? = null,
+        @Query("Years") years: String? = null,
+        @Query("NameStartsWith") nameStartsWith: String? = null,
+        @Query("NameLessThan") nameLessThan: String? = null,
+        @Query("MaxOfficialRating") maxOfficialRating: String? = null,
+        @Query("StartIndex") startIndex: Int = 0,
+        @Query("Limit") limit: Int = 60,
+        @Query("Fields") fields: String = "ProviderIds,ProductionYear,OfficialRating,CommunityRating,UserData,PrimaryImageAspectRatio,Genres,RunTimeTicks",
+        @Query("ImageTypeLimit") imageTypeLimit: Int = 1,
+        @Query("EnableImageTypes") enableImageTypes: String = "Primary,Backdrop,Thumb",
+        @Query("EnableTotalRecordCount") enableTotalRecordCount: Boolean = true
+    ): JellyfinItemsResponse
+
+    @GET("Genres")
+    suspend fun getGenres(
+        @Query("UserId") userId: String,
+        @Query("ParentId") parentId: String? = null,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
+        @Query("SortBy") sortBy: String = "SortName"
+    ): JellyfinItemsResponse
 }

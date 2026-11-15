@@ -447,8 +447,14 @@ data class LiveTvProgram(
     val startMs: Long = 0L,
     val endMs: Long = 0L,
     val timeRangeLabel: String = "",
-    val isSeries: Boolean = false
+    val isSeries: Boolean = false,
+    /** Set when this programme is scheduled to record. */
+    val timerId: String? = null,
+    /** Set when the whole series is scheduled to record. */
+    val seriesTimerId: String? = null
 ) {
+    val isRecording: Boolean get() = !timerId.isNullOrBlank() || !seriesTimerId.isNullOrBlank()
+
     fun progressFraction(nowMs: Long = System.currentTimeMillis()): Float {
         if (endMs <= startMs) return 0f
         return ((nowMs - startMs).toFloat() / (endMs - startMs).toFloat()).coerceIn(0f, 1f)
@@ -463,6 +469,23 @@ data class LiveTvChannel(
     val logoUrl: String?,
     val currentProgram: LiveTvProgram? = null,
     val nextProgram: LiveTvProgram? = null
+)
+
+/** A recording scheduled on the server's DVR (one programme, or a whole series rule). */
+@Immutable
+data class ScheduledRecording(
+    val id: String,
+    val title: String,
+    val channelName: String?,
+    val startMs: Long,
+    val timeLabel: String,
+    val isSeriesRule: Boolean
+)
+
+/** One page of a library grid. */
+data class LibraryPage(
+    val items: List<UnifiedMediaItem>,
+    val totalCount: Int
 )
 
 @Immutable

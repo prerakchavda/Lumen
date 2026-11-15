@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -104,10 +105,11 @@ fun ArtworkFallbackTile(
     val tileBrush = remember(colors.surfaceElevated, colors.surface) {
         Brush.verticalGradient(listOf(colors.surfaceElevated, colors.surface))
     }
-    val subtitle = remember(item.releaseYear, item.mediaType) {
+    val strings = AppStrings.current
+    val subtitle = remember(item.releaseYear, item.mediaType, strings) {
         listOfNotNull(
             item.releaseYear,
-            if (item.mediaType.name == "MOVIE") "Movie" else "Series"
+            if (item.mediaType.name == "MOVIE") strings.commonMovie else strings.commonSeries
         ).joinToString(" • ")
     }
     Box(
@@ -149,6 +151,7 @@ fun AvailabilityBadge(
     compact: Boolean = false
 ) {
     val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
     val activeDownload = item.activeDownload
     val isRequestableBadge = activeDownload == null &&
         item.overallAvailability == AvailabilityTier.UNKNOWN &&
@@ -165,22 +168,22 @@ fun AvailabilityBadge(
             Triple(label, colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PROCESSING -> {
-            Triple(if (compact) "DL..." else "Downloading...", colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
+            Triple(if (compact) "DL..." else strings.cardDownloading, colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PENDING -> {
-            Triple("Requested", colors.pendingAmber.copy(alpha = 0.92f), colors.deepBlack)
+            Triple(strings.commonRequested, colors.pendingAmber.copy(alpha = 0.92f), colors.deepBlack)
         }
         item.has4k -> {
-            Triple(if (compact) "4K" else "4K Available", colors.matchGreen.copy(alpha = 0.9f), colors.deepBlack)
+            Triple(if (compact) "4K" else strings.detailsTierAvailable.format("4K"), colors.matchGreen.copy(alpha = 0.9f), colors.deepBlack)
         }
         item.hasHd -> {
-            Triple(if (compact) "PLAY" else "In Library", colors.accent.copy(alpha = 0.92f), colors.white)
+            Triple(if (compact) strings.cardBadgePlay else strings.commonInLibrary, colors.accent.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PARTIALLY_AVAILABLE -> {
-            Triple("Partial", colors.pendingAmber.copy(alpha = 0.9f), colors.deepBlack)
+            Triple(strings.cardPartial, colors.pendingAmber.copy(alpha = 0.9f), colors.deepBlack)
         }
         item.canRequestHd -> {
-            Triple(if (compact) "+ REQ" else "Requestable", colors.surfaceElevated.copy(alpha = 0.88f), colors.white)
+            Triple(if (compact) strings.cardBadgeRequest else strings.homeFilterRequestable, colors.surfaceElevated.copy(alpha = 0.88f), colors.white)
         }
         else -> return
     }
@@ -316,7 +319,7 @@ fun NetflixPosterCard(
             )
             val meta = listOfNotNull(
                 item.releaseYear,
-                if (item.mediaType.name == "MOVIE") "Movie" else "Series"
+                if (item.mediaType.name == "MOVIE") AppStrings.current.commonMovie else AppStrings.current.commonSeries
             ).joinToString(" • ")
             if (meta.isNotEmpty()) {
                 Text(
@@ -396,7 +399,7 @@ fun NetflixPosterCard(
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = "COLLECTION",
+                    text = AppStrings.current.cardCollection,
                     color = colors.white,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold
@@ -633,7 +636,7 @@ fun Top10PosterCard(
                         .padding(horizontal = 7.dp, vertical = 3.dp)
                 ) {
                     Text(
-                        text = "TOP $rank",
+                        text = AppStrings.current.cardTopRank.format(rank),
                         color = colors.white,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Black
@@ -854,7 +857,7 @@ fun ContinueWatchingCard(
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = "Hold OK",
+                        text = AppStrings.current.cardHoldOk,
                         color = colors.textSecondary,
                         fontSize = 9.sp,
                         fontWeight = FontWeight.SemiBold

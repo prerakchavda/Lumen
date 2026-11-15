@@ -30,6 +30,8 @@ import java.util.concurrent.TimeUnit
 class SeerflixApp : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
+        // First, so a crash anywhere later (including during start-up) is captured for upload.
+        com.seerflix.tv.core.diagnostics.CrashRecorder.install(this)
         scheduleRequestReadyWorker()
     }
 

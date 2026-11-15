@@ -31,6 +31,11 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.network.JellyfinSocketClient
+import com.seerflix.tv.core.network.ServerEvent
+import com.seerflix.tv.core.player.SyncPlayAction
+import com.seerflix.tv.core.player.SyncPlayManager
+import com.seerflix.tv.ui.components.ServerMessageOverlay
 import com.seerflix.tv.core.data.DetailsSeedCache
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.UiPreset
@@ -42,10 +47,15 @@ import com.seerflix.tv.feature.profiles.ProfilePickerScreen
 import com.seerflix.tv.feature.requests.RequestsScreen
 import com.seerflix.tv.feature.search.SearchScreen
 import com.seerflix.tv.feature.setup.SetupScreen
+import com.seerflix.tv.feature.settings.SettingsScreen
+import com.seerflix.tv.feature.library.LibraryScreen
+import com.seerflix.tv.core.diagnostics.DiagnosticsRepository
+import com.seerflix.tv.ui.components.CrashReportPrompt
 import com.seerflix.tv.ui.theme.SeerflixTheme
 import com.seerflix.tv.ui.theme.SeerflixTokens
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -53,6 +63,16 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var authRepository: AuthRepository
+
+    @Inject
+    lateinit var socketClient: JellyfinSocketClient
+
+    // Injected so it is created up front and listens for group messages from the first connect.
+    @Inject
+    lateinit var syncPlayManager: SyncPlayManager
+
+    @Inject
+    lateinit var diagnostics: DiagnosticsRepository
 
     private var latestIntentState by mutableStateOf<Intent?>(null)
 
@@ -64,13 +84,31 @@ class MainActivity : ComponentActivity() {
             val activePreset = activeProfile?.uiPreset ?: UiPreset.NETFLIX
             val activeLanguage = activeProfile?.uiLanguage ?: "en"
             SeerflixTheme(preset = activePreset, uiLanguage = activeLanguage) {
+                // (Re)connect the live server connection whenever the signed-in profile changes.
+                LaunchedEffect(activeProfile?.jellyfinToken) {
+                    if (activeProfile?.jellyfinToken.isNullOrBlank()) socketClient.stop() else socketClient.start()
+                }
                 SeerflixNavGraph(
                     authRepository = authRepository,
+                    socketClient = socketClient,
+                    syncPlayManager = syncPlayManager,
+                    diagnostics = diagnostics,
                     incomingIntent = latestIntentState,
                     onIntentHandled = { latestIntentState = null }
                 )
             }
         }
+    }
+
+    // Connected only while Lumen is on screen: a TV app shouldn't hold a socket in the background.
+    override fun onStart() {
+        super.onStart()
+        if (::socketClient.isInitialized) socketClient.start()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        socketClient.stop()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -90,7 +128,9 @@ private object Routes {
     const val SEARCH = "search?query={query}&personId={personId}&personName={personName}"
     const val REQUESTS = "requests"
     const val DETAILS = "details/{tmdbId}/{jellyfinId}/{mediaType}"
-    const val PLAYER = "player/{itemId}?mediaSourceId={mediaSourceId}"
+    const val PLAYER = "player/{itemId}?mediaSourceId={mediaSourceId}&startMs={startMs}&syncplay={syncplay}"
+    const val SETTINGS = "settings"
+    const val LIBRARY = "library?parentId={parentId}&title={title}&types={types}"
     const val TRAILER = "trailer?title={title}&youtubeKey={youtubeKey}&localTrailerId={localTrailerId}"
 
     fun search(query: String = "", personId: Int? = null, personName: String? = null): String {
@@ -111,11 +151,19 @@ private object Routes {
     fun details(tmdbId: Int, mediaType: MediaType): String =
         "details/$tmdbId/none/${mediaType.name}"
 
-    fun player(itemId: String, mediaSourceId: String? = null): String {
+    fun player(
+        itemId: String,
+        mediaSourceId: String? = null,
+        startMs: Long? = null,
+        fromSyncPlay: Boolean = false
+    ): String {
         val encItem = Uri.encode(itemId)
         val encSrc = Uri.encode(mediaSourceId.orEmpty())
-        return "player/$encItem?mediaSourceId=$encSrc"
+        return "player/$encItem?mediaSourceId=$encSrc&startMs=${startMs ?: 0L}&syncplay=$fromSyncPlay"
     }
+
+    fun library(parentId: String?, title: String, types: String): String =
+        "library?parentId=${Uri.encode(parentId.orEmpty())}&title=${Uri.encode(title)}&types=${Uri.encode(types)}"
 
     fun trailer(title: String, youtubeKey: String?, localTrailerId: String?): String {
         val encTitle = Uri.encode(title)
@@ -151,6 +199,9 @@ private fun resolveDeepLinkRoute(intent: Intent?): String? {
 @Composable
 private fun SeerflixNavGraph(
     authRepository: AuthRepository,
+    socketClient: JellyfinSocketClient,
+    syncPlayManager: SyncPlayManager,
+    diagnostics: DiagnosticsRepository,
     incomingIntent: Intent?,
     onIntentHandled: () -> Unit
 ) {
@@ -185,6 +236,54 @@ private fun SeerflixNavGraph(
         }
     }
 
+    // Messages pushed by the server: "Play on" from another Jellyfin app, remote navigation, admin
+    // messages, and SyncPlay switching the group to an item while no player is open here.
+    var serverMessage by remember { mutableStateOf<Pair<String, String>?>(null) }
+    LaunchedEffect(navController) {
+        socketClient.events.collect { event ->
+            val route = navController.currentBackStackEntry?.destination?.route
+            val signedIn = route != null && route != Routes.SETUP && route != Routes.PROFILES
+            when (event) {
+                is ServerEvent.Play -> {
+                    if (!signedIn) return@collect
+                    val itemId = event.itemIds.getOrNull(event.startIndex) ?: event.itemIds.firstOrNull() ?: return@collect
+                    if (route == Routes.PLAYER) navController.popBackStack()
+                    navController.navigate(
+                        Routes.player(itemId, event.mediaSourceId, startMs = event.startPositionTicks / 10_000L)
+                    )
+                }
+                is ServerEvent.GeneralCommand -> when (event.name) {
+                    "DisplayMessage" -> {
+                        val text = event.arguments["Text"].orEmpty()
+                        if (text.isNotBlank()) serverMessage = event.arguments["Header"].orEmpty() to text
+                    }
+                    "DisplayContent" -> if (signedIn) {
+                        val id = event.arguments["ItemId"] ?: return@collect
+                        val type = when (event.arguments["ItemType"]) {
+                            "Series", "Season", "Episode" -> MediaType.SERIES
+                            else -> MediaType.MOVIE
+                        }
+                        navController.navigate("details/0/$id/${type.name}")
+                    }
+                    "GoHome" -> if (signedIn) navController.popBackStack(Routes.HOME, inclusive = false)
+                    "Back" -> if (signedIn && route != Routes.HOME) navController.popBackStack()
+                }
+                else -> Unit
+            }
+        }
+    }
+    LaunchedEffect(navController) {
+        syncPlayManager.actions.collect { action ->
+            // With a player open, the player itself handles the group's item changes.
+            if (action !is SyncPlayAction.LoadItem || syncPlayManager.localPlayingItemId != null) return@collect
+            val route = navController.currentBackStackEntry?.destination?.route
+            if (route == null || route == Routes.SETUP || route == Routes.PROFILES) return@collect
+            navController.navigate(
+                Routes.player(action.itemId, startMs = action.startPositionTicks / 10_000L, fromSyncPlay = true)
+            )
+        }
+    }
+
     if (startDestination == null) {
         Box(
             modifier = Modifier
@@ -197,6 +296,7 @@ private fun SeerflixNavGraph(
         return
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     NavHost(
         navController = navController,
         startDestination = startDestination!!,
@@ -243,13 +343,45 @@ private fun SeerflixNavGraph(
         }
 
         composable(Routes.HOME) {
+            val strings = com.seerflix.tv.core.i18n.AppStrings.current
             HomeScreen(
+                onOpenLibrary = { type ->
+                    val movies = type == MediaType.MOVIE
+                    navController.navigate(
+                        Routes.library(
+                            parentId = null,
+                            title = if (movies) strings.libraryAllMovies else strings.libraryAllShows,
+                            types = if (movies) "Movie" else "Series"
+                        )
+                    )
+                },
                 onOpenDetails = { item -> navController.navigate(Routes.details(item)) },
                 onPlayDirect = { itemId -> navController.navigate(Routes.player(itemId)) },
                 onOpenSearch = { navController.navigate(Routes.search()) { launchSingleTop = true } },
                 onOpenRequests = { navController.navigate(Routes.REQUESTS) { launchSingleTop = true } },
                 onSwitchProfile = { navController.navigate(Routes.PROFILES) { launchSingleTop = true } },
-                onOpenSettings = { navController.navigate(Routes.SETUP) { launchSingleTop = true } }
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } }
+            )
+        }
+
+        composable(
+            route = Routes.LIBRARY,
+            arguments = listOf(
+                navArgument("parentId") { type = NavType.StringType; defaultValue = "" },
+                navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                navArgument("types") { type = NavType.StringType; defaultValue = "Movie,Series" }
+            )
+        ) {
+            LibraryScreen(
+                onBack = { navController.popBackStack() },
+                onOpenDetails = { item -> navController.navigate(Routes.details(item)) }
+            )
+        }
+
+        composable(Routes.SETTINGS) {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenServerSettings = { navController.navigate(Routes.SETUP) { launchSingleTop = true } }
             )
         }
 
@@ -309,7 +441,9 @@ private fun SeerflixNavGraph(
             route = Routes.PLAYER,
             arguments = listOf(
                 navArgument("itemId") { type = NavType.StringType },
-                navArgument("mediaSourceId") { type = NavType.StringType; defaultValue = "" }
+                navArgument("mediaSourceId") { type = NavType.StringType; defaultValue = "" },
+                navArgument("startMs") { type = NavType.StringType; defaultValue = "0" },
+                navArgument("syncplay") { type = NavType.StringType; defaultValue = "false" }
             )
         ) {
             PlayerScreen(onBack = { navController.popBackStack() })
@@ -326,5 +460,42 @@ private fun SeerflixNavGraph(
             PlayerScreen(onBack = { navController.popBackStack() })
         }
     }
-}
 
+    // After a crash: offer once (on Home) to store the report on the user's Jellyfin server.
+    var crashReport by remember { mutableStateOf<String?>(null) }
+    val crashScope = androidx.compose.runtime.rememberCoroutineScope()
+    LaunchedEffect(currentRoute) {
+        if (currentRoute == Routes.HOME && crashReport == null) {
+            crashReport = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { diagnostics.pendingCrash() }
+        }
+    }
+    crashReport?.let {
+        CrashReportPrompt(
+            onSend = {
+                crashReport = null
+                crashScope.launch {
+                    val result = diagnostics.upload()
+                    serverMessage = "" to when (result) {
+                        is com.seerflix.tv.core.diagnostics.LogUploadResult.Uploaded -> "Report saved on your server as ${result.fileName}"
+                        com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer -> "Your server doesn't accept app logs (Dashboard > General > Allow client log upload)."
+                        is com.seerflix.tv.core.diagnostics.LogUploadResult.Failed -> "Couldn't send the report: ${result.message}"
+                    }
+                }
+            },
+            onDismiss = {
+                crashReport = null
+                diagnostics.dismissCrash()
+            }
+        )
+    }
+
+    serverMessage?.let { (header, text) ->
+        ServerMessageOverlay(
+            header = header,
+            text = text,
+            onTimeout = { serverMessage = null },
+            modifier = Modifier.align(Alignment.TopCenter)
+        )
+    }
+    }
+}

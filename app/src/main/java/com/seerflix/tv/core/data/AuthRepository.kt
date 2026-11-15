@@ -212,6 +212,14 @@ class AuthRepository @Inject constructor(
         prefs.updateSubtitleAppearance(fontScale, backgroundAlpha)
     }
 
+    suspend fun updateSubtitleStyle(
+        textColor: com.seerflix.tv.core.model.SubtitleTextColor? = null,
+        edgeStyle: com.seerflix.tv.core.model.SubtitleEdgeStyle? = null,
+        position: com.seerflix.tv.core.model.SubtitlePosition? = null
+    ) {
+        prefs.updateSubtitleStyle(textColor, edgeStyle, position)
+    }
+
     suspend fun updatePlaybackPreferences(
         autoSkipIntro: Boolean? = null,
         autoSkipRecap: Boolean? = null,

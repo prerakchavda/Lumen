@@ -63,6 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -78,6 +80,7 @@ fun SearchScreen(
     viewModel: SearchViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val strings = AppStrings.current
     val voiceLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -98,7 +101,7 @@ fun SearchScreen(
         onVoiceSearch = {
             val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Search movies, TV shows, or actors")
+                putExtra(RecognizerIntent.EXTRA_PROMPT, strings.searchVoicePrompt)
             }
             runCatching { voiceLauncher.launch(intent) }
         },
@@ -122,6 +125,7 @@ fun SearchContent(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val gridMinWidth = if (spec.cardStyle == CardPresentationStyle.WIDESCREEN_16_9) 224.dp else 148.dp
     val searchInputFocusRequester = remember { FocusRequester() }
     val clearFilterFocusRequester = remember { FocusRequester() }
@@ -158,7 +162,7 @@ fun SearchContent(
         ) {
             SearchIconCircleButton(
                 icon = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
+                contentDescription = strings.commonBack,
                 onClick = onBack
             )
 
@@ -178,8 +182,8 @@ fun SearchContent(
                 onValueChange = onQueryChange,
                 placeholder = {
                     Text(
-                        if (state.isSeerrConfigured) "Search movies, TV shows, or cast (Library + Seerr)..."
-                        else "Search movies & TV shows in your Jellyfin library..."
+                        if (state.isSeerrConfigured) strings.searchPlaceholderSeerr
+                        else strings.searchPlaceholderLibrary
                     )
                 },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = colors.textSecondary) },
@@ -203,7 +207,7 @@ fun SearchContent(
 
             SearchIconCircleButton(
                 icon = Icons.Filled.Mic,
-                contentDescription = "Voice Search",
+                contentDescription = strings.searchVoice,
                 onClick = onVoiceSearch
             )
         }
@@ -237,7 +241,7 @@ fun SearchContent(
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) {
                     Text(
-                        text = genre.label,
+                        text = genre.localizedLabel(strings),
                         color = if (selected) colors.deepBlack else colors.white,
                         fontSize = 12.sp,
                         fontWeight = if (selected || focused) FontWeight.Bold else FontWeight.Medium
@@ -250,8 +254,8 @@ fun SearchContent(
 
         // Active Person or Genre header banner
         val activeFilterLabel = when {
-            state.activePersonName != null -> "Filmography • ${state.activePersonName}"
-            state.selectedGenre != null -> "Genre • ${state.selectedGenre.label}"
+            state.activePersonName != null -> strings.searchFilmography.format(state.activePersonName)
+            state.selectedGenre != null -> strings.searchGenreHeader.format(state.selectedGenre.localizedLabel(strings))
             else -> null
         }
         if (activeFilterLabel != null) {
@@ -285,9 +289,9 @@ fun SearchContent(
                         }
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = colors.white, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Filled.Close, contentDescription = strings.searchClear, tint = colors.white, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("Clear", color = colors.white, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.searchClear, color = colors.white, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 }
             }
         }
@@ -304,7 +308,7 @@ fun SearchContent(
                 !hasActiveFilter && state.query.trim().length < 2 -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         Text(
-                            text = "Top Searches",
+                            text = strings.searchTopSearches,
                             color = colors.white,
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
@@ -317,7 +321,7 @@ fun SearchContent(
                         } else if (state.trendingItems.isEmpty()) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
-                                    text = "Type a movie, TV show, or actor name to search.",
+                                    text = strings.searchTypeHint,
                                     color = colors.textSecondary,
                                     fontSize = 15.sp
                                 )
@@ -342,7 +346,7 @@ fun SearchContent(
                 }
                 state.results.isEmpty() && state.personResults.isEmpty() -> {
                     Text(
-                        text = if (hasActiveFilter) "No matching titles found." else "No results found for \"${state.query}\"",
+                        text = if (hasActiveFilter) strings.searchNoMatches else strings.searchNoResults.format(state.query),
                         color = colors.textSecondary,
                         fontSize = 16.sp,
                         modifier = Modifier.align(Alignment.Center)
@@ -352,7 +356,7 @@ fun SearchContent(
                     Column(modifier = Modifier.fillMaxSize()) {
                         if (state.personResults.isNotEmpty()) {
                             Text(
-                                text = "People",
+                                text = strings.searchPeople,
                                 color = colors.white,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
@@ -448,3 +452,16 @@ private fun SearchIconCircleButton(
     }
 }
 
+private fun GenreFilterOption.localizedLabel(s: UiStrings): String = when (id) {
+    "all" -> s.genreAll
+    "action" -> s.genreAction
+    "comedy" -> s.genreComedy
+    "scifi" -> s.genreSciFi
+    "horror" -> s.genreHorrorMystery
+    "drama" -> s.genreDrama
+    "crime" -> s.genreCrime
+    "thriller" -> s.genreThriller
+    "documentary" -> s.genreDocumentary
+    "animation" -> s.genreAnimation
+    else -> label
+}

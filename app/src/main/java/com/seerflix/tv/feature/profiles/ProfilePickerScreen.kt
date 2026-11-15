@@ -69,6 +69,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.model.AssSubtitleMode
+import com.seerflix.tv.core.model.ContentRatingLimit
+import com.seerflix.tv.core.model.FrameRateMatchMode
+import com.seerflix.tv.core.model.HomeTabId
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.ui.theme.SeerflixTokens
@@ -127,6 +132,7 @@ fun ProfilePickerContent(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val firstTileFocusRequester = remember { FocusRequester() }
     LaunchedEffect(
         state.profiles.size,
@@ -159,14 +165,14 @@ fun ProfilePickerContent(
             if (state.profiles.isNotEmpty()) {
                 TopCornerButton(
                     icon = if (state.isManageMode) Icons.Filled.Check else Icons.Filled.Edit,
-                    label = if (state.isManageMode) "Done" else "Manage Profiles",
+                    label = if (state.isManageMode) strings.profileDone else strings.profileManage,
                     active = state.isManageMode,
                     onClick = onToggleManageMode
                 )
             }
             TopCornerButton(
                 icon = Icons.Filled.Settings,
-                label = "Servers",
+                label = strings.homeServers,
                 active = false,
                 onClick = onOpenSettings
             )
@@ -177,7 +183,7 @@ fun ProfilePickerContent(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = if (state.isManageMode) "Manage Profiles" else "Who's watching?",
+                text = if (state.isManageMode) strings.profileManage else strings.profileWhoIsWatching,
                 color = colors.white,
                 fontSize = 38.sp,
                 fontWeight = FontWeight.Medium
@@ -253,7 +259,7 @@ fun ProfilePickerContent(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    text = if (state.usePasswordMode) "Sign In with Password" else "Quick Connect",
+                    text = if (state.usePasswordMode) strings.profileSignInPassword else strings.profileQuickConnect,
                     color = colors.white,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold
@@ -261,7 +267,7 @@ fun ProfilePickerContent(
 
                 if (!state.usePasswordMode) {
                     Text(
-                        text = "Open Jellyfin or Seerr on your phone/computer → Quick Connect, and enter this code:",
+                        text = strings.profileQuickConnectHint,
                         color = colors.textSecondary,
                         fontSize = 14.sp
                     )
@@ -283,7 +289,7 @@ fun ProfilePickerContent(
                             )
                         }
                         Text(
-                            text = "Waiting for approval…",
+                            text = strings.profileWaitingApproval,
                             color = colors.matchGreen,
                             fontSize = 13.sp
                         )
@@ -297,7 +303,7 @@ fun ProfilePickerContent(
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "Detected Jellyfin Accounts:",
+                                text = strings.profileDetectedAccounts,
                                 color = colors.textSecondary,
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -321,7 +327,7 @@ fun ProfilePickerContent(
                     OutlinedTextField(
                         value = state.username,
                         onValueChange = onUpdateUsername,
-                        label = { Text("Jellyfin Username") },
+                        label = { Text(strings.profileUsername) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -337,7 +343,7 @@ fun ProfilePickerContent(
                     OutlinedTextField(
                         value = state.password,
                         onValueChange = onUpdatePassword,
-                        label = { Text("Password") },
+                        label = { Text(strings.profilePassword) },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         // Password keyboard (no suggestions) and "Done" submits straight from the IME.
@@ -356,7 +362,7 @@ fun ProfilePickerContent(
                     )
                     }
                     DialogButton(
-                        text = if (state.isAuthenticating) "Signing in..." else "Sign In",
+                        text = if (state.isAuthenticating) strings.profileSigningIn else strings.profileSignIn,
                         isPrimary = true,
                         onClick = onSignInWithPassword,
                         modifier = Modifier.fillMaxWidth().focusRequester(authFocusRequester)
@@ -372,7 +378,7 @@ fun ProfilePickerContent(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     DialogButton(
-                        text = if (state.usePasswordMode) "Use Quick Connect" else "Use Password",
+                        text = if (state.usePasswordMode) strings.profileUseQuickConnect else strings.profileUsePassword,
                         isPrimary = false,
                         onClick = { onToggleAuthMode(!state.usePasswordMode) },
                         modifier = Modifier
@@ -467,6 +473,7 @@ fun PinEntryCard(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val firstKeyFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
@@ -511,7 +518,7 @@ fun PinEntryCard(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Icon(Icons.Filled.Lock, contentDescription = null, tint = colors.accent, modifier = Modifier.size(28.dp))
-        Text("Enter PIN for $profileName", color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(strings.profileEnterPin.format(profileName), color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
 
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             repeat(4) { idx ->
@@ -589,6 +596,7 @@ private fun ProfileSettingsDialog(
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val saveFocusRequester = remember { FocusRequester() }
 
@@ -635,7 +643,7 @@ private fun ProfileSettingsDialog(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "Profile Settings • ${profile.name}",
+                text = strings.profileSettingsTitle.format(profile.name),
                 color = colors.white,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold
@@ -643,7 +651,7 @@ private fun ProfileSettingsDialog(
 
             // Section tabs
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("Appearance & Language", "Home Theater", "Kids & PIN").forEachIndexed { idx, title ->
+                listOf(strings.profileTabAppearance, strings.profileTabTheater, strings.profileTabKids).forEachIndexed { idx, title ->
                     PrefChip(
                         label = title,
                         selected = activeSection == idx,
@@ -655,7 +663,7 @@ private fun ProfileSettingsDialog(
 
             when (activeSection) {
                 0 -> {
-                    Text("UI Preset", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.profileUiPreset, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         UiPreset.entries.forEach { preset ->
                             PrefChip(
@@ -667,12 +675,12 @@ private fun ProfileSettingsDialog(
                         }
                     }
                     Text(
-                        text = selectedPreset.subtitle,
+                        text = selectedPreset.localizedSubtitle(strings),
                         color = colors.textMuted,
                         fontSize = 11.sp
                     )
 
-                    Text("App UI Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.profileAppLanguage, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         com.seerflix.tv.core.i18n.SupportedLanguages.forEach { (code, label) ->
                             PrefChip(
@@ -684,7 +692,7 @@ private fun ProfileSettingsDialog(
                         }
                     }
 
-                    Text("Metadata / Seerr Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.profileMetadataLanguage, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         com.seerflix.tv.core.i18n.SupportedLanguages.forEach { (code, label) ->
                             PrefChip(
@@ -696,12 +704,12 @@ private fun ProfileSettingsDialog(
                         }
                     }
 
-                    Text("Default Startup Tab", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.customizeStartupTab, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     val tabList = com.seerflix.tv.core.model.HomeTabId.entries
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         tabList.take(4).forEach { tab ->
                             PrefChip(
-                                label = tab.label,
+                                label = tab.localized(strings),
                                 selected = defaultStartupTab == tab,
                                 onClick = { defaultStartupTab = tab },
                                 modifier = Modifier.weight(1f)
@@ -711,7 +719,7 @@ private fun ProfileSettingsDialog(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         tabList.drop(4).forEach { tab ->
                             PrefChip(
-                                label = tab.label,
+                                label = tab.localized(strings),
                                 selected = defaultStartupTab == tab,
                                 onClick = { defaultStartupTab = tab },
                                 modifier = Modifier.weight(1f)
@@ -722,41 +730,41 @@ private fun ProfileSettingsDialog(
 
                 1 -> {
                     PreferenceSwitchRow(
-                        label = "Autoplay Next Episode",
+                        label = strings.settingsAutoplayNextTitle,
                         checked = autoplayNext,
                         onToggle = { autoplayNext = !autoplayNext }
                     )
                     PreferenceSwitchRow(
-                        label = "Autoplay Previews While Browsing",
+                        label = strings.profileAutoplayPreviews,
                         checked = autoplayPreviews,
                         onToggle = { autoplayPreviews = !autoplayPreviews }
                     )
                     PreferenceSwitchRow(
-                        label = "Auto-Skip Intro",
+                        label = strings.settingsAutoSkipIntroTitle,
                         checked = autoSkipIntro,
                         onToggle = { autoSkipIntro = !autoSkipIntro }
                     )
                     PreferenceSwitchRow(
-                        label = "Auto-Skip Recap",
+                        label = strings.settingsAutoSkipRecapTitle,
                         checked = autoSkipRecap,
                         onToggle = { autoSkipRecap = !autoSkipRecap }
                     )
                     PreferenceSwitchRow(
-                        label = "HDMI Audio Passthrough (TrueHD / DTS-HD / EAC3)",
+                        label = strings.profilePassthrough,
                         checked = audioPassthrough,
                         onToggle = { audioPassthrough = !audioPassthrough }
                     )
                     PreferenceSwitchRow(
-                        label = "Stereo Downmix (TV Speakers / Night Mode)",
+                        label = strings.profileDownmix,
                         checked = stereoDownmix,
                         onToggle = { stereoDownmix = !stereoDownmix }
                     )
 
-                    Text("ASS / SSA Anime Subtitles", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.profileAssSubtitles, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         com.seerflix.tv.core.model.AssSubtitleMode.entries.forEach { mode ->
                             PrefChip(
-                                label = mode.label,
+                                label = mode.localized(strings),
                                 selected = assSubtitleMode == mode,
                                 onClick = { assSubtitleMode = mode },
                                 modifier = Modifier.weight(1f)
@@ -764,11 +772,11 @@ private fun ProfileSettingsDialog(
                         }
                     }
 
-                    Text("24fps Frame-Rate Matching", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.settingsFrameRateTitle, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         com.seerflix.tv.core.model.FrameRateMatchMode.entries.forEach { mode ->
                             PrefChip(
-                                label = mode.label,
+                                label = mode.localized(strings),
                                 selected = frameRateMatchMode == mode,
                                 onClick = { frameRateMatchMode = mode },
                                 modifier = Modifier.weight(1f)
@@ -776,11 +784,11 @@ private fun ProfileSettingsDialog(
                         }
                     }
 
-                    Text("Preferred Audio / Subtitle Language", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.profilePreferredLanguage, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(null to "Default", "eng" to "Eng", "spa" to "Spa", "jpn" to "Jpn").forEach { (code, label) ->
+                        listOf(null to strings.commonDefault, "eng" to "Eng", "spa" to "Spa", "jpn" to "Jpn").forEach { (code, label) ->
                             PrefChip(
-                                label = "Aud: $label",
+                                label = strings.profileAudioChip.format(label),
                                 selected = audioLang == code,
                                 onClick = { audioLang = code },
                                 modifier = Modifier.weight(1f)
@@ -788,9 +796,9 @@ private fun ProfileSettingsDialog(
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf(null to "Default", "off" to "Off", "eng" to "Eng", "spa" to "Spa").forEach { (code, label) ->
+                        listOf(null to strings.commonDefault, "off" to strings.optionOff, "eng" to "Eng", "spa" to "Spa").forEach { (code, label) ->
                             PrefChip(
-                                label = "Sub: $label",
+                                label = strings.profileSubtitleChip.format(label),
                                 selected = subLang == code,
                                 onClick = { subLang = code },
                                 modifier = Modifier.weight(1f)
@@ -801,7 +809,7 @@ private fun ProfileSettingsDialog(
 
                 2 -> {
                     PreferenceSwitchRow(
-                        label = "Kids Profile Mode (Parental Filter)",
+                        label = strings.profileKidsMode,
                         checked = kidsMode,
                         onToggle = {
                             kidsMode = !kidsMode
@@ -812,17 +820,17 @@ private fun ProfileSettingsDialog(
                     )
                     if (kidsMode) {
                         PreferenceSwitchRow(
-                            label = "Allow Seerr Requests in Kids Mode",
+                            label = strings.profileAllowKidsRequests,
                             checked = allowKidsRequests,
                             onToggle = { allowKidsRequests = !allowKidsRequests }
                         )
                     }
 
-                    Text("Max Allowed Content Rating", color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(strings.profileMaxRating, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         com.seerflix.tv.core.model.ContentRatingLimit.entries.forEach { limit ->
                             PrefChip(
-                                label = limit.label,
+                                label = limit.localized(strings),
                                 selected = maxContentRating == limit,
                                 onClick = { maxContentRating = limit },
                                 modifier = Modifier.fillMaxWidth()
@@ -831,7 +839,7 @@ private fun ProfileSettingsDialog(
                     }
 
                     Text(
-                        text = if (profile.hasPin && !clearPin) "Profile PIN (Currently Locked)" else "Set 4-Digit Profile PIN",
+                        text = if (profile.hasPin && !clearPin) strings.profilePinLocked else strings.profileSetPin,
                         color = colors.textSecondary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
@@ -849,7 +857,7 @@ private fun ProfileSettingsDialog(
                                 pinValidationError = null
                                 if (digits.isNotEmpty()) clearPin = false
                             },
-                            placeholder = { Text(if (profile.hasPin && !clearPin) "•••• (enter new 4 digits)" else "4 digits (optional)") },
+                            placeholder = { Text(if (profile.hasPin && !clearPin) strings.profilePinNewPlaceholder else strings.profilePinPlaceholder) },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(
@@ -867,7 +875,7 @@ private fun ProfileSettingsDialog(
                         }
                         if (profile.hasPin && !clearPin) {
                             DialogButton(
-                                text = "Remove PIN",
+                                text = strings.profileRemovePin,
                                 isPrimary = false,
                                 onClick = {
                                     clearPin = true
@@ -890,13 +898,13 @@ private fun ProfileSettingsDialog(
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 DialogButton(
-                    text = "Save",
+                    text = strings.commonSave,
                     isPrimary = true,
                     onClick = {
                         // Previously a 1–3 digit PIN was silently ignored on save, leaving the
                         // profile unlocked while the user believed it was protected.
                         if (pinCode.isNotEmpty() && pinCode.length != 4) {
-                            pinValidationError = "PIN must be exactly 4 digits."
+                            pinValidationError = strings.profilePinInvalid
                             activeSection = 2
                             return@DialogButton
                         }
@@ -925,7 +933,7 @@ private fun ProfileSettingsDialog(
                 )
                 // Two-step delete: one stray OK press shouldn't wipe a profile and its My List.
                 DialogButton(
-                    text = if (confirmDelete) "Confirm Delete" else "Delete Profile",
+                    text = if (confirmDelete) strings.profileConfirmDelete else strings.profileDelete,
                     isPrimary = false,
                     onClick = {
                         if (confirmDelete) onRemove() else confirmDelete = true
@@ -1061,7 +1069,7 @@ private fun NetflixAvatarTile(
                         .background(Color(0x88000000)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Edit, contentDescription = "Edit Profile", tint = colors.white, modifier = Modifier.size(36.dp))
+                    Icon(Icons.Filled.Edit, contentDescription = AppStrings.current.profileEdit, tint = colors.white, modifier = Modifier.size(36.dp))
                 }
             } else if (profile.hasPin) {
                 Box(
@@ -1073,7 +1081,7 @@ private fun NetflixAvatarTile(
                         .background(colors.background.copy(alpha = 0.8f)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Filled.Lock, contentDescription = "PIN Protected", tint = colors.white, modifier = Modifier.size(14.dp))
+                    Icon(Icons.Filled.Lock, contentDescription = AppStrings.current.profilePinProtected, tint = colors.white, modifier = Modifier.size(14.dp))
                 }
             }
         }
@@ -1136,14 +1144,14 @@ private fun AddProfileTile(
         ) {
             Icon(
                 imageVector = Icons.Filled.Add,
-                contentDescription = "Add Profile",
+                contentDescription = AppStrings.current.profileAdd,
                 tint = colors.textSecondary,
                 modifier = Modifier.size(52.dp)
             )
         }
         Spacer(Modifier.height(12.dp))
         Text(
-            text = "Add Profile",
+            text = AppStrings.current.profileAdd,
             color = if (focused) colors.white else colors.textSecondary,
             fontSize = 16.sp
         )
@@ -1179,3 +1187,37 @@ private fun DialogButton(
     }
 }
 
+private fun UiPreset.localizedSubtitle(s: UiStrings): String = when (this) {
+    UiPreset.NETFLIX -> s.presetNetflixDesc
+    UiPreset.APPLE_TV -> s.presetAppleTvDesc
+    UiPreset.DISNEY_PLUS -> s.presetDisneyDesc
+}
+
+private fun HomeTabId.localized(s: UiStrings): String = when (this) {
+    HomeTabId.HOME -> s.navHome
+    HomeTabId.SHOWS -> s.navShows
+    HomeTabId.MOVIES -> s.navMovies
+    HomeTabId.COLLECTIONS -> s.navCollections
+    HomeTabId.LIVE_TV -> s.navLiveTv
+    HomeTabId.NEW_AND_POPULAR -> s.navNewAndPopular
+    HomeTabId.MY_LIST -> s.navMyList
+}
+
+private fun AssSubtitleMode.localized(s: UiStrings): String = when (this) {
+    AssSubtitleMode.STYLED -> s.assStyled
+    AssSubtitleMode.BURN_IN -> s.assBurnIn
+    AssSubtitleMode.PLAIN -> s.assPlain
+}
+
+private fun FrameRateMatchMode.localized(s: UiStrings): String = when (this) {
+    FrameRateMatchMode.OFF -> s.optionOff
+    FrameRateMatchMode.SEAMLESS_ONLY -> s.frameRateSeamless
+    FrameRateMatchMode.ALWAYS -> s.frameRateAlways
+}
+
+private fun ContentRatingLimit.localized(s: UiStrings): String = when (this) {
+    ContentRatingLimit.ALL -> s.ratingAll
+    ContentRatingLimit.PG_13 -> s.ratingTeen
+    ContentRatingLimit.PG -> s.ratingFamily
+    ContentRatingLimit.G -> s.ratingKids
+}

@@ -90,6 +90,8 @@ class SessionPreferences private constructor(
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val TRACKED_REQUESTS_JSON = stringPreferencesKey("tracked_requests_json")
         val READY_ALERTS_JSON = stringPreferencesKey("ready_alerts_json")
+        val MATCH_DEVICE_CAPS = stringPreferencesKey("match_device_capabilities")
+        val ALLOW_REMOTE_CONTROL = stringPreferencesKey("allow_remote_control")
 
         fun localMyList(profileId: String) = stringPreferencesKey("local_my_list_$profileId")
         fun reminders(profileId: String) = stringPreferencesKey("reminders_$profileId")
@@ -141,6 +143,34 @@ class SessionPreferences private constructor(
 
     fun setImmediateSeerrCookie(cookie: String?) {
         cachedSeerrCookie = cookie
+    }
+
+    /** Device-wide: build the playback profile from what this box / TV reports (default on). */
+    @Volatile
+    var cachedMatchDeviceCapabilities: Boolean = true
+        private set
+
+    val matchDeviceCapabilitiesFlow: Flow<Boolean> = dataStore.data.map { prefs ->
+        (prefs[Keys.MATCH_DEVICE_CAPS] != "false").also { cachedMatchDeviceCapabilities = it }
+    }
+
+    /** Device-wide: show up as a "Play on" target for other Jellyfin apps (default on). */
+    @Volatile
+    var cachedAllowRemoteControl: Boolean = true
+        private set
+
+    val allowRemoteControlFlow: Flow<Boolean> = dataStore.data.map { prefs ->
+        (prefs[Keys.ALLOW_REMOTE_CONTROL] != "false").also { cachedAllowRemoteControl = it }
+    }
+
+    suspend fun setAllowRemoteControl(enabled: Boolean) {
+        cachedAllowRemoteControl = enabled
+        dataStore.edit { it[Keys.ALLOW_REMOTE_CONTROL] = enabled.toString() }
+    }
+
+    suspend fun setMatchDeviceCapabilities(enabled: Boolean) {
+        cachedMatchDeviceCapabilities = enabled
+        dataStore.edit { it[Keys.MATCH_DEVICE_CAPS] = enabled.toString() }
     }
 
     @Volatile
@@ -224,6 +254,8 @@ class SessionPreferences private constructor(
 
     suspend fun warmup() {
         serverConfigFlow.first()
+        matchDeviceCapabilitiesFlow.first()
+        allowRemoteControlFlow.first()
         activeProfileFlow.first()
         dataStore.edit { prefs ->
             if (prefs[Keys.DEVICE_ID].isNullOrBlank()) {
@@ -342,6 +374,29 @@ class SessionPreferences private constructor(
                     it.copy(
                         subtitleFontScale = fontScale,
                         subtitleBackgroundAlpha = backgroundAlpha
+                    )
+                } else it
+            }
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+        }
+    }
+
+    suspend fun updateSubtitleStyle(
+        textColor: com.seerflix.tv.core.model.SubtitleTextColor? = null,
+        edgeStyle: com.seerflix.tv.core.model.SubtitleEdgeStyle? = null,
+        position: com.seerflix.tv.core.model.SubtitlePosition? = null
+    ) {
+        dataStore.edit { prefs ->
+            val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: emptyList()
+            val updated = current.map {
+                if (it.id == activeId) {
+                    it.copy(
+                        subtitleTextColor = textColor ?: it.subtitleTextColor,
+                        subtitleEdgeStyle = edgeStyle ?: it.subtitleEdgeStyle,
+                        subtitlePosition = position ?: it.subtitlePosition
                     )
                 } else it
             }

@@ -23,7 +23,13 @@ import com.seerflix.tv.core.player.ExternalPlayerHelper
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.NextEpisodeInfo
 import com.seerflix.tv.core.player.PlaybackSegments
+import com.seerflix.tv.core.player.SyncPlayAction
 import com.seerflix.tv.core.player.SyncPlayManager
+import com.seerflix.tv.core.network.JellyfinSocketClient
+import com.seerflix.tv.core.network.ServerEvent
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.filterIsInstance
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +53,9 @@ data class PlayerUiState(
     val selectedMediaSourceId: String? = null,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
+    val subtitleTextColor: com.seerflix.tv.core.model.SubtitleTextColor = com.seerflix.tv.core.model.SubtitleTextColor.WHITE,
+    val subtitleEdgeStyle: com.seerflix.tv.core.model.SubtitleEdgeStyle = com.seerflix.tv.core.model.SubtitleEdgeStyle.OUTLINE,
+    val subtitlePosition: com.seerflix.tv.core.model.SubtitlePosition = com.seerflix.tv.core.model.SubtitlePosition.BOTTOM,
     val subtitleOffsetMs: Long = 0L,
     val autoSkipIntro: Boolean = false,
     val autoSkipRecap: Boolean = false,
@@ -87,6 +96,7 @@ class PlayerViewModel @Inject constructor(
     private val catalogRepository: UnifiedCatalogRepository,
     private val trailerResolver: YouTubeTrailerResolver,
     private val syncPlayManager: SyncPlayManager,
+    socketClient: JellyfinSocketClient,
     // Honours the per-server self-signed certificate toggle; also handed to ExoPlayer so
     // streams and side-loaded subtitles work against homelab HTTPS servers.
     @MediaClient val mediaHttpClient: OkHttpClient
@@ -97,6 +107,16 @@ class PlayerViewModel @Inject constructor(
     private val trailerYoutubeKey: String? = savedStateHandle.get<String>("youtubeKey")?.takeIf { it.isNotBlank() && it != "none" }
     private val localTrailerId: String? = savedStateHandle.get<String>("localTrailerId")?.takeIf { it.isNotBlank() && it != "none" }
     private val trailerTitle: String? = savedStateHandle.get<String>("title")?.takeIf { it.isNotBlank() }
+    /** Start position handed over by "Play on" from another app or by a SyncPlay group. */
+    private val initialStartMs: Long? = savedStateHandle.get<String>("startMs")?.toLongOrNull()?.takeIf { it > 0L }
+    private val openedBySyncPlay: Boolean = savedStateHandle.get<String>("syncplay") == "true"
+
+    /** Group commands for the player (only while in a SyncPlay group). */
+    val syncPlayActions: SharedFlow<SyncPlayAction> = syncPlayManager.actions
+    val syncPlayNotices: SharedFlow<String> = syncPlayManager.notices
+
+    /** Remote-control commands from other Jellyfin apps that act on the player. */
+    val remotePlaystate: Flow<ServerEvent.Playstate> = socketClient.events.filterIsInstance<ServerEvent.Playstate>()
 
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
@@ -121,7 +141,12 @@ class PlayerViewModel @Inject constructor(
         if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
             loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
         } else {
-            loadItem(initialItemId, mediaSourceIdOverride = initialMediaSourceId)
+            loadItem(
+                initialItemId,
+                mediaSourceIdOverride = initialMediaSourceId,
+                resumeOverrideMs = initialStartMs,
+                fromSyncPlay = openedBySyncPlay
+            )
         }
     }
 
@@ -174,7 +199,9 @@ class PlayerViewModel @Inject constructor(
         qualityOverride: QualityPreset = _uiState.value.selectedQuality,
         resumeOverrideMs: Long? = null,
         mediaSourceIdOverride: String? = _uiState.value.selectedMediaSourceId,
-        burnInSubtitleOverride: Int? = _uiState.value.burnInSubtitleIndex
+        burnInSubtitleOverride: Int? = _uiState.value.burnInSubtitleIndex,
+        /** True when the group asked for this item; otherwise a new item becomes the group's queue. */
+        fromSyncPlay: Boolean = false
     ) {
         if (itemId.isBlank()) {
             _uiState.update { it.copy(isLoading = false, errorMessage = "Invalid media item ID") }
@@ -209,6 +236,9 @@ class PlayerViewModel @Inject constructor(
                     autoplayNextEpisode = profile.autoplayNextEpisode,
                     subtitleFontScale = profile.subtitleFontScale,
                     subtitleBackgroundAlpha = profile.subtitleBackgroundAlpha,
+                    subtitleTextColor = profile.subtitleTextColor,
+                    subtitleEdgeStyle = profile.subtitleEdgeStyle,
+                    subtitlePosition = profile.subtitlePosition,
                     autoSkipIntro = profile.autoSkipIntro,
                     autoSkipRecap = profile.autoSkipRecap,
                     frameRateMatchMode = profile.frameRateMatchMode,
@@ -258,6 +288,14 @@ class PlayerViewModel @Inject constructor(
                         )
                     }
                     val playSessionId = adjustedSession.playSessionId
+                    syncPlayManager.localPlayingItemId = SyncPlayManager.normalizeId(adjustedSession.itemId)
+                    if (!isSameItem && !fromSyncPlay && syncPlayManager.isActive) {
+                        // Watching together: make this the group's item; the server then tells every
+                        // member (us included) to load it and starts playback once all are ready.
+                        launch {
+                            syncPlayManager.startQueue(adjustedSession.itemId, adjustedSession.resumeTicks)
+                        }
+                    }
                     prepared.segments?.let { deferred ->
                         launch {
                             val segments = deferred.await() ?: return@launch
@@ -506,16 +544,38 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun notifySyncPlayPause() {
-        viewModelScope.launch { syncPlayManager.notifyPause() }
+    /** In a SyncPlay group play/pause are requests to the group, applied when the server says so. */
+    fun isSyncPlayActive(): Boolean = syncPlayManager.isActive
+
+    fun requestGroupPause() {
+        viewModelScope.launch { syncPlayManager.requestPause() }
     }
 
-    fun notifySyncPlayUnpause() {
-        viewModelScope.launch { syncPlayManager.notifyUnpause() }
+    fun requestGroupUnpause() {
+        viewModelScope.launch { syncPlayManager.requestUnpause() }
     }
 
     fun notifySyncPlaySeek(positionMs: Long) {
-        viewModelScope.launch { syncPlayManager.notifySeek(positionMs.coerceAtLeast(0L) * 10_000L) }
+        if (!syncPlayManager.isActive) return
+        viewModelScope.launch { syncPlayManager.requestSeek(positionMs.coerceAtLeast(0L) * 10_000L) }
+    }
+
+    fun reportSyncPlayState(ready: Boolean, positionMs: Long, isPlaying: Boolean) {
+        if (!syncPlayManager.isActive) return
+        val ticks = positionMs.coerceAtLeast(0L) * 10_000L
+        viewModelScope.launch {
+            if (ready) syncPlayManager.reportReady(ticks, isPlaying) else syncPlayManager.reportBuffering(ticks, isPlaying)
+        }
+    }
+
+    fun isCurrentItem(itemId: String): Boolean {
+        val current = _uiState.value.session?.itemId ?: return false
+        return SyncPlayManager.normalizeId(current) == SyncPlayManager.normalizeId(itemId)
+    }
+
+    override fun onCleared() {
+        syncPlayManager.localPlayingItemId = null
+        super.onCleared()
     }
 
     /**

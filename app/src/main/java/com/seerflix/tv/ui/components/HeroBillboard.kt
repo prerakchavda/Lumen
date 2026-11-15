@@ -218,7 +218,7 @@ fun HeroBillboard(
                         fontWeight = FontWeight.Black
                     )
                     Text(
-                        text = if (item.mediaType.name == "MOVIE") "FILM" else "SERIES",
+                        text = if (item.mediaType.name == "MOVIE") strings.heroFilm else strings.heroSeries,
                         color = colors.textSecondary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -226,9 +226,9 @@ fun HeroBillboard(
                     )
                 } else {
                     val tagText = when (spec.preset) {
-                        UiPreset.APPLE_TV -> if (item.mediaType.name == "MOVIE") "APPLE TV+ • FILM" else "APPLE TV+ • SERIES"
-                        UiPreset.DISNEY_PLUS -> if (item.mediaType.name == "MOVIE") "FEATURED FILM" else "FEATURED SERIES"
-                        UiPreset.NETFLIX -> if (item.mediaType.name == "MOVIE") "FILM" else "SERIES"
+                        UiPreset.APPLE_TV -> "APPLE TV+ • " + if (item.mediaType.name == "MOVIE") strings.heroFilm else strings.heroSeries
+                        UiPreset.DISNEY_PLUS -> if (item.mediaType.name == "MOVIE") strings.heroFeaturedFilm else strings.heroFeaturedSeries
+                        UiPreset.NETFLIX -> if (item.mediaType.name == "MOVIE") strings.heroFilm else strings.heroSeries
                     }
                     Box(
                         modifier = Modifier
@@ -296,7 +296,7 @@ fun HeroBillboard(
             ) {
                 item.matchPercent?.let { match ->
                     Text(
-                        text = "$match% Match",
+                        text = strings.commonMatchPercent.format(match),
                         color = colors.matchGreen,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
@@ -379,8 +379,8 @@ fun HeroBillboard(
                 val primaryLabel = when {
                     item.isPlayable && item.resumePositionTicks > 0L -> strings.actionResume
                     item.isPlayable -> strings.actionPlay
-                    item.activeDownload != null || item.overallAvailability == AvailabilityTier.PROCESSING -> "View Progress"
-                    item.overallAvailability == AvailabilityTier.PENDING -> "Requested"
+                    item.activeDownload != null || item.overallAvailability == AvailabilityTier.PROCESSING -> strings.heroViewProgress
+                    item.overallAvailability == AvailabilityTier.PENDING -> strings.commonRequested
                     else -> strings.actionRequestMore
                 }
                 val primaryIcon = if (item.isPlayable) Icons.Filled.PlayArrow else Icons.Filled.Add
@@ -430,7 +430,7 @@ fun HeroBillboard(
             ) {
                 Icon(
                     imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                    contentDescription = "Toggle preview audio",
+                    contentDescription = strings.heroTogglePreviewAudio,
                     tint = colors.white,
                     modifier = Modifier.size(20.dp)
                 )

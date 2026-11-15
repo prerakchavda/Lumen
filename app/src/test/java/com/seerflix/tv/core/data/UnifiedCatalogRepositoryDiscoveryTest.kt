@@ -678,6 +678,30 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun createSyncPlayGroup(body: com.seerflix.tv.core.network.JellyfinCreateSyncPlayRequest) = Unit
         override suspend fun joinSyncPlayGroup(body: com.seerflix.tv.core.network.JellyfinJoinSyncPlayRequest) = Unit
         override suspend fun leaveSyncPlayGroup() = Unit
+        // 0.7 endpoints (unused by these tests)
+        override suspend fun postSessionCapabilities(body: com.seerflix.tv.core.network.JellyfinSessionCapabilitiesRequest) = Unit
+        override suspend fun getUtcTime() = com.seerflix.tv.core.network.JellyfinUtcTimeResponse()
+        override suspend fun syncPlaySetNewQueue(body: com.seerflix.tv.core.network.JellyfinSyncPlayNewQueueRequest) = Unit
+        override suspend fun syncPlayReady(body: com.seerflix.tv.core.network.JellyfinSyncPlayBufferingRequest) = Unit
+        override suspend fun syncPlayBuffering(body: com.seerflix.tv.core.network.JellyfinSyncPlayBufferingRequest) = Unit
+        override suspend fun syncPlayPing(body: com.seerflix.tv.core.network.JellyfinSyncPlayPingRequest) = Unit
+        override suspend fun syncPlayStop() = Unit
+        override suspend fun uploadClientLog(body: okhttp3.RequestBody) = com.seerflix.tv.core.network.JellyfinClientLogResponse("test.log")
+        override suspend fun getLiveTvTimers(isActive: Boolean?, isScheduled: Boolean?) = com.seerflix.tv.core.network.JellyfinTimersResponse()
+        override suspend fun getLiveTvTimerDefaults(programId: String) = kotlinx.serialization.json.JsonObject(emptyMap())
+        override suspend fun createLiveTvTimer(body: kotlinx.serialization.json.JsonObject) = Unit
+        override suspend fun cancelLiveTvTimer(timerId: String) = Unit
+        override suspend fun getLiveTvSeriesTimers() = com.seerflix.tv.core.network.JellyfinTimersResponse()
+        override suspend fun createLiveTvSeriesTimer(body: kotlinx.serialization.json.JsonObject) = Unit
+        override suspend fun cancelLiveTvSeriesTimer(timerId: String) = Unit
+        override suspend fun browseItems(
+            userId: String, parentId: String?, includeItemTypes: String, recursive: Boolean, sortBy: String,
+            sortOrder: String, filters: String?, genres: String?, years: String?, nameStartsWith: String?,
+            nameLessThan: String?, maxOfficialRating: String?, startIndex: Int, limit: Int, fields: String,
+            imageTypeLimit: Int, enableImageTypes: String, enableTotalRecordCount: Boolean
+        ) = com.seerflix.tv.core.network.JellyfinItemsResponse()
+        override suspend fun getGenres(userId: String, parentId: String?, includeItemTypes: String, sortBy: String) =
+            com.seerflix.tv.core.network.JellyfinItemsResponse()
         override suspend fun syncPlayPause() = Unit
         override suspend fun syncPlayUnpause() = Unit
         override suspend fun syncPlaySeek(body: com.seerflix.tv.core.network.JellyfinSeekSyncPlayRequest) = Unit
