@@ -198,6 +198,53 @@ object AssSubtitleParser {
     }
 }
 
+/**
+ * Fast "which cues are visible at time t" lookup for a cue list (anime ASS files can have
+ * thousands of cues and are polled ~10×/s): binary search on start time, then a backward scan
+ * bounded by the longest cue duration.
+ */
+class AssCueIndex(cues: List<AssCue>) {
+    private val sorted: List<AssCue> = if (cues.zipWithNext().all { (a, b) -> a.startMs <= b.startMs }) {
+        cues
+    } else {
+        cues.sortedBy { it.startMs }
+    }
+    private val maxDurationMs: Long = sorted.maxOfOrNull { (it.endMs - it.startMs).coerceAtLeast(0L) } ?: 0L
+
+    val isEmpty: Boolean get() = sorted.isEmpty()
+
+    /** Cues with `startMs <= positionMs <= endMs`, in start order. */
+    fun activeAt(positionMs: Long): List<AssCue> {
+        if (sorted.isEmpty()) return emptyList()
+        // Index of the last cue starting at or before positionMs.
+        var lo = 0
+        var hi = sorted.size - 1
+        var last = -1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            if (sorted[mid].startMs <= positionMs) {
+                last = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        if (last < 0) return emptyList()
+        val earliestStart = positionMs - maxDurationMs
+        var result: ArrayList<AssCue>? = null
+        var i = last
+        while (i >= 0 && sorted[i].startMs >= earliestStart) {
+            val cue = sorted[i]
+            if (positionMs <= cue.endMs) {
+                if (result == null) result = ArrayList(2)
+                result.add(cue)
+            }
+            i--
+        }
+        return result?.asReversed()?.toList() ?: emptyList()
+    }
+}
+
 @Composable
 fun AssSubtitleOverlay(
     cues: List<AssCue>,
@@ -208,6 +255,17 @@ fun AssSubtitleOverlay(
 ) {
     if (cues.isEmpty()) return
     val activeCues = cues.filter { positionMs in it.startMs..it.endMs }
+    AssActiveCuesOverlay(activeCues, fontScale, backgroundAlpha, modifier)
+}
+
+/** Renders already-resolved active cues (see [AssCueIndex]). */
+@Composable
+fun AssActiveCuesOverlay(
+    activeCues: List<AssCue>,
+    fontScale: Float,
+    backgroundAlpha: Float,
+    modifier: Modifier = Modifier
+) {
     if (activeCues.isEmpty()) return
 
     Box(

@@ -6,11 +6,13 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.data.DetailsSeedCache
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.ContentRatingHelper
+import com.seerflix.tv.core.model.ContentRatingLimit
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.SeerrIssueType
@@ -22,8 +24,10 @@ import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.ResolvedPreviewStream
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +60,12 @@ data class DetailsUiState(
     val canSubmitRequests: Boolean = true,
     val feedbackBanner: String? = null,
     val isLoading: Boolean = true,
+    /**
+     * [item] is still the clicked card's data (seed from [DetailsSeedCache]) while the full load
+     * runs. The screen renders it immediately but keeps state-dependent actions (request, My List,
+     * watched, reminder, ...) as placeholders until the real availability data arrives.
+     */
+    val isRefining: Boolean = false,
     val errorMessage: String? = null,
     /** The active profile's parental limit disallows this title (search/cast/recs/deep link). */
     val isBlockedByParentalControls: Boolean = false
@@ -95,6 +105,8 @@ class DetailsViewModel @Inject constructor(
     /** Called by the screen when it becomes visible again (lifecycle STARTED). */
     fun onScreenVisible() {
         isScreenVisible = true
+        // While the seed is showing, loadAll() is still running and starts polling itself.
+        if (_uiState.value.isRefining) return
         val item = _uiState.value.item ?: return
         if (hasBeenHidden) {
             hasBeenHidden = false
@@ -119,15 +131,60 @@ class DetailsViewModel @Inject constructor(
     fun loadAll() {
         loadJob?.cancel()
         loadJob = viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null, isBlockedByParentalControls = false) }
+            _uiState.update {
+                // Keep whatever is already on screen (e.g. a seed) instead of blanking it.
+                it.copy(isLoading = it.item == null, errorMessage = null, isBlockedByParentalControls = false)
+            }
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null) {
-                _uiState.update { it.copy(isLoading = false, errorMessage = "No active profile") }
+                _uiState.update { it.copy(item = null, isLoading = false, isRefining = false, errorMessage = "No active profile") }
                 return@launch
             }
             activeUserId = profile.jellyfinUserId
             activeProfile = profile
             val seerrConfigured = sessionPreferences.isSeerrConfigured
+            val resolvedType = if (mediaTypeArg == MediaType.EPISODE) MediaType.SERIES else mediaTypeArg
+
+            // Instant render: paint the clicked card's data now; the full load merges in below.
+            if (_uiState.value.item == null) {
+                DetailsSeedCache.get(tmdbIdArg, jellyfinIdArg, mediaTypeArg)
+                    ?.let(::seedForDisplay)
+                    ?.takeIf { isSeedAllowed(it, profile) }
+                    ?.let { seed ->
+                        _uiState.update {
+                            it.copy(
+                                item = seed,
+                                isLoading = false,
+                                isRefining = true,
+                                isSeerrConfigured = seerrConfigured,
+                                canSubmitRequests = profile.canSubmitRequests
+                            )
+                        }
+                    }
+            }
+
+            // Work that only needs the route args runs in parallel with loadFullDetails() instead
+            // of waiting for it. (Exceptions are contained so they can't cancel the main load.)
+            if (seerrConfigured) {
+                launch {
+                    val has4k = runCatching { catalogRepository.has4kServerConfigured(resolvedType) }.getOrNull()
+                    if (has4k != null) _uiState.update { it.copy(has4kServer = has4k) }
+                }
+            }
+            val earlyRecs: Deferred<List<UnifiedMediaItem>>? =
+                if (seerrConfigured && tmdbIdArg != null && mediaTypeArg != MediaType.EPISODE) {
+                    async {
+                        runCatching {
+                            catalogRepository.loadRecommendations(
+                                userId = activeUserId,
+                                tmdbId = tmdbIdArg,
+                                jellyfinId = jellyfinIdArg,
+                                mediaType = mediaTypeArg,
+                                activeProfile = profile
+                            )
+                        }.getOrDefault(emptyList())
+                    }
+                } else null
 
             val result = catalogRepository.loadFullDetails(
                 userId = activeUserId,
@@ -138,20 +195,23 @@ class DetailsViewModel @Inject constructor(
             // loadFullDetails() runCatching-wraps CancellationException; don't show it as an error.
             ensureActive()
 
-            result.onSuccess { item ->
+            result.onSuccess { loaded ->
                 // Parental gate: Details can be reached from search, cast, recommendations, a saga
                 // row or a deep link, none of which guarantee the rating was filtered upstream.
-                if (!ContentRatingHelper.isAllowed(item, profile)) {
+                if (!ContentRatingHelper.isAllowed(loaded, profile)) {
+                    earlyRecs?.cancel()
                     _uiState.update {
                         it.copy(
                             item = null,
                             isLoading = false,
+                            isRefining = false,
                             errorMessage = "This title isn't available on this profile.",
                             isBlockedByParentalControls = true
                         )
                     }
                     return@onSuccess
                 }
+                val item = loaded.sharingWith(_uiState.value.item)
                 val defaultSeason = item.seasons.firstOrNull()?.seasonNumber ?: 1
                 _uiState.update {
                     it.copy(
@@ -160,24 +220,25 @@ class DetailsViewModel @Inject constructor(
                         selectedMediaSourceId = it.selectedMediaSourceId ?: item.mediaVersions.firstOrNull()?.id,
                         isSeerrConfigured = seerrConfigured,
                         canSubmitRequests = profile.canSubmitRequests,
-                        isLoading = false
+                        isLoading = false,
+                        isRefining = false
                     )
                 }
 
-                if (seerrConfigured) {
-                    launch(Dispatchers.IO) {
-                        val has4k = catalogRepository.has4kServerConfigured(item.mediaType)
-                        _uiState.update { it.copy(has4kServer = has4k) }
-                    }
-                }
                 launch(Dispatchers.IO) {
-                    val recs = catalogRepository.loadRecommendations(
-                        userId = activeUserId,
-                        tmdbId = item.tmdbId,
-                        jellyfinId = item.jellyfinId,
-                        mediaType = item.mediaType,
-                        activeProfile = profile
-                    )
+                    val early = earlyRecs?.await().orEmpty()
+                    val recs = early.ifEmpty {
+                        // Seerr had nothing (or the route lacked a TMDB id): fall back to the
+                        // resolved ids, which can include a Jellyfin id for "similar items".
+                        if (earlyRecs != null && item.jellyfinId == null) emptyList()
+                        else catalogRepository.loadRecommendations(
+                            userId = activeUserId,
+                            tmdbId = item.tmdbId,
+                            jellyfinId = item.jellyfinId,
+                            mediaType = item.mediaType,
+                            activeProfile = profile
+                        )
+                    }
                     // Row keys are item ids; a duplicate (TMDB recs do repeat) would crash the LazyRow.
                     _uiState.update { it.copy(recommendations = recs.distinctBy { r -> r.id }) }
                 }
@@ -204,15 +265,77 @@ class DetailsViewModel @Inject constructor(
 
                 if (isScreenVisible) startLivePollingIfNeeded(item)
             }.onFailure { err ->
+                earlyRecs?.cancel()
                 _uiState.update {
                     it.copy(
+                        // A seed alone can't back the state-dependent actions; show the Retry screen.
+                        item = null,
                         isLoading = false,
+                        isRefining = false,
                         errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load details")
                     )
                 }
             }
         }
     }
+
+    /**
+     * Shapes a clicked card for display while the full load runs. A Continue Watching episode card
+     * opens its parent series, so present it as the series (series title; the episode's own
+     * overview / TMDB id / runtime would be wrong for the series page).
+     */
+    private fun seedForDisplay(seed: UnifiedMediaItem): UnifiedMediaItem =
+        if (seed.mediaType == MediaType.EPISODE) {
+            seed.copy(
+                mediaType = MediaType.SERIES,
+                title = seed.seriesName?.takeIf { it.isNotBlank() } ?: seed.title.substringBefore(" • "),
+                tmdbId = null,
+                overview = "",
+                tagline = null,
+                episodeLabel = null,
+                runtimeMinutes = null,
+                runtimeTicks = 0L,
+                relatedVideos = emptyList(),
+                youtubeTrailerKey = null,
+                localTrailerItemId = null
+            )
+        } else {
+            seed
+        }
+
+    /**
+     * The seed must never flash a title the profile can't see. With a rating limit in force, only
+     * trust a seed whose rating (and, for Kids Mode, genres) is actually known; an unrated card
+     * would otherwise count as PG. Unknown seeds wait for the authoritative full load.
+     */
+    private fun isSeedAllowed(seed: UnifiedMediaItem, profile: UserProfile): Boolean {
+        if (profile.effectiveRatingLimit == ContentRatingLimit.ALL) return true
+        if (seed.isAdult || seed.maturityRating.isNullOrBlank()) return false
+        if (profile.kidsMode && seed.genres.isEmpty()) return false
+        return ContentRatingHelper.isAllowed(seed, profile)
+    }
+
+    /**
+     * Keeps the artwork that is already on screen (seed -> full, poll -> poll) so the backdrop
+     * doesn't visibly swap to a different-but-equivalent URL, and reuses unchanged list instances
+     * so the sections that take them can skip recomposition on a poll tick.
+     */
+    private fun UnifiedMediaItem.sharingWith(prev: UnifiedMediaItem?): UnifiedMediaItem {
+        if (prev == null) return this
+        val merged = copy(
+            backdropUrl = prev.backdropUrl ?: backdropUrl,
+            genres = genres.reuse(prev.genres),
+            mediaBadges = mediaBadges.reuse(prev.mediaBadges),
+            relatedVideos = relatedVideos.reuse(prev.relatedVideos),
+            seasons = seasons.reuse(prev.seasons),
+            cast = cast.reuse(prev.cast),
+            mediaVersions = mediaVersions.reuse(prev.mediaVersions),
+            extras = extras.reuse(prev.extras)
+        )
+        return if (merged == prev) prev else merged
+    }
+
+    private fun <T> List<T>.reuse(old: List<T>): List<T> = if (this == old) old else this
 
     fun selectMediaSource(mediaSourceId: String) {
         _uiState.update { it.copy(selectedMediaSourceId = mediaSourceId) }
@@ -243,6 +366,8 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun openRequestModal() {
+        // Request eligibility depends on real availability data, which a seed doesn't have.
+        if (_uiState.value.isRefining) return
         if (!_uiState.value.isSeerrConfigured) {
             _uiState.update { it.copy(feedbackBanner = "Connect Seerr in Server Settings to submit requests.") }
             return
@@ -365,6 +490,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun openReportIssueModal() {
+        if (_uiState.value.isRefining) return
         if (!_uiState.value.isSeerrConfigured) {
             _uiState.update { it.copy(feedbackBanner = "Issue reporting requires Seerr.") }
             return
@@ -409,6 +535,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun toggleWatched() {
+        if (_uiState.value.isRefining) return
         val item = _uiState.value.item ?: return
         val jfId = item.jellyfinId ?: return
         if (activeUserId.isBlank()) return
@@ -553,6 +680,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun toggleMyList() {
+        if (_uiState.value.isRefining) return
         val item = _uiState.value.item ?: return
         if (activeUserId.isBlank()) return
         viewModelScope.launch {
@@ -572,6 +700,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun toggleReminder() {
+        if (_uiState.value.isRefining) return
         val item = _uiState.value.item ?: return
         if (activeUserId.isBlank()) return
         viewModelScope.launch {
@@ -586,6 +715,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun removeFromContinueWatching() {
+        if (_uiState.value.isRefining) return
         val item = _uiState.value.item ?: return
         val jfId = item.jellyfinId ?: return
         if (activeUserId.isBlank()) return
@@ -634,7 +764,9 @@ class DetailsViewModel @Inject constructor(
             userId = activeUserId,
             tmdbId = tmdbIdArg,
             jellyfinId = jellyfinIdArg,
-            mediaType = mediaTypeArg
+            mediaType = mediaTypeArg,
+            // Live download/request status: bypass the 120 s details cache.
+            forceRefresh = true
         ).getOrNull() ?: return
         if (!ContentRatingHelper.isAllowed(refreshed, activeProfile)) {
             pollingJob?.cancel()
@@ -650,7 +782,7 @@ class DetailsViewModel @Inject constructor(
 
         _uiState.update {
             it.copy(
-                item = refreshed,
+                item = refreshed.sharingWith(it.item),
                 // Keep the user's version choice if it still exists after the refresh.
                 selectedMediaSourceId = it.selectedMediaSourceId
                     ?.takeIf { id -> refreshed.mediaVersions.isEmpty() || refreshed.mediaVersions.any { v -> v.id == id } }
@@ -670,7 +802,11 @@ class DetailsViewModel @Inject constructor(
             // The user may have switched seasons while this was loading.
             _uiState.update {
                 if (it.selectedSeasonNumber != seasonNum || it.episodesLoading) it
-                else it.copy(episodes = eps.distinctBy { e -> e.id })
+                else {
+                    val fresh = eps.distinctBy { e -> e.id }
+                    // Unchanged list -> keep the old instance so the episode rows skip recomposition.
+                    if (fresh == it.episodes) it else it.copy(episodes = fresh)
+                }
             }
         }
         if (pollingJob?.isActive != true) {

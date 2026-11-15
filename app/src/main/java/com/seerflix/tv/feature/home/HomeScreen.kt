@@ -2,7 +2,7 @@ package com.seerflix.tv.feature.home
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
-import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,7 +20,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListPrefetchStrategy
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -65,6 +69,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -80,11 +86,14 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -94,7 +103,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
-import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.AppUpdateInfo
@@ -116,6 +124,7 @@ import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.ui.components.ContinueWatchingCard
 import com.seerflix.tv.ui.components.HeroBillboard
 import com.seerflix.tv.ui.components.NetflixPosterCard
+import com.seerflix.tv.ui.components.SizedAsyncImage
 import com.seerflix.tv.ui.components.Top10PosterCard
 import com.seerflix.tv.ui.components.UiPresetPickerDialog
 import com.seerflix.tv.ui.theme.NavLayoutStyle
@@ -264,7 +273,6 @@ fun HomeContent(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
-    var railExpanded by remember { mutableStateOf(false) }
     // Attached to the active tab in whichever nav (rail / pill bar / header) the preset uses,
     // so Back from content can hand focus to the navigation before the app exits.
     val navFocusRequester = remember { FocusRequester() }
@@ -272,42 +280,25 @@ fun HomeContent(
         { runCatching { navFocusRequester.requestFocus() } }
     }
 
-    val canvasBg = if (spec.preset == UiPreset.DISNEY_PLUS) {
-        Brush.verticalGradient(listOf(colors.backgroundGlow.copy(alpha = 0.45f), colors.background))
-    } else {
-        Brush.verticalGradient(listOf(colors.background, colors.background))
+    // Cached: a new Brush every recomposition invalidates the full-screen background draw.
+    val canvasBg = remember(spec.preset, colors) {
+        if (spec.preset == UiPreset.DISNEY_PLUS) {
+            Brush.verticalGradient(listOf(colors.backgroundGlow.copy(alpha = 0.45f), colors.background))
+        } else {
+            SolidColor(colors.background)
+        }
     }
 
     when (spec.navStyle) {
         NavLayoutStyle.LEFT_RAIL -> {
-            Row(
+            // The rail OVERLAYS the content instead of sitting next to it in a Row: expanding it
+            // (68 -> 216 dp on focus) used to re-measure and re-layout every visible row and the hero.
+            // Content is permanently inset by the collapsed width, so the collapsed look is identical.
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(canvasBg)
             ) {
-                NetflixNavRail(
-                    expanded = railExpanded,
-                    activeTab = state.activeTab,
-                    activeDownloadCount = state.activeDownloadCount,
-                    isSeerrConfigured = state.isSeerrConfigured,
-                    hasActiveSyncPlay = state.activeSyncPlayGroup != null,
-                    hasUpdate = state.updateInfo != null,
-                    profileName = state.profile?.name ?: "Profile",
-                    strings = strings,
-                    activeTabFocusRequester = navFocusRequester,
-                    onRailFocusChange = { railExpanded = it },
-                    onSelectTab = onSelectTab,
-                    onOpenSearch = onOpenSearch,
-                    onOpenRequests = onOpenRequests,
-                    onOpenAppearance = onOpenAppearance,
-                    onOpenCustomizeHome = onOpenCustomizeHome,
-                    onOpenSyncPlay = onOpenSyncPlay,
-                    onOpenUpdate = onOpenUpdateDialog,
-                    onSwitchProfile = onSwitchProfile,
-                    onOpenSettings = onOpenSettings,
-                    onRefresh = onRefresh
-                )
-
                 HomeMainCanvas(
                     state = state,
                     onOpenDetails = onOpenDetails,
@@ -326,8 +317,29 @@ fun HomeContent(
                     onBackToNav = onBackToNav,
                     previewHttpClient = previewHttpClient,
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
+                        .fillMaxSize()
+                        .padding(start = NETFLIX_RAIL_COLLAPSED_WIDTH)
+                )
+
+                NetflixNavRail(
+                    activeTab = state.activeTab,
+                    activeDownloadCount = state.activeDownloadCount,
+                    isSeerrConfigured = state.isSeerrConfigured,
+                    hasActiveSyncPlay = state.activeSyncPlayGroup != null,
+                    hasUpdate = state.updateInfo != null,
+                    profileName = state.profile?.name ?: "Profile",
+                    strings = strings,
+                    activeTabFocusRequester = navFocusRequester,
+                    onSelectTab = onSelectTab,
+                    onOpenSearch = onOpenSearch,
+                    onOpenRequests = onOpenRequests,
+                    onOpenAppearance = onOpenAppearance,
+                    onOpenCustomizeHome = onOpenCustomizeHome,
+                    onOpenSyncPlay = onOpenSyncPlay,
+                    onOpenUpdate = onOpenUpdateDialog,
+                    onSwitchProfile = onSwitchProfile,
+                    onOpenSettings = onOpenSettings,
+                    onRefresh = onRefresh
                 )
             }
         }
@@ -533,6 +545,41 @@ fun HomeContent(
     }
 }
 
+private val NETFLIX_RAIL_COLLAPSED_WIDTH = 68.dp
+private val NETFLIX_RAIL_EXPANDED_WIDTH = 216.dp
+
+/**
+ * D-pad scrolling for the vertical Home list.
+ *
+ * - Rows: the focused card is parked at a fixed line ([PIVOT_FRACTION] of the viewport), like the
+ *   Android TV platform pivot, so every Down/Up press scrolls by exactly one row (Netflix-style)
+ *   instead of the list creeping only when focus hits the bottom edge.
+ * - Top of the page: anything that is fully visible with the list scrolled to the very top (hero
+ *   CTA buttons, filter chips) snaps the list back to the top. With a plain pivot the hero buttons
+ *   sit below the pivot line, so focusing them used to scroll the billboard half off-screen.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Stable
+private class HomeListBringIntoViewSpec(private val listState: LazyListState) : BringIntoViewSpec {
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+        if (listState.firstVisibleItemIndex == 0) {
+            val scrolled = listState.firstVisibleItemScrollOffset.toFloat()
+            val absoluteBottom = offset + scrolled + size
+            if (absoluteBottom <= containerSize * TOP_SNAP_FRACTION) return -scrolled
+        }
+        val pivot = containerSize * PIVOT_FRACTION
+        // Too tall to fit below the pivot: align its bottom with the viewport end instead.
+        val target = if (size <= containerSize && containerSize - pivot < size) containerSize - size else pivot
+        return offset - target
+    }
+
+    private companion object {
+        const val PIVOT_FRACTION = 0.3f
+        const val TOP_SNAP_FRACTION = 0.92f
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HomeMainCanvas(
     state: HomeUiState,
@@ -572,11 +619,15 @@ private fun HomeMainCanvas(
     val onCardFocused = remember<(String) -> Unit> { { cardKey -> lastFocusedCardKey.value = cardKey } }
 
     // Restore focus to the card the user left from instead of dumping it on the hero / nothing.
+    // Coming back with no saved card (e.g. you were on the hero, or the player was opened from a
+    // Watch Next/deep link) also lands on the hero instead of the first nav item.
     LaunchedEffect(Unit) {
-        if (restoreFocusKey == null) return@LaunchedEffect
+        if (restoreFocusKey == null && !initialFocusHandled) return@LaunchedEffect
         withFrameNanos { }
-        if (runCatching { restoreFocusRequester.requestFocus() }.isFailure) {
-            runCatching { heroFocusRequester.requestFocus() }
+        val restored = restoreFocusKey != null &&
+            runCatching { restoreFocusRequester.requestFocus(FocusDirection.Enter) }.getOrDefault(false)
+        if (!restored) {
+            runCatching { heroFocusRequester.requestFocus(FocusDirection.Enter) }
         }
     }
     // One-shot initial focus once the first load settles, so the remote works immediately on launch.
@@ -702,6 +753,11 @@ private fun HomeMainCanvas(
                 val rows = remember(state.rows) { state.rows.distinctBy { it.id } }
                 // The Apple TV glass bar floats over the list; without a hero the filter bar sat under it.
                 val listTopPadding = if (spec.navStyle == NavLayoutStyle.TOP_GLASS_PILL && state.featuredItem == null) 92.dp else 0.dp
+                // Platform spec (pivot on Android TV) for the horizontal rows; the vertical list gets
+                // the Home-specific spec below. Captured before it is overridden for the LazyColumn.
+                val rowBringIntoViewSpec = LocalBringIntoViewSpec.current
+                val homeBringIntoViewSpec = remember(listState) { HomeListBringIntoViewSpec(listState) }
+                CompositionLocalProvider(LocalBringIntoViewSpec provides homeBringIntoViewSpec) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -766,7 +822,8 @@ private fun HomeMainCanvas(
                         item(key = "genre_filter_bar", contentType = "genre_bar") {
                             GenreFilterBar(
                                 selectedGenre = state.selectedGenre,
-                                onSelectGenre = onSelectGenre
+                                onSelectGenre = onSelectGenre,
+                                bringIntoViewSpec = rowBringIntoViewSpec
                             )
                         }
                     }
@@ -812,6 +869,7 @@ private fun HomeMainCanvas(
                     ) { row ->
                         CatalogRowSection(
                             row = row,
+                            rowBringIntoViewSpec = rowBringIntoViewSpec,
                             restoreFocusKey = restoreFocusKey,
                             restoreFocusRequester = restoreFocusRequester,
                             onCardFocused = onCardFocused,
@@ -829,6 +887,7 @@ private fun HomeMainCanvas(
                             onPosterOptions = onOpenPosterOptions
                         )
                     }
+                }
                 }
             }
         }
@@ -1253,18 +1312,21 @@ private fun StatusTagChip(label: String, tint: Color) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GenreFilterBar(
     selectedGenre: GenreFilterOption,
-    onSelectGenre: (GenreFilterOption) -> Unit
+    onSelectGenre: (GenreFilterOption) -> Unit,
+    bringIntoViewSpec: BringIntoViewSpec? = null
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
+    WithBringIntoViewSpec(bringIntoViewSpec) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = spec.contentStartPaddingDp.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        items(GenreFilterOption.ALL_GENRES, key = { it.id }) { genre ->
+        items(GenreFilterOption.ALL_GENRES, key = { it.id }, contentType = { "genre_chip" }) { genre ->
             var focused by remember { mutableStateOf(false) }
             val selected = selectedGenre.id == genre.id
             Box(
@@ -1293,6 +1355,18 @@ private fun GenreFilterBar(
                 )
             }
         }
+    }
+    }
+}
+
+/** Re-provides the platform [BringIntoViewSpec] for horizontal rows nested in the Home list. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun WithBringIntoViewSpec(spec: BringIntoViewSpec?, content: @Composable () -> Unit) {
+    if (spec == null) {
+        content()
+    } else {
+        CompositionLocalProvider(LocalBringIntoViewSpec provides spec, content = content)
     }
 }
 
@@ -1476,6 +1550,7 @@ private fun ContextActionRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CatalogRowSection(
     row: CatalogRow,
@@ -1485,11 +1560,17 @@ private fun CatalogRowSection(
     onPosterOptions: (UnifiedMediaItem) -> Unit,
     restoreFocusKey: String? = null,
     restoreFocusRequester: FocusRequester? = null,
-    onCardFocused: (String) -> Unit = {}
+    onCardFocused: (String) -> Unit = {},
+    rowBringIntoViewSpec: BringIntoViewSpec? = null
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val horizontalPad = spec.contentStartPaddingDp.dp
+    // When the Home list prefetches this row ahead of a vertical scroll, compose a full screen
+    // width of cards (default is 2), so the row doesn't compose 4-5 cards in the frame it scrolls in.
+    val rowListState = rememberLazyListState(
+        prefetchStrategy = remember { LazyListPrefetchStrategy(nestedPrefetchItemCount = ROW_NESTED_PREFETCH_COUNT) }
+    )
     // The same title can legitimately be returned twice for a row (e.g. merged Jellyfin + Seerr
     // results); duplicate LazyRow keys crash with "Key ... was already used".
     val rowItems = remember(row.items) { row.items.distinctBy { it.id } }
@@ -1508,7 +1589,9 @@ private fun CatalogRowSection(
             modifier = Modifier.padding(start = horizontalPad, end = horizontalPad, bottom = 10.dp)
         )
 
+        WithBringIntoViewSpec(rowBringIntoViewSpec) {
         LazyRow(
+            state = rowListState,
             contentPadding = PaddingValues(horizontal = horizontalPad),
             horizontalArrangement = Arrangement.spacedBy(if (spec.preset == UiPreset.APPLE_TV) 18.dp else 14.dp)
         ) {
@@ -1573,12 +1656,15 @@ private fun CatalogRowSection(
                 }
             }
         }
+        }
     }
 }
 
+/** ~one 1080p screen width of the narrowest (Netflix portrait) cards plus a partial one. */
+private const val ROW_NESTED_PREFETCH_COUNT = 7
+
 @Composable
 private fun NetflixNavRail(
-    expanded: Boolean,
     activeTab: HomeTab,
     activeDownloadCount: Int,
     isSeerrConfigured: Boolean,
@@ -1587,7 +1673,6 @@ private fun NetflixNavRail(
     profileName: String,
     strings: UiStrings,
     activeTabFocusRequester: FocusRequester? = null,
-    onRailFocusChange: (Boolean) -> Unit,
     onSelectTab: (HomeTab) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenRequests: () -> Unit,
@@ -1600,13 +1685,24 @@ private fun NetflixNavRail(
     onRefresh: () -> Unit
 ) {
     val colors = SeerflixTokens.colors
+    // Expanded state lives here (not in HomeContent) so a rail focus change recomposes only the rail.
+    var expanded by remember { mutableStateOf(false) }
+    // The rail now overlays the content, so its translucent nav colour let rows and chips show
+    // through the labels; use the same colour flattened onto the app background (fully opaque).
+    val railBackground = remember(colors.navBarBackground, colors.background) {
+        colors.navBarBackground.compositeOver(colors.background)
+    }
+    val expandedScrim = remember(railBackground) {
+        Brush.horizontalGradient(listOf(railBackground, Color.Transparent))
+    }
+    Row(modifier = Modifier.fillMaxHeight()) {
     Column(
         modifier = Modifier
             .fillMaxHeight()
-            .width(if (expanded) 216.dp else 68.dp)
-            .background(colors.navBarBackground)
+            .width(if (expanded) NETFLIX_RAIL_EXPANDED_WIDTH else NETFLIX_RAIL_COLLAPSED_WIDTH)
+            .background(railBackground)
             .onFocusChanged { focusState ->
-                onRailFocusChange(focusState.hasFocus)
+                if (expanded != focusState.hasFocus) expanded = focusState.hasFocus
             }
             .verticalScroll(rememberScrollState())
             .padding(vertical = 14.dp, horizontal = 10.dp),
@@ -1764,6 +1860,16 @@ private fun NetflixNavRail(
             )
         }
     }
+    if (expanded) {
+        // The expanded rail floats over the rows; a short fade keeps its edge readable.
+        Spacer(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(96.dp)
+                .background(expandedScrim)
+        )
+    }
+    }
 }
 
 @Composable
@@ -1884,7 +1990,7 @@ private fun CollectionsHubContent(
         contentPadding = PaddingValues(start = 36.dp, end = 36.dp, top = topPadding, bottom = 28.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        item(key = "collections_header") {
+        item(key = "collections_header", contentType = "header") {
             Column {
                 Text(
                     text = "Collections",
@@ -1901,7 +2007,7 @@ private fun CollectionsHubContent(
             }
         }
 
-        items(rows) { chunk ->
+        items(rows, contentType = { "collection_row" }) { chunk ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -1928,10 +2034,12 @@ private fun CollectionsHubContent(
                                 .clip(RoundedCornerShape((spec.cardCornerRadiusDp - 2).coerceAtLeast(4).dp))
                                 .background(colors.surfaceElevated)
                         ) {
-                            AsyncImage(
-                                model = col.backdropUrl ?: col.posterUrl,
+                            SizedAsyncImage(
+                                url = col.backdropUrl ?: col.posterUrl,
                                 contentDescription = col.name,
-                                contentScale = ContentScale.Crop,
+                                // ~quarter of the canvas width; exact size isn't needed for Crop.
+                                width = 240.dp,
+                                height = 135.dp,
                                 modifier = Modifier.fillMaxSize()
                             )
                             Box(
@@ -2118,10 +2226,11 @@ private fun CollectionDetailsDialog(
                                 }
                                 .padding(10.dp)
                         ) {
-                            AsyncImage(
-                                model = part.posterUrl ?: part.backdropUrl,
+                            SizedAsyncImage(
+                                url = part.posterUrl ?: part.backdropUrl,
                                 contentDescription = part.title,
-                                contentScale = ContentScale.Crop,
+                                width = 56.dp,
+                                height = 84.dp,
                                 modifier = Modifier
                                     .width(56.dp)
                                     .aspectRatio(2f / 3f)
@@ -2338,7 +2447,7 @@ private fun LiveTvGuideContent(
             }
         }
 
-        items(channels, key = { it.id }) { ch ->
+        items(channels, key = { it.id }, contentType = { "channel" }) { ch ->
             var focused by remember { mutableStateOf(false) }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -2374,9 +2483,11 @@ private fun LiveTvGuideContent(
                         )
                     }
                     Spacer(Modifier.width(10.dp))
-                    AsyncImage(
-                        model = ch.logoUrl,
+                    SizedAsyncImage(
+                        url = ch.logoUrl,
                         contentDescription = ch.name,
+                        width = 38.dp,
+                        height = 38.dp,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier.size(38.dp)
                     )

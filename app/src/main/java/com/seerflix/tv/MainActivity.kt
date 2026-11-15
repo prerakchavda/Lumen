@@ -7,6 +7,9 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,6 +31,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.data.DetailsSeedCache
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -76,6 +80,9 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private const val NAV_FADE_IN_MS = 180
+private const val NAV_FADE_OUT_MS = 120
+
 private object Routes {
     const val SETUP = "setup"
     const val PROFILES = "profiles"
@@ -94,6 +101,8 @@ private object Routes {
     }
 
     fun details(item: UnifiedMediaItem): String {
+        // Hand the clicked card to Details so it can render instantly while the full load runs.
+        DetailsSeedCache.put(item)
         val tmdb = item.tmdbId ?: 0
         val jf = item.jellyfinId ?: "none"
         return "details/$tmdb/$jf/${item.mediaType.name}"
@@ -190,7 +199,13 @@ private fun SeerflixNavGraph(
 
     NavHost(
         navController = navController,
-        startDestination = startDestination!!
+        startDestination = startDestination!!,
+        // Navigation's default is a 700 ms crossfade on every screen change, which made every
+        // click feel laggy on a TV. Keep a short fade so screens still don't pop harshly.
+        enterTransition = { fadeIn(animationSpec = tween(NAV_FADE_IN_MS)) },
+        exitTransition = { fadeOut(animationSpec = tween(NAV_FADE_OUT_MS)) },
+        popEnterTransition = { fadeIn(animationSpec = tween(NAV_FADE_IN_MS)) },
+        popExitTransition = { fadeOut(animationSpec = tween(NAV_FADE_OUT_MS)) }
     ) {
         composable(Routes.SETUP) {
             SetupScreen(

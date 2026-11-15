@@ -46,10 +46,11 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil3.compose.AsyncImage
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -57,6 +58,89 @@ import com.seerflix.tv.ui.theme.CardPresentationStyle
 import com.seerflix.tv.ui.theme.SeerflixTokens
 import com.seerflix.tv.ui.theme.Top10Style
 import kotlin.math.roundToInt
+
+private val WIDESCREEN_CARD_WIDTH = 224.dp
+
+/** Card legibility scrim; cached so focus-driven recompositions don't re-allocate the shader brush. */
+@Composable
+private fun rememberBottomScrim(base: Color, alpha: Float): Brush =
+    remember(base, alpha) { Brush.verticalGradient(listOf(Color.Transparent, base.copy(alpha = alpha))) }
+
+/**
+ * Card artwork with an identifiable fallback: when the URL is missing or fails to load (common for
+ * newly-added items before metadata/artwork is fetched) a gradient tile with the title + year is
+ * drawn instead of an empty grey box. Returns true while the fallback is shown.
+ */
+@Composable
+private fun CardArtwork(
+    url: String?,
+    item: UnifiedMediaItem,
+    width: Dp,
+    height: Dp
+): Boolean {
+    var failed by remember(url) { mutableStateOf(url.isNullOrBlank()) }
+    if (failed) {
+        ArtworkFallbackTile(item = item, compact = height < 120.dp, modifier = Modifier.fillMaxSize())
+    } else {
+        SizedAsyncImage(
+            url = url,
+            contentDescription = item.title,
+            width = width,
+            height = height,
+            modifier = Modifier.fillMaxSize(),
+            onError = { failed = true }
+        )
+    }
+    return failed
+}
+
+@Composable
+fun ArtworkFallbackTile(
+    item: UnifiedMediaItem,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false
+) {
+    val colors = SeerflixTokens.colors
+    val tileBrush = remember(colors.surfaceElevated, colors.surface) {
+        Brush.verticalGradient(listOf(colors.surfaceElevated, colors.surface))
+    }
+    val subtitle = remember(item.releaseYear, item.mediaType) {
+        listOfNotNull(
+            item.releaseYear,
+            if (item.mediaType.name == "MOVIE") "Movie" else "Series"
+        ).joinToString(" • ")
+    }
+    Box(
+        modifier = modifier
+            .background(tileBrush)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = item.title,
+                color = colors.textPrimary,
+                fontSize = if (compact) 13.sp else 14.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                maxLines = if (compact) 2 else 3,
+                overflow = TextOverflow.Ellipsis,
+                lineHeight = if (compact) 16.sp else 18.sp
+            )
+            if (subtitle.isNotEmpty()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = subtitle,
+                    color = colors.textMuted,
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun AvailabilityBadge(
@@ -146,7 +230,7 @@ fun NetflixPosterCard(
     if (isWidescreen) {
         Column(
             modifier = modifier
-                .width(224.dp)
+                .width(WIDESCREEN_CARD_WIDTH)
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
@@ -184,20 +268,18 @@ fun NetflixPosterCard(
                         }
                     )
             ) {
-                AsyncImage(
-                    model = item.backdropUrl ?: item.posterUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                CardArtwork(
+                    url = item.backdropUrl ?: item.posterUrl,
+                    item = item,
+                    width = WIDESCREEN_CARD_WIDTH,
+                    height = WIDESCREEN_CARD_WIDTH * 9f / 16f
                 )
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
                         .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(listOf(Color.Transparent, colors.deepBlack.copy(alpha = 0.85f)))
-                        )
+                        .background(rememberBottomScrim(colors.deepBlack, 0.85f))
                 )
                 AvailabilityBadge(
                     item = item,
@@ -286,11 +368,11 @@ fun NetflixPosterCard(
                 }
             )
     ) {
-        AsyncImage(
-            model = item.posterUrl ?: item.backdropUrl,
-            contentDescription = item.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
+        val artworkFailed = CardArtwork(
+            url = item.posterUrl ?: item.backdropUrl,
+            item = item,
+            width = cardWidth,
+            height = cardWidth * 1.5f
         )
 
         // Subtle bottom gradient for legibility
@@ -299,11 +381,7 @@ fun NetflixPosterCard(
                 .fillMaxWidth()
                 .height(60.dp)
                 .align(Alignment.BottomCenter)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(Color.Transparent, colors.deepBlack.copy(alpha = 0.82f))
-                    )
-                )
+                .background(rememberBottomScrim(colors.deepBlack, 0.82f))
         )
 
         // Top-left availability or collection badge
@@ -335,7 +413,8 @@ fun NetflixPosterCard(
         }
 
         // Bottom metadata (title when missing/focused + upcoming countdown / completion pill)
-        val hasBottomTitle = item.posterUrl == null || focused
+        // The fallback tile already shows the title in the middle of the card.
+        val hasBottomTitle = (item.posterUrl == null || focused) && !artworkFailed
         val hasBottomBadge = !item.upcomingBadgeLabel.isNullOrBlank()
         if (hasBottomTitle || hasBottomBadge) {
             Column(
@@ -464,11 +543,11 @@ fun Top10PosterCard(
                             else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.45f), corner)
                         )
                 ) {
-                    AsyncImage(
-                        model = item.backdropUrl ?: item.posterUrl,
-                        contentDescription = item.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                    CardArtwork(
+                        url = item.backdropUrl ?: item.posterUrl,
+                        item = item,
+                        width = 232.dp,
+                        height = 232.dp * 9f / 16f
                     )
                     Box(
                         modifier = Modifier
@@ -539,11 +618,11 @@ fun Top10PosterCard(
                         else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
                     )
             ) {
-                AsyncImage(
-                    model = item.posterUrl ?: item.backdropUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
+                CardArtwork(
+                    url = item.posterUrl ?: item.backdropUrl,
+                    item = item,
+                    width = 146.dp,
+                    height = 219.dp
                 )
                 Box(
                     modifier = Modifier
@@ -651,11 +730,11 @@ fun Top10PosterCard(
                             }
                         )
                 ) {
-                    AsyncImage(
-                        model = item.posterUrl ?: item.backdropUrl,
-                        contentDescription = item.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
+                    CardArtwork(
+                        url = item.posterUrl ?: item.backdropUrl,
+                        item = item,
+                        width = 126.dp,
+                        height = 196.dp
                     )
                     AvailabilityBadge(
                         item = item,
@@ -730,11 +809,11 @@ fun ContinueWatchingCard(
                     }
                 )
         ) {
-            AsyncImage(
-                model = item.backdropUrl ?: item.posterUrl,
-                contentDescription = item.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+            CardArtwork(
+                url = item.backdropUrl ?: item.posterUrl,
+                item = item,
+                width = cardWidth,
+                height = cardWidth * 9f / 16f
             )
 
             Box(
@@ -742,9 +821,7 @@ fun ContinueWatchingCard(
                     .fillMaxWidth()
                     .height(48.dp)
                     .align(Alignment.BottomCenter)
-                    .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, colors.deepBlack.copy(alpha = 0.85f)))
-                    )
+                    .background(rememberBottomScrim(colors.deepBlack, 0.85f))
             )
 
             if (!item.episodeLabel.isNullOrBlank()) {

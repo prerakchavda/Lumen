@@ -9,6 +9,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import coil3.ImageLoader
 import coil3.SingletonImageLoader
+import coil3.bitmapFactoryMaxParallelism
 import coil3.disk.DiskCache
 import coil3.disk.directory
 import coil3.memory.MemoryCache
@@ -35,6 +36,8 @@ class SeerflixApp : Application(), SingletonImageLoader.Factory {
     override fun newImageLoader(context: Context): ImageLoader {
         return ImageLoader.Builder(context)
             .memoryCache {
+                // Percent of the app's heap class (~192-256 MB on 2 GB Google TV sticks) => ~35-45 MB,
+                // i.e. a few hundred display-size RGB_565 posters.
                 MemoryCache.Builder()
                     .maxSizePercent(context, 0.18)
                     .build()
@@ -59,8 +62,16 @@ class SeerflixApp : Application(), SingletonImageLoader.Factory {
                     )
                 )
             }
+            // Opaque JPEG posters/backdrops decode as RGB_565 (half the memory of ARGB_8888); on
+            // API 29+ Coil maps this to ImageDecoder's low-RAM policy, which still yields
+            // hardware bitmaps, so there is no texture upload on the RenderThread while scrolling.
             .allowRgb565(true)
+            // Row cards swap artwork constantly; a crossfade would add an extra animated layer per card.
             .crossfade(false)
+            // Default is 4 concurrent decodes. On a quad-core A55 stick that starves the UI thread and
+            // RenderThread while a new row scrolls in; 2 keeps D-pad scrolling smooth and display-size
+            // decodes are small enough that throughput is barely affected.
+            .bitmapFactoryMaxParallelism(2)
             .build()
     }
 

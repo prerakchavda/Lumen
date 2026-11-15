@@ -28,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import com.seerflix.tv.ui.components.TvTextFieldContainer
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -412,6 +413,12 @@ private fun SetupUrlField(
     keyboardType: KeyboardType = KeyboardType.Uri
 ) {
     val colors = SeerflixTokens.colors
+    // TV: D-pad focus lands on the container; OK opens the keyboard (no keyboard pop-up just
+    // from moving through the form).
+    TvTextFieldContainer(
+        modifier = Modifier.fillMaxWidth(),
+        focusRingColor = colors.accent
+    ) { fieldModifier ->
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
@@ -429,8 +436,9 @@ private fun SetupUrlField(
             focusedLabelColor = colors.white,
             unfocusedLabelColor = colors.textSecondary
         ),
-        modifier = Modifier.fillMaxWidth()
+        modifier = fieldModifier.fillMaxWidth()
     )
+    }
 }
 
 @Composable

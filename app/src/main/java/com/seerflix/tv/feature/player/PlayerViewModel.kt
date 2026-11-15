@@ -21,10 +21,13 @@ import com.seerflix.tv.core.player.AssCue
 import com.seerflix.tv.core.player.AssSubtitleParser
 import com.seerflix.tv.core.player.ExternalPlayerHelper
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
+import com.seerflix.tv.core.player.NextEpisodeInfo
+import com.seerflix.tv.core.player.PlaybackSegments
 import com.seerflix.tv.core.player.SyncPlayManager
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +73,8 @@ data class PlayerUiState(
     val drawerEpisodesLoading: Boolean = false,
     val syncPlayGroup: SyncPlayGroup? = null,
     val feedbackMessage: String? = null,
+    /** Source frame rate from Jellyfin metadata, so the display mode can be switched before the first frame. */
+    val videoFrameRateHint: Float? = null,
     val isLoading: Boolean = true,
     val errorMessage: String? = null
 )
@@ -103,6 +108,10 @@ class PlayerViewModel @Inject constructor(
     private var loadJob: Job? = null
     private var assLoadJob: Job? = null
 
+    /** Episodes-drawer data is not needed to start playback; it loads a few seconds later or on open. */
+    private var drawerJob: Job? = null
+    private var pendingDrawerRequest: Pair<String, String?>? = null
+
     init {
         viewModelScope.launch {
             syncPlayManager.activeGroup.collect { group ->
@@ -119,7 +128,15 @@ class PlayerViewModel @Inject constructor(
     fun loadTrailer(title: String, localTrailerId: String?, youtubeKey: String?) {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null, subtitleOffsetMs = 0L, activeAssCues = emptyList()) }
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    errorMessage = null,
+                    subtitleOffsetMs = 0L,
+                    activeAssCues = emptyList(),
+                    videoFrameRateHint = null
+                )
+            }
             val resolved = trailerResolver.resolvePreview(
                 localTrailerId = localTrailerId,
                 youtubeKey = youtubeKey,
@@ -203,7 +220,11 @@ class PlayerViewModel @Inject constructor(
                 )
             }
 
-            playbackManager.preparePlayback(
+            // Returns as soon as PlaybackInfo is known; segments (skip intro/recap, credits) and the
+            // next episode are fetched in this job and merged in when they arrive. Until then the
+            // skip / up-next UI simply doesn't trigger.
+            playbackManager.preparePlaybackWithExtras(
+                extrasScope = this,
                 userId = activeUserId,
                 itemId = itemId,
                 maxBitrateBps = qualityOverride.maxBitrateBps,
@@ -213,21 +234,44 @@ class PlayerViewModel @Inject constructor(
                 assSubtitleMode = profile.assSubtitleMode,
                 burnInSubtitleIndex = burnInSubtitleOverride
             )
-                .onSuccess { session ->
-                    val adjustedSession = if (resumeOverrideMs != null) {
-                        session.copy(resumeTicks = resumeOverrideMs * 10_000L)
-                    } else session
+                .onSuccess { prepared ->
+                    val previousSession = _uiState.value.session
+                    var adjustedSession = if (resumeOverrideMs != null) {
+                        prepared.session.copy(resumeTicks = resumeOverrideMs * 10_000L)
+                    } else prepared.session
+                    // Reloading the same item (quality / version / audio switch): keep the markers we
+                    // already had until the fresh lookups complete.
+                    if (previousSession != null && !previousSession.isTrailer && previousSession.itemId == adjustedSession.itemId) {
+                        adjustedSession = PlaybackSegments.of(previousSession).applyTo(adjustedSession).copy(
+                            nextEpisodeId = previousSession.nextEpisodeId,
+                            nextEpisodeTitle = previousSession.nextEpisodeTitle
+                        )
+                    }
                     _uiState.update {
                         it.copy(
                             session = adjustedSession,
                             selectedQuality = qualityOverride,
                             selectedMediaSourceId = adjustedSession.mediaSourceId,
                             burnInSubtitleIndex = burnInSubtitleOverride,
+                            videoFrameRateHint = prepared.videoFrameRate,
                             isLoading = false
                         )
                     }
+                    val playSessionId = adjustedSession.playSessionId
+                    prepared.segments?.let { deferred ->
+                        launch {
+                            val segments = deferred.await() ?: return@launch
+                            updateSessionIfCurrent(playSessionId) { segments.applyTo(it) }
+                        }
+                    }
+                    prepared.nextEpisode?.let { deferred ->
+                        launch {
+                            val lookup = deferred.await() ?: return@launch
+                            updateSessionIfCurrent(playSessionId) { it.withNextEpisode(lookup.next) }
+                        }
+                    }
                     if (!adjustedSession.seriesId.isNullOrBlank()) {
-                        loadSeriesForDrawer(adjustedSession.seriesId, adjustedSession.seasonId)
+                        scheduleDrawerLoad(adjustedSession.seriesId, adjustedSession.seasonId)
                     }
                     if (profile.assSubtitleMode == AssSubtitleMode.STYLED && profile.preferredSubtitleLang != "off") {
                         autoLoadMatchingAssTrack(adjustedSession, profile.preferredSubtitleLang)
@@ -243,6 +287,24 @@ class PlayerViewModel @Inject constructor(
                 }
         }
     }
+
+    /** Applies late-arriving playback data only if [playSessionId] is still the active session. */
+    private fun updateSessionIfCurrent(
+        playSessionId: String,
+        transform: (PlaybackSessionData) -> PlaybackSessionData
+    ) {
+        _uiState.update { state ->
+            val current = state.session
+            if (current != null && current.playSessionId == playSessionId) {
+                state.copy(session = transform(current))
+            } else {
+                state
+            }
+        }
+    }
+
+    private fun PlaybackSessionData.withNextEpisode(next: NextEpisodeInfo?): PlaybackSessionData =
+        copy(nextEpisodeId = next?.id, nextEpisodeTitle = next?.title)
 
     fun retryPlayback(currentPosMs: Long = 0L) {
         val currentSession = _uiState.value.session
@@ -456,26 +518,51 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch { syncPlayManager.notifySeek(positionMs.coerceAtLeast(0L) * 10_000L) }
     }
 
-    private fun loadSeriesForDrawer(seriesId: String, currentSeasonId: String?) {
-        viewModelScope.launch {
-            val details = catalogRepository.loadFullDetails(
-                userId = activeUserId,
-                tmdbId = null,
-                jellyfinId = seriesId,
-                mediaType = MediaType.SERIES
-            ).getOrNull() ?: return@launch
-            activeSeriesTmdbId = details.tmdbId
-            val targetSeason = details.seasons.firstOrNull { it.jellyfinSeasonId == currentSeasonId }?.seasonNumber
-                ?: details.seasons.firstOrNull()?.seasonNumber
-                ?: 1
-            _uiState.update {
-                it.copy(
-                    drawerSeasons = details.seasons,
-                    drawerSelectedSeason = targetSeason
-                )
-            }
-            selectDrawerSeason(targetSeason)
+    /**
+     * The drawer pulls full series details (seasons, possibly TMDB metadata); doing that while the
+     * stream starts competes with it for network and CPU on low-end sticks, so it is deferred.
+     */
+    private fun scheduleDrawerLoad(seriesId: String, currentSeasonId: String?) {
+        drawerJob?.cancel()
+        pendingDrawerRequest = seriesId to currentSeasonId
+        drawerJob = viewModelScope.launch {
+            delay(DRAWER_PRELOAD_DELAY_MS)
+            loadPendingDrawer()
         }
+    }
+
+    /** Loads the episodes drawer right away if it hasn't been loaded yet (called when it opens). */
+    fun ensureDrawerLoaded() {
+        if (pendingDrawerRequest == null) return
+        drawerJob?.cancel()
+        drawerJob = viewModelScope.launch { loadPendingDrawer() }
+    }
+
+    private suspend fun loadPendingDrawer() {
+        val (seriesId, currentSeasonId) = pendingDrawerRequest ?: return
+        pendingDrawerRequest = null
+        _uiState.update { it.copy(drawerEpisodesLoading = true) }
+        val details = catalogRepository.loadFullDetails(
+            userId = activeUserId,
+            tmdbId = null,
+            jellyfinId = seriesId,
+            mediaType = MediaType.SERIES
+        ).getOrNull()
+        if (details == null) {
+            _uiState.update { it.copy(drawerEpisodesLoading = false) }
+            return
+        }
+        activeSeriesTmdbId = details.tmdbId
+        val targetSeason = details.seasons.firstOrNull { it.jellyfinSeasonId == currentSeasonId }?.seasonNumber
+            ?: details.seasons.firstOrNull()?.seasonNumber
+            ?: 1
+        _uiState.update {
+            it.copy(
+                drawerSeasons = details.seasons,
+                drawerSelectedSeason = targetSeason
+            )
+        }
+        selectDrawerSeason(targetSeason)
     }
 
     fun selectDrawerSeason(seasonNumber: Int) {
@@ -644,6 +731,7 @@ class PlayerViewModel @Inject constructor(
 
     private companion object {
         const val TRAILER_RESOLVE_TIMEOUT_MS = 15_000L
+        const val DRAWER_PRELOAD_DELAY_MS = 6_000L
     }
 }
 

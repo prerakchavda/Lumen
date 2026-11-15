@@ -53,12 +53,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.ui.components.HeroPillButton
+import com.seerflix.tv.ui.components.SizedAsyncImage
 import com.seerflix.tv.ui.theme.SeerflixTokens
 
 @Composable
@@ -221,7 +221,7 @@ fun RequestsContent(
                         contentPadding = PaddingValues(bottom = 32.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(state.visibleRequests, key = { it.requestId }) { req ->
+                        items(state.visibleRequests, key = { it.requestId }, contentType = { "request" }) { req ->
                             RequestItemCard(
                                 req = req,
                                 isAdmin = state.isAdmin,
@@ -295,10 +295,11 @@ private fun RequestItemCard(
             .clickable(onClick = onClick)
             .padding(14.dp)
     ) {
-        AsyncImage(
-            model = req.posterUrl ?: req.backdropUrl,
+        SizedAsyncImage(
+            url = req.posterUrl ?: req.backdropUrl,
             contentDescription = req.title,
-            contentScale = ContentScale.Crop,
+            width = 64.dp,
+            height = 96.dp,
             modifier = Modifier
                 .width(64.dp)
                 .aspectRatio(2f / 3f)

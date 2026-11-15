@@ -232,7 +232,13 @@ class UnifiedCatalogRepositoryFeaturesTest {
             limit: Int,
             parentId: String?,
             maxOfficialRating: String?,
-            startIndex: Int?
+            startIndex: Int?,
+            ids: String?,
+            enableImages: Boolean?,
+            imageTypeLimit: Int?,
+            enableImageTypes: String?,
+            enableUserData: Boolean?,
+            enableTotalRecordCount: Boolean?
         ) = JellyfinItemsResponse(libraryItems, libraryItems.size)
         override suspend fun getFavoriteItems(
             userId: String,
@@ -298,6 +304,8 @@ class UnifiedCatalogRepositoryFeaturesTest {
         override suspend fun reportPlaybackStart(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackProgress(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackStopped(body: JellyfinPlaybackProgressRequest) = Unit
+        override suspend fun getEpisodesLite(seriesId: String, userId: String, seasonId: String?, startItemId: String?, limit: Int?, fields: String?, enableImages: Boolean, isMissing: Boolean?) = JellyfinItemsResponse()
+        override suspend fun getResumeItemsLite(userId: String, parentId: String?, limit: Int, mediaTypes: String, enableImages: Boolean) = JellyfinItemsResponse()
     }
 
     private class FakeSeerrApi : SeerrApi {

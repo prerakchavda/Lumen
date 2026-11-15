@@ -48,6 +48,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -55,6 +58,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -120,11 +124,17 @@ fun HeroBillboard(
             .height(spec.heroHeightDp.dp)
             .background(colors.background)
     ) {
-        // Static backdrop image (avoids continuous 60fps full-screen GPU redraws on low-power TV sticks)
-        AsyncImage(
-            model = item.backdropUrl ?: item.posterUrl,
+        // Static backdrop image (avoids continuous 60fps full-screen GPU redraws on low-power TV sticks).
+        // Requested at display size (capped at 1280 px server-side) and keeps showing the previous
+        // backdrop until the next one is decoded, so a featured-item change is a single swap with
+        // no background flash and no crossfade layer.
+        SizedAsyncImage(
+            url = item.backdropUrl ?: item.posterUrl,
             contentDescription = item.title,
-            contentScale = ContentScale.Crop,
+            width = LocalConfiguration.current.screenWidthDp.dp,
+            height = spec.heroHeightDp.dp,
+            maxRequestWidthPx = 1280,
+            keepPreviousWhileLoading = true,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -138,38 +148,49 @@ fun HeroBillboard(
             )
         }
 
-        // Preset-aware horizontal & vertical cinematic gradients
-        Box(
+        // Preset-aware horizontal & vertical cinematic gradients, drawn by ONE node with cached
+        // shaders. The vertical scrim is transparent between 32% and 60% of the height, so only its
+        // top and bottom bands are filled (less overdraw than two stacked full-size gradient boxes).
+        val topScrim = if (spec.navStyle != NavLayoutStyle.LEFT_RAIL) {
+            colors.deepBlack.copy(alpha = 0.72f)
+        } else {
+            colors.deepBlack.copy(alpha = 0.34f)
+        }
+        val heroBg = colors.background
+        Spacer(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.horizontalGradient(
+                .drawWithCache {
+                    val horizontal = Brush.horizontalGradient(
                         colorStops = arrayOf(
-                            0.0f to colors.background.copy(alpha = 0.96f),
-                            0.38f to colors.background.copy(alpha = 0.78f),
-                            0.72f to colors.background.copy(alpha = 0.25f),
+                            0.0f to heroBg.copy(alpha = 0.96f),
+                            0.38f to heroBg.copy(alpha = 0.78f),
+                            0.72f to heroBg.copy(alpha = 0.25f),
                             1.0f to Color.Transparent
                         )
                     )
-                )
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.0f to if (spec.navStyle != NavLayoutStyle.LEFT_RAIL) {
-                                colors.deepBlack.copy(alpha = 0.72f)
-                            } else {
-                                colors.deepBlack.copy(alpha = 0.34f)
-                            },
-                            0.32f to Color.Transparent,
-                            0.60f to Color.Transparent,
-                            1.0f to colors.background
-                        )
+                    val topBandEnd = size.height * 0.32f
+                    val bottomBandStart = size.height * 0.60f
+                    val top = Brush.verticalGradient(
+                        colors = listOf(topScrim, Color.Transparent),
+                        startY = 0f,
+                        endY = topBandEnd
                     )
-                )
+                    val bottom = Brush.verticalGradient(
+                        colors = listOf(Color.Transparent, heroBg),
+                        startY = bottomBandStart,
+                        endY = size.height
+                    )
+                    onDrawBehind {
+                        drawRect(horizontal)
+                        drawRect(top, size = Size(size.width, topBandEnd))
+                        drawRect(
+                            bottom,
+                            topLeft = Offset(0f, bottomBandStart),
+                            size = Size(size.width, size.height - bottomBandStart)
+                        )
+                    }
+                }
         )
 
         // Left info & CTA block
@@ -234,26 +255,36 @@ fun HeroBillboard(
 
             Spacer(Modifier.height(6.dp))
 
-            if (!item.clearLogoUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = item.clearLogoUrl,
-                    contentDescription = item.title,
-                    contentScale = ContentScale.Fit,
-                    alignment = Alignment.CenterStart,
-                    modifier = Modifier
-                        .height(if (spec.preset == UiPreset.APPLE_TV) 74.dp else 68.dp)
-                        .fillMaxWidth(0.75f)
-                )
-            } else {
-                Text(
-                    text = item.title,
-                    color = colors.white,
-                    fontSize = if (spec.preset == UiPreset.APPLE_TV) 40.sp else 36.sp,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    lineHeight = 42.sp
-                )
+            // Jellyfin logo URLs are built for every library item whether or not a logo exists, so a
+            // 404 is common (new items, Jellyfin-only servers). The title text is shown until the
+            // logo has actually loaded, and stays if it fails — the billboard is never untitled.
+            val logoUrl = item.clearLogoUrl?.takeIf { it.isNotBlank() }
+            var logoLoaded by remember(logoUrl) { mutableStateOf(false) }
+            Box(contentAlignment = Alignment.CenterStart) {
+                if (logoUrl != null) {
+                    AsyncImage(
+                        model = logoUrl,
+                        contentDescription = item.title,
+                        contentScale = ContentScale.Fit,
+                        alignment = Alignment.CenterStart,
+                        onSuccess = { logoLoaded = true },
+                        onError = { logoLoaded = false },
+                        modifier = Modifier
+                            .height(if (spec.preset == UiPreset.APPLE_TV) 74.dp else 68.dp)
+                            .fillMaxWidth(0.75f)
+                    )
+                }
+                if (!logoLoaded) {
+                    Text(
+                        text = item.title,
+                        color = colors.white,
+                        fontSize = if (spec.preset == UiPreset.APPLE_TV) 40.sp else 36.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        lineHeight = 42.sp
+                    )
+                }
             }
 
             Spacer(Modifier.height(10.dp))
@@ -300,7 +331,10 @@ fun HeroBillboard(
                         )
                     }
                 }
-                item.mediaBadges.filter { it != "4K" && it != "HD" }.take(2).forEach { badge ->
+                val extraBadges = remember(item.mediaBadges) {
+                    item.mediaBadges.filter { it != "4K" && it != "HD" }.take(2)
+                }
+                extraBadges.forEach { badge ->
                     Box(
                         modifier = Modifier
                             .border(1.dp, colors.textMuted, RoundedCornerShape(3.dp))

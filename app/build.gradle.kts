@@ -16,8 +16,8 @@ android {
         applicationId = "com.seerflix.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.5.0"
+        versionCode = 6
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -43,7 +43,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8: shrinks and optimizes bytecode (inlining, devirtualization, dead-code removal).
+            // Compose apps are dramatically smoother with it, especially on low-end TV sticks.
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -116,6 +119,9 @@ dependencies {
     implementation(libs.androidx.tvprovider)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.zxing.core)
+    // Installs the bundled baseline profiles (ours + Compose/Media3) on sideloaded installs, so
+    // ART precompiles hot code instead of interpreting it until background dexopt runs.
+    implementation(libs.androidx.profileinstaller)
     implementation(libs.newpipe.extractor)
 
     testImplementation(libs.junit)

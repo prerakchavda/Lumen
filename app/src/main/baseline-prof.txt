@@ -1,0 +1,6 @@
+# Baseline profile for Lumen.
+# Ask ART to precompile all of the app's own code at install time (it is small relative to its
+# libraries), so the first launch, first scroll and first playback are not run interpreted on
+# low-end Google TV sticks. Library profiles (Compose, Media3, etc.) are merged in automatically.
+HSPLcom/seerflix/tv/**;->**(**)**
+Lcom/seerflix/tv/**;

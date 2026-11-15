@@ -73,15 +73,19 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
   - **Collections & Saga Completion** (`Part of Saga` + 1-click `Request Missing`), **Coming Soon** countdown reminders, **Extras & Special Features** row on Details, **On-Device YouTube Trailers** (`NewPipeExtractor`), **In-App GitHub Release Updater**, and localized UI (`English`, `Español`, `Français`, `Deutsch`, `日本語`) + metadata language support.
 
 ## Build & Sideload to Google TV
-1. Build the debug APK:
+The easiest option is the APK attached to the latest [GitHub release](../../releases/latest). To build it yourself:
+
+1. Build the optimized release APK (R8-shrunk, with a baseline profile so ART precompiles the app at install time):
    ```bash
-   ./gradlew assembleDebug
+   ./gradlew assembleRelease
    ```
-   Output: `app/build/outputs/apk/debug/app-debug.apk`
+   Output: `app/build/outputs/apk/release/app-release.apk`
+
+   > Use the release build on your TV. Debug builds (`assembleDebug`) run unoptimized Compose code and feel noticeably laggy on low-end sticks like the onn. 4K.
 2. Enable **Developer Options → USB/Network Debugging** on your Google TV and install via ADB:
    ```bash
    adb connect <GOOGLE_TV_IP>:5555
-   adb install -r app/build/outputs/apk/debug/app-debug.apk
+   adb install -r app/build/outputs/apk/release/app-release.apk
    ```
 
 ## Tests & Screenshot Verification

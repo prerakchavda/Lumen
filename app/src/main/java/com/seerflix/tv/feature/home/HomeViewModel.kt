@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AppUpdateChecker
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.data.HomeContentCache
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.AppUpdateInfo
 import com.seerflix.tv.core.model.AvailabilityFilter
@@ -18,6 +19,7 @@ import com.seerflix.tv.core.model.LiveTvChannel
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.ReadyRequestAlert
 import com.seerflix.tv.core.model.RowStyle
+import com.seerflix.tv.core.model.ServerConfig
 import com.seerflix.tv.core.model.SyncPlayGroup
 import com.seerflix.tv.core.model.UiPreset
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -120,7 +122,9 @@ class HomeViewModel @Inject constructor(
     private val appUpdateChecker: AppUpdateChecker,
     private val prefs: SessionPreferences,
     /** Honours the self-signed-certificate toggle; used by the hero trailer preview player. */
-    @MediaClient val previewHttpClient: OkHttpClient
+    @MediaClient val previewHttpClient: OkHttpClient,
+    /** Last good rows per (profile, tab, genre, filter): painted instantly, then revalidated. */
+    private val homeContentCache: HomeContentCache
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -130,6 +134,15 @@ class HomeViewModel @Inject constructor(
     private var feedbackJob: Job? = null
     private var catalogJob: Job? = null
     private var collectionJob: Job? = null
+    private var auxiliaryJob: Job? = null
+
+    /**
+     * Cache key of the row content currently in [HomeUiState.rows] plus the rows as they were
+     * loaded. In-place edits (My List, watched, Continue Watching) produce a different list, which
+     * is written back when the user leaves that view so its cached copy doesn't resurrect them.
+     */
+    @Volatile
+    private var displayedContent: Pair<HomeContentCache.Key, List<CatalogRow>>? = null
 
     /** Monotonic token so a superseded catalog load can never overwrite a newer one. */
     @Volatile
@@ -790,7 +803,37 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(isLoading = false, errorMessage = "No active profile selected.") }
                 return@launch
             }
+            val serverConfig = prefs.serverConfigFlow.first()
             _uiState.update { it.copy(profile = profile, isSeerrConfigured = prefs.isSeerrConfigured) }
+
+            // Download badge / 4K capability / library views: never block the rows on them.
+            refreshAuxiliaryState(profile)
+
+            // Stale-while-revalidate: paint the last good content for this exact view right away
+            // (no spinner), then swap in the fresh rows below. A user-initiated Refresh skips it.
+            val cacheKey = homeCacheKeyFor(profile, tab, genre, availabilityFilter, serverConfig)
+            saveLocallyEditedRows()
+            var showingCachedContent = false
+            if (cacheKey != null && !forceRefresh) {
+                val cachedRows = try {
+                    homeContentCache.read(cacheKey, currentJellyfinBase())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                ensureActive()
+                if (!cachedRows.isNullOrEmpty() && generation == catalogGeneration) {
+                    val cachedFeatured = pickInitialFeatured(cachedRows)
+                    lastLoadedTab = tab
+                    displayedContent = cacheKey to cachedRows
+                    _uiState.update {
+                        it.copy(rows = cachedRows, featuredItem = cachedFeatured, isLoading = false)
+                    }
+                    showingCachedContent = true
+                    if (cachedFeatured != null) onItemFocused(cachedFeatured, force = true)
+                }
+            }
 
             val result: Result<CatalogLoadBundle> = try {
                 Result.success(coroutineScope {
@@ -854,43 +897,14 @@ class HomeViewModel @Inject constructor(
                             }
                         }
                     }
-                    val requestsDeferred = async {
-                        if (prefs.isSeerrConfigured) {
-                            catalogRepository.loadRequestsHub().getOrDefault(emptyList())
-                        } else emptyList()
-                    }
-                    val has4kMovieDeferred = async {
-                        catalogRepository.has4kServerConfigured(MediaType.MOVIE)
-                    }
-                    val has4kTvDeferred = async {
-                        catalogRepository.has4kServerConfigured(MediaType.SERIES)
-                    }
-                    val libraryViewsDeferred = async {
-                        if (_uiState.value.libraryViews.isEmpty()) {
-                            catalogRepository.loadUserLibraryViews(profile.jellyfinUserId)
-                        } else _uiState.value.libraryViews
-                    }
 
                     val rows = rowsDeferred.await()
-                    val collections = collectionsDeferred.await()
-                    val liveChannels = liveTvChannelsDeferred.await()
-                    val liveRecordings = liveTvRecordingsDeferred.await()
-                    val requests = requestsDeferred.await()
-                    val activeDownloads = requests.count {
-                        it.downloadProgress != null || it.mediaStatus.isRequestedOrDownloading
-                    }
-                    val initialFeatured = rows.firstOrNull { it.id != "continue_watching" }?.items?.firstOrNull()
-                        ?: rows.firstOrNull()?.items?.firstOrNull()
                     CatalogLoadBundle(
                         rows = rows,
-                        collections = collections,
-                        liveChannels = liveChannels,
-                        liveRecordings = liveRecordings,
-                        libraryViews = libraryViewsDeferred.await(),
-                        featured = initialFeatured,
-                        activeDownloads = activeDownloads,
-                        has4kMovie = has4kMovieDeferred.await(),
-                        has4kTv = has4kTvDeferred.await()
+                        collections = collectionsDeferred.await(),
+                        liveChannels = liveTvChannelsDeferred.await(),
+                        liveRecordings = liveTvRecordingsDeferred.await(),
+                        featured = pickInitialFeatured(rows)
                     )
                 })
             } catch (e: CancellationException) {
@@ -907,22 +921,29 @@ class HomeViewModel @Inject constructor(
 
             result.onSuccess { bundle ->
                 lastLoadedTab = tab
+                // Background swap over cached content: keep the hero (and its enrichment / preview)
+                // when the title the user is looking at is still on the page, so nothing jumps.
+                val currentFeaturedId = _uiState.value.featuredItem?.id
+                val keepFeatured = showingCachedContent && currentFeaturedId != null &&
+                    bundle.rows.any { row -> row.items.any { it.id == currentFeaturedId } }
                 _uiState.update {
                     it.copy(
                         rows = bundle.rows,
                         collections = bundle.collections,
                         liveTvChannels = bundle.liveChannels,
                         liveTvRecordings = bundle.liveRecordings,
-                        libraryViews = bundle.libraryViews,
-                        featuredItem = bundle.featured,
-                        activeDownloadCount = bundle.activeDownloads,
-                        has4kMovieServer = bundle.has4kMovie,
-                        has4kTvServer = bundle.has4kTv,
+                        featuredItem = if (keepFeatured) it.featuredItem else bundle.featured,
                         isLoading = false
                     )
                 }
-                if (bundle.featured != null) {
+                displayedContent = cacheKey?.let { it to bundle.rows }
+                if (!keepFeatured && bundle.featured != null) {
                     onItemFocused(bundle.featured, force = true)
+                }
+                if (cacheKey != null && bundle.rows.isNotEmpty()) {
+                    launch(Dispatchers.IO) {
+                        runCatching { homeContentCache.write(cacheKey, bundle.rows, currentJellyfinBase()) }
+                    }
                 }
                 if (tab == HomeTab.HOME && availabilityFilter == AvailabilityFilter.ALL) {
                     launch(Dispatchers.IO) {
@@ -942,6 +963,7 @@ class HomeViewModel @Inject constructor(
                     } else {
                         // The content on screen belongs to another tab; clear it so the
                         // error + Retry state is shown instead of mislabelled stale rows.
+                        displayedContent = null
                         it.copy(
                             isLoading = false,
                             errorMessage = message,
@@ -963,17 +985,91 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Nav-badge download count, 4K-server capability and library views. Loaded beside the rows
+     * instead of gating them (the old request-hub load did up to 50 Seerr detail calls first).
+     */
+    private fun refreshAuxiliaryState(profile: UserProfile) {
+        if (auxiliaryJob?.isActive == true) return
+        auxiliaryJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                coroutineScope {
+                    val downloadsDeferred = async {
+                        if (prefs.isSeerrConfigured) catalogRepository.loadActiveDownloadCount() else 0
+                    }
+                    val has4kMovieDeferred = async { catalogRepository.has4kServerConfigured(MediaType.MOVIE) }
+                    val has4kTvDeferred = async { catalogRepository.has4kServerConfigured(MediaType.SERIES) }
+                    val libraryViewsDeferred = async {
+                        if (_uiState.value.libraryViews.isEmpty()) {
+                            catalogRepository.loadUserLibraryViews(profile.jellyfinUserId)
+                        } else _uiState.value.libraryViews
+                    }
+                    val downloads = downloadsDeferred.await()
+                    val has4kMovie = has4kMovieDeferred.await()
+                    val has4kTv = has4kTvDeferred.await()
+                    val views = libraryViewsDeferred.await()
+                    _uiState.update {
+                        it.copy(
+                            activeDownloadCount = downloads,
+                            has4kMovieServer = has4kMovie,
+                            has4kTvServer = has4kTv,
+                            libraryViews = views
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Leave the previous values in place.
+            }
+        }
+    }
+
+    private fun saveLocallyEditedRows() {
+        val shown = displayedContent ?: return
+        val current = _uiState.value.rows
+        if (current === shown.second || current.isEmpty()) return
+        displayedContent = shown.first to current
+        try {
+            homeContentCache.write(shown.first, current, currentJellyfinBase())
+        } catch (_: Exception) {
+            // Best effort.
+        }
+    }
+
+    private fun pickInitialFeatured(rows: List<CatalogRow>): UnifiedMediaItem? =
+        rows.firstOrNull { it.id != "continue_watching" }?.items?.firstOrNull()
+            ?: rows.firstOrNull()?.items?.firstOrNull()
+
+    private fun currentJellyfinBase(): String =
+        prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
+
+    /** Only the row-based tabs are cached; Collections / Live TV load as before. */
+    private fun homeCacheKeyFor(
+        profile: UserProfile,
+        tab: HomeTab,
+        genre: GenreFilterOption,
+        availabilityFilter: AvailabilityFilter,
+        serverConfig: ServerConfig
+    ): HomeContentCache.Key? {
+        if (tab == HomeTab.COLLECTIONS || tab == HomeTab.LIVE_TV) return null
+        return HomeContentCache.keyFor(
+            profile = profile,
+            tab = tab.name,
+            genreId = genre.id,
+            availability = availabilityFilter.name,
+            seerrConfigured = serverConfig.isSeerrConfigured,
+            jellyfinServer = serverConfig.jellyfinUrl.ifBlank { serverConfig.jellyfinLocalUrl },
+            seerrServer = serverConfig.seerrUrl.ifBlank { serverConfig.seerrLocalUrl },
+            metadataLanguage = profile.metadataLanguage.ifBlank { "en" }
+        )
+    }
+
     private data class CatalogLoadBundle(
         val rows: List<CatalogRow>,
         val collections: List<CollectionSummary>,
         val liveChannels: List<LiveTvChannel>,
         val liveRecordings: List<UnifiedMediaItem>,
-        val libraryViews: List<JellyfinLibraryView>,
-        val featured: UnifiedMediaItem?,
-        val activeDownloads: Int,
-        val has4kMovie: Boolean,
-        val has4kTv: Boolean
+        val featured: UnifiedMediaItem?
     )
 }
-
-

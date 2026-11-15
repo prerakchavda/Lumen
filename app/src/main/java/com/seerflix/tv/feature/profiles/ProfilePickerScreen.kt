@@ -33,6 +33,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import com.seerflix.tv.ui.components.TvTextFieldContainer
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -46,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -133,7 +135,12 @@ fun ProfilePickerContent(
         state.editingProfile == null
     ) {
         if (!state.showAuthDialog && state.pinChallengeProfile == null && state.editingProfile == null) {
-            runCatching { firstTileFocusRequester.requestFocus() }
+            // The tile may not be attached on the very first frame (it was landing on "Servers"
+            // instead); retry for a few frames until the request sticks.
+            repeat(5) {
+                androidx.compose.runtime.withFrameNanos { }
+                if (runCatching { firstTileFocusRequester.requestFocus(FocusDirection.Enter) }.getOrDefault(false)) return@LaunchedEffect
+            }
         }
     }
     Box(
@@ -310,6 +317,7 @@ fun ProfilePickerContent(
                             }
                         }
                     }
+                    TvTextFieldContainer(modifier = Modifier.fillMaxWidth(), focusRingColor = colors.accent) { fieldModifier ->
                     OutlinedTextField(
                         value = state.username,
                         onValueChange = onUpdateUsername,
@@ -322,8 +330,10 @@ fun ProfilePickerContent(
                             focusedBorderColor = colors.accent,
                             unfocusedBorderColor = Color(0x55FFFFFF)
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = fieldModifier.fillMaxWidth()
                     )
+                    }
+                    TvTextFieldContainer(modifier = Modifier.fillMaxWidth(), focusRingColor = colors.accent) { fieldModifier ->
                     OutlinedTextField(
                         value = state.password,
                         onValueChange = onUpdatePassword,
@@ -342,8 +352,9 @@ fun ProfilePickerContent(
                             focusedBorderColor = colors.accent,
                             unfocusedBorderColor = Color(0x55FFFFFF)
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = fieldModifier.fillMaxWidth()
                     )
+                    }
                     DialogButton(
                         text = if (state.isAuthenticating) "Signing in..." else "Sign In",
                         isPrimary = true,
@@ -829,6 +840,7 @@ private fun ProfileSettingsDialog(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        TvTextFieldContainer(modifier = Modifier.weight(1f), focusRingColor = colors.accent) { fieldModifier ->
                         OutlinedTextField(
                             value = pinCode,
                             onValueChange = { raw ->
@@ -850,8 +862,9 @@ private fun ProfileSettingsDialog(
                                 focusedBorderColor = colors.accent,
                                 unfocusedBorderColor = Color(0x55FFFFFF)
                             ),
-                            modifier = Modifier.weight(1f)
+                            modifier = fieldModifier.fillMaxWidth()
                         )
+                        }
                         if (profile.hasPin && !clearPin) {
                             DialogButton(
                                 text = "Remove PIN",

@@ -302,11 +302,17 @@ object NetworkModule {
     @Singleton
     @MediaClient
     fun provideMediaOkHttp(
-        @GeneralClient general: OkHttpClient,
-        prefs: SessionPreferences
-    ): OkHttpClient = general.newBuilder()
+        @JellyfinClient jellyfin: OkHttpClient
+    ): OkHttpClient = jellyfin.newBuilder()
+        // Derived from the Jellyfin API client so streams, subtitles and artwork reuse its
+        // connection pool *and* its TLS socket factory: OkHttp only reuses a pooled connection
+        // when the SSL config is the same instance, so a separately-built client paid a fresh
+        // TCP+TLS handshake before the first video bytes. No URL rewriting / auth headers here.
+        .apply {
+            interceptors().clear()
+            networkInterceptors().clear()
+        }
         .readTimeout(30, TimeUnit.SECONDS)
-        .applyDynamicSelfSignedTrust(prefs)
         .build()
 
     @Provides

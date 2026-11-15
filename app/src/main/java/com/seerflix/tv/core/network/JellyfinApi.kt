@@ -64,7 +64,14 @@ interface JellyfinApi {
         @Query("Limit") limit: Int = 500,
         @Query("ParentId") parentId: String? = null,
         @Query("MaxOfficialRating") maxOfficialRating: String? = null,
-        @Query("StartIndex") startIndex: Int? = null
+        @Query("StartIndex") startIndex: Int? = null,
+        // Payload trimming knobs (null = server default, i.e. omitted from the query string).
+        @Query("Ids") ids: String? = null,
+        @Query("EnableImages") enableImages: Boolean? = null,
+        @Query("ImageTypeLimit") imageTypeLimit: Int? = null,
+        @Query("EnableImageTypes") enableImageTypes: String? = null,
+        @Query("EnableUserData") enableUserData: Boolean? = null,
+        @Query("EnableTotalRecordCount") enableTotalRecordCount: Boolean? = null
     ): JellyfinItemsResponse
 
     @GET("Users/{userId}/Items")
@@ -290,4 +297,32 @@ interface JellyfinApi {
     suspend fun reportPlaybackStopped(
         @Body body: JellyfinPlaybackProgressRequest
     )
+
+    /**
+     * Lightweight episode listing used by playback (episode resolution / next-episode lookup):
+     * server-default fields only, no image tags, and optionally paged from [startItemId]
+     * (`StartItemId` skips the series-ordered list up to that episode, so `Limit=n` returns it
+     * plus the following n-1 episodes instead of the whole series).
+     */
+    @GET("Shows/{seriesId}/Episodes")
+    suspend fun getEpisodesLite(
+        @Path("seriesId") seriesId: String,
+        @Query("UserId") userId: String,
+        @Query("SeasonId") seasonId: String? = null,
+        @Query("StartItemId") startItemId: String? = null,
+        @Query("Limit") limit: Int? = null,
+        @Query("Fields") fields: String? = null,
+        @Query("EnableImages") enableImages: Boolean = false,
+        @Query("IsMissing") isMissing: Boolean? = false
+    ): JellyfinItemsResponse
+
+    /** In-progress items under [parentId] (e.g. a series), without images or heavy fields. */
+    @GET("Users/{userId}/Items/Resume")
+    suspend fun getResumeItemsLite(
+        @Path("userId") userId: String,
+        @Query("ParentId") parentId: String? = null,
+        @Query("Limit") limit: Int = 10,
+        @Query("MediaTypes") mediaTypes: String = "Video",
+        @Query("EnableImages") enableImages: Boolean = false
+    ): JellyfinItemsResponse
 }

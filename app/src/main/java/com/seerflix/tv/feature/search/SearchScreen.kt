@@ -37,6 +37,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import com.seerflix.tv.ui.components.TvTextFieldContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,11 +63,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import coil3.compose.AsyncImage
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.ui.components.NetflixPosterCard
+import com.seerflix.tv.ui.components.SizedAsyncImage
 import com.seerflix.tv.ui.theme.CardPresentationStyle
 import com.seerflix.tv.ui.theme.SeerflixTokens
 
@@ -161,6 +162,17 @@ fun SearchContent(
                 onClick = onBack
             )
 
+            // TV: OK opens the keyboard; D-pad back up from the results doesn't. A fresh, empty
+            // search opens straight into typing.
+            val openKeyboardOnEntry = remember {
+                state.query.isEmpty() && state.activePersonName == null && state.selectedGenre == null
+            }
+            TvTextFieldContainer(
+                modifier = Modifier.weight(1f),
+                startEditing = openKeyboardOnEntry,
+                focusRingColor = colors.accent,
+                containerFocusRequester = searchInputFocusRequester
+            ) { fieldModifier ->
             OutlinedTextField(
                 value = state.query,
                 onValueChange = onQueryChange,
@@ -185,8 +197,9 @@ fun SearchContent(
                     focusedBorderColor = colors.accent,
                     unfocusedBorderColor = colors.badgeBorder
                 ),
-                modifier = Modifier.weight(1f).focusRequester(searchInputFocusRequester)
+                modifier = fieldModifier.fillMaxWidth()
             )
+            }
 
             SearchIconCircleButton(
                 icon = Icons.Filled.Mic,
@@ -202,7 +215,7 @@ fun SearchContent(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            items(GenreFilterOption.ALL_GENRES.drop(1), key = { it.id }) { genre ->
+            items(GenreFilterOption.ALL_GENRES.drop(1), key = { it.id }, contentType = { "genre_chip" }) { genre ->
                 var focused by remember { mutableStateOf(false) }
                 val selected = state.selectedGenre?.id == genre.id
                 Box(
@@ -316,7 +329,7 @@ fun SearchContent(
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(20.dp)
                             ) {
-                                items(state.trendingItems, key = { "trending_${it.id}" }) { item ->
+                                items(state.trendingItems, key = { "trending_${it.id}" }, contentType = { "poster_card" }) { item ->
                                     NetflixPosterCard(
                                         item = item,
                                         onFocus = {},
@@ -349,7 +362,7 @@ fun SearchContent(
                                 horizontalArrangement = Arrangement.spacedBy(14.dp),
                                 modifier = Modifier.padding(bottom = 18.dp)
                             ) {
-                                items(state.personResults, key = { it.id }) { person ->
+                                items(state.personResults, key = { it.id }, contentType = { "person" }) { person ->
                                     var focused by remember { mutableStateOf(false) }
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -366,10 +379,11 @@ fun SearchContent(
                                             }
                                             .padding(6.dp)
                                     ) {
-                                        AsyncImage(
-                                            model = person.imageUrl,
+                                        SizedAsyncImage(
+                                            url = person.imageUrl,
                                             contentDescription = person.name,
-                                            contentScale = ContentScale.Crop,
+                                            width = 64.dp,
+                                            height = 64.dp,
                                             modifier = Modifier
                                                 .size(64.dp)
                                                 .clip(RoundedCornerShape(32.dp))
@@ -396,7 +410,7 @@ fun SearchContent(
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(20.dp)
                             ) {
-                                items(state.results, key = { it.id }) { item ->
+                                items(state.results, key = { it.id }, contentType = { "poster_card" }) { item ->
                                     NetflixPosterCard(
                                         item = item,
                                         onFocus = {},

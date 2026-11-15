@@ -42,6 +42,7 @@ import com.seerflix.tv.core.network.SeerrStatusDto
 import com.seerflix.tv.core.network.SeerrTvDetailsDto
 import com.seerflix.tv.core.network.SeerrUserDto
 import com.seerflix.tv.core.network.SessionPreferences
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -388,6 +389,124 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         assertEquals("S2 E10 • Tomorrow", airingRow.items.first().upcomingBadgeLabel)
     }
 
+    private fun ownedMovie(id: String = "jf-owned", tmdb: Int = 1, overview: String? = "Owned overview") =
+        JellyfinItemDto(
+            id = id,
+            name = "Owned Movie",
+            type = "Movie",
+            overview = overview,
+            genres = listOf("Comedy"),
+            officialRating = "PG",
+            providerIds = mapOf("Tmdb" to tmdb.toString())
+        )
+
+    private fun repoWithStore(): Pair<UnifiedCatalogRepository, LibraryIndexStore> {
+        val dir = java.io.File(tempFolder.root, "library_index")
+        val store = LibraryIndexStore { dir }
+        return UnifiedCatalogRepository(jellyfinApi, seerrApi, prefs, store) to store
+    }
+
+    @Test
+    fun `library index pages past the first 1000 items even when the server omits the total`() = runTest {
+        // 2500 owned movies; the oldest ones (last pages) must still be matched as owned.
+        jellyfinApi.libraryItems = (1..2500).map { n -> ownedMovie(id = "jf-$n", tmdb = n) }
+        val (repo, _) = repoWithStore()
+        repo.refreshLibraryIndex("u1")
+        assertEquals("jf-1", repo.findJellyfinIdForTmdb(1, MediaType.MOVIE))
+        assertEquals("jf-1500", repo.findJellyfinIdForTmdb(1500, MediaType.MOVIE))
+        assertEquals("jf-2500", repo.findJellyfinIdForTmdb(2500, MediaType.MOVIE))
+    }
+
+    @Test
+    fun `library index is persisted and a cold start serves the disk copy without refetching`() = runTest {
+        jellyfinApi.libraryItems = listOf(ownedMovie())
+        val (first, _) = repoWithStore()
+        first.refreshLibraryIndex("u1")
+        assertEquals(1, jellyfinApi.indexFetchCount)
+        // Trimmed payload: no Overview / MediaStreams / RemoteTrailers in the index fetch.
+        assertFalse(jellyfinApi.lastIndexFields.orEmpty().contains("Overview"))
+
+        // "Cold start": a new repository instance, server now unreachable for the index.
+        jellyfinApi.failIndexFetch = true
+        val (second, _) = repoWithStore()
+        val rows = second.loadHomeRows(
+            userId = "u1",
+            filterType = MediaType.MOVIE,
+            availabilityFilter = AvailabilityFilter.ALL,
+            today = fixedToday
+        )
+        assertNotNull(rows)
+        assertEquals(1, jellyfinApi.indexFetchCount)
+        assertEquals("jf-owned", second.findJellyfinIdForTmdb(1, MediaType.MOVIE))
+    }
+
+    @Test
+    fun `stale disk copy is served immediately by loaders and refreshLibraryIndex revalidates it`() = runTest {
+        val (_, store) = repoWithStore()
+        store.write(
+            userId = "u1",
+            server = "http://jf:8096",
+            fetchedAtMs = System.currentTimeMillis() - 3_600_000L,
+            items = listOf(ownedMovie().toIndexEntry())
+        )
+        jellyfinApi.libraryItems = emptyList()
+        val (repo, _) = repoWithStore()
+
+        repo.loadHomeRows("u1", filterType = MediaType.MOVIE, today = fixedToday)
+        // Served from disk; the background revalidation is deferred, so nothing blocked on it.
+        assertEquals(0, jellyfinApi.indexFetchCount)
+        assertEquals("jf-owned", repo.findJellyfinIdForTmdb(1, MediaType.MOVIE))
+
+        // Pollers that need fresh data still block on a refetch of a stale copy.
+        repo.refreshLibraryIndex("u1")
+        assertEquals(1, jellyfinApi.indexFetchCount)
+        assertEquals(null, repo.findJellyfinIdForTmdb(1, MediaType.MOVIE))
+    }
+
+    @Test
+    fun `another user's index is never served after a profile switch even if the fetch fails`() = runTest {
+        jellyfinApi.libraryItems = listOf(ownedMovie())
+        val (repo, _) = repoWithStore()
+        repo.refreshLibraryIndex("u1")
+        assertEquals("jf-owned", repo.findJellyfinIdForTmdb(1, MediaType.MOVIE))
+
+        jellyfinApi.failIndexFetch = true
+        repo.loadHomeRows("u2", filterType = MediaType.MOVIE, today = fixedToday)
+        assertEquals(null, repo.findJellyfinIdForTmdb(1, MediaType.MOVIE))
+    }
+
+    @Test
+    fun `concurrent index requests share a single fetch and forceRefresh refetches`() = runTest {
+        jellyfinApi.libraryItems = listOf(ownedMovie())
+        jellyfinApi.indexFetchDelayMs = 200L
+        val (repo, _) = repoWithStore()
+        kotlinx.coroutines.coroutineScope {
+            repeat(5) { launch { repo.refreshLibraryIndex("u1") } }
+        }
+        assertEquals(1, jellyfinApi.indexFetchCount)
+
+        repo.refreshLibraryIndex("u1")
+        assertEquals(1, jellyfinApi.indexFetchCount)
+        repo.refreshLibraryIndex("u1", forceRefresh = true)
+        assertEquals(2, jellyfinApi.indexFetchCount)
+    }
+
+    @Test
+    fun `genre library row back-fills overviews that the trimmed index does not carry`() = runTest {
+        jellyfinApi.libraryItems = listOf(ownedMovie(overview = "A very funny film"))
+        val genre = GenreFilterOption(id = "comedy", label = "Comedy", movieGenreId = 35, tvGenreId = 35)
+        val rows = repository.loadHomeRows(
+            userId = "u1",
+            filterType = MediaType.MOVIE,
+            genreFilter = genre,
+            availabilityFilter = AvailabilityFilter.ALL,
+            today = fixedToday
+        )
+        val libraryRow = rows.first { it.id == "genre_library_comedy" }
+        assertEquals(listOf("A very funny film"), libraryRow.items.map { it.overview })
+        assertEquals(1, jellyfinApi.overviewBackfillCalls)
+    }
+
     private fun movieResult(
         id: Int,
         title: String,
@@ -416,6 +535,11 @@ class UnifiedCatalogRepositoryDiscoveryTest {
 
     private class FakeJellyfinApi : JellyfinApi {
         var libraryItems: List<JellyfinItemDto> = emptyList()
+        @Volatile var indexFetchCount = 0
+        @Volatile var overviewBackfillCalls = 0
+        @Volatile var lastIndexFields: String? = null
+        @Volatile var indexFetchDelayMs = 0L
+        @Volatile var failIndexFetch = false
         var resumeItems: List<JellyfinItemDto> = emptyList()
         var latestItems: List<JellyfinItemDto> = emptyList()
         var favoriteItems: List<JellyfinItemDto> = emptyList()
@@ -452,8 +576,33 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             limit: Int,
             parentId: String?,
             maxOfficialRating: String?,
-            startIndex: Int?
-        ) = JellyfinItemsResponse(libraryItems, libraryItems.size)
+            startIndex: Int?,
+            ids: String?,
+            enableImages: Boolean?,
+            imageTypeLimit: Int?,
+            enableImageTypes: String?,
+            enableUserData: Boolean?,
+            enableTotalRecordCount: Boolean?
+        ): JellyfinItemsResponse {
+            if (ids != null) {
+                overviewBackfillCalls++
+                val wanted = ids.split(",").toSet()
+                val hits = libraryItems.filter { it.id in wanted }
+                return JellyfinItemsResponse(hits, hits.size)
+            }
+            if (parentId == null) {
+                indexFetchCount++
+                lastIndexFields = fields
+                if (indexFetchDelayMs > 0) kotlinx.coroutines.delay(indexFetchDelayMs)
+                if (failIndexFetch) throw java.io.IOException("offline")
+            }
+            // Page like a real server. With EnableTotalRecordCount=false Jellyfin reports the
+            // page size as TotalRecordCount, which once made the index stop after one page.
+            val from = (startIndex ?: 0).coerceAtMost(libraryItems.size)
+            val page = libraryItems.subList(from, (from + limit).coerceAtMost(libraryItems.size))
+            val total = if (enableTotalRecordCount == false) page.size else libraryItems.size
+            return JellyfinItemsResponse(page, total)
+        }
 
         override suspend fun getFavoriteItems(
             userId: String,
@@ -535,6 +684,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun reportPlaybackStart(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackProgress(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackStopped(body: JellyfinPlaybackProgressRequest) = Unit
+        override suspend fun getEpisodesLite(seriesId: String, userId: String, seasonId: String?, startItemId: String?, limit: Int?, fields: String?, enableImages: Boolean, isMissing: Boolean?) = JellyfinItemsResponse()
+        override suspend fun getResumeItemsLite(userId: String, parentId: String?, limit: Int, mediaTypes: String, enableImages: Boolean) = JellyfinItemsResponse()
     }
 
     private class FakeSeerrApi : SeerrApi {

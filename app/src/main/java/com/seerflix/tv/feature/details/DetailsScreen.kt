@@ -43,7 +43,6 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -68,6 +67,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -79,9 +79,11 @@ import coil3.compose.AsyncImage
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
+import com.seerflix.tv.core.model.CastMember
 import com.seerflix.tv.core.model.DownloadProgressInfo
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExtrasItem
+import com.seerflix.tv.core.model.MediaSourceOption
 import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.SeerrIssueType
@@ -133,7 +135,8 @@ fun DetailsScreen(
             viewModel.submitRequest(hd, uhd, seasons, hdSrv, hdProf, hdRoot, uhdSrv, uhdProf, uhdRoot)
         },
         onWatchTrailer = { key ->
-            onPlayTrailer(state.item?.title ?: "Trailer", key, state.item?.localTrailerItemId)
+            val cur = viewModel.uiState.value.item
+            onPlayTrailer(cur?.title ?: "Trailer", key, cur?.localTrailerItemId)
         },
         onPlayTrailer = onPlayTrailer,
         onToggleMyList = viewModel::toggleMyList,
@@ -188,7 +191,9 @@ fun DetailsContent(
     onRetry: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
-    val strings = AppStrings.current
+    // Lives outside the LazyColumn so scrolling the header away and back (or the seed -> full data
+    // swap) never re-runs the initial focus request and yanks focus back to Play.
+    val focusMemory = remember { DetailsFocusMemory() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -196,10 +201,9 @@ fun DetailsContent(
     ) {
         when {
             state.isLoading -> {
-                CircularProgressIndicator(
-                    color = colors.accent,
-                    modifier = Modifier.align(Alignment.Center)
-                )
+                // No seed (deep link, Requests, restricted profile with an unrated card): a static
+                // header skeleton instead of a spinner, so the page doesn't "pop" when data lands.
+                DetailsLoadingSkeleton()
             }
             state.errorMessage != null || state.item == null -> {
                 val errorBackFocusRequester = remember { FocusRequester() }
@@ -241,6 +245,9 @@ fun DetailsContent(
             }
             else -> {
                 val item = state.item!!
+                val episodes = state.episodes
+                val selectedSourceId = state.selectedMediaSourceId
+                val hasPlayableEpisode = remember(episodes) { episodes.any { it.isAvailableInJellyfin } }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 56.dp)
@@ -249,7 +256,9 @@ fun DetailsContent(
                     item(key = "details_header") {
                         DetailsHeaderSection(
                             item = item,
-                            episodes = state.episodes,
+                            hasPlayableEpisode = hasPlayableEpisode,
+                            isRefining = state.isRefining,
+                            focusMemory = focusMemory,
                             isSeerrConfigured = state.isSeerrConfigured,
                             canSubmitRequests = state.canSubmitRequests,
                             feedbackBanner = state.feedbackBanner,
@@ -260,11 +269,11 @@ fun DetailsContent(
                                 // episode of whichever season tab happened to be selected (S1E1 by
                                 // default), ignoring where the viewer actually left off.
                                 val playableId = if (item.mediaType == MediaType.SERIES) {
-                                    item.jellyfinId ?: state.episodes.firstOrNull { it.isAvailableInJellyfin }?.id
+                                    item.jellyfinId ?: episodes.firstOrNull { it.isAvailableInJellyfin }?.id
                                 } else {
                                     item.jellyfinId
                                 }
-                                val sourceId = if (item.mediaType == MediaType.SERIES) null else state.selectedMediaSourceId
+                                val sourceId = if (item.mediaType == MediaType.SERIES) null else selectedSourceId
                                 playableId?.let { id -> onPlayItem(id, sourceId) }
                             },
                             onRequestClick = onOpenRequestModal,
@@ -281,28 +290,21 @@ fun DetailsContent(
                         )
                     }
 
+                    // Seed only: seasons / cast / versions / recommendations aren't known yet.
+                    if (state.isRefining) {
+                        item(key = "refining_skeleton") {
+                            DetailsSectionsSkeleton(isSeries = item.mediaType == MediaType.SERIES)
+                        }
+                    }
+
                     // Multi-Version / Edition Picker
                     if (item.mediaVersions.size > 1) {
                         item(key = "media_versions") {
-                            Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)) {
-                                Text(
-                                    text = strings.labelVersions,
-                                    color = colors.white,
-                                    fontSize = 16.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    items(item.mediaVersions, key = { it.id }) { src ->
-                                        SeasonTabChip(
-                                            label = src.displayLabel,
-                                            isSelected = src.id == (state.selectedMediaSourceId ?: item.mediaVersions.firstOrNull()?.id),
-                                            isAvailable = true,
-                                            onClick = { onSelectMediaSource(src.id) }
-                                        )
-                                    }
-                                }
-                            }
+                            MediaVersionsSection(
+                                versions = item.mediaVersions,
+                                selectedId = selectedSourceId ?: item.mediaVersions.firstOrNull()?.id,
+                                onSelectMediaSource = onSelectMediaSource
+                            )
                         }
                     }
 
@@ -333,15 +335,9 @@ fun DetailsContent(
                         }
 
                         if (state.episodesLoading) {
-                            item(key = "eps_loading") {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(24.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(28.dp))
-                                }
+                            // Static placeholders (no endlessly spinning indicator on a weak SoC).
+                            items(EPISODE_SKELETON_KEYS, key = { it }) {
+                                EpisodeRowSkeleton(modifier = Modifier.padding(horizontal = 48.dp, vertical = 6.dp))
                             }
                         } else {
                             items(state.episodes, key = { it.id }) { ep ->
@@ -363,122 +359,29 @@ fun DetailsContent(
                     // Extras & Special Features (Jellyfin SpecialFeatures)
                     if (item.extras.isNotEmpty()) {
                         item(key = "extras_and_specials") {
-                            Column(modifier = Modifier.padding(top = 24.dp)) {
-                                Text(
-                                    text = strings.labelExtras,
-                                    color = colors.white,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
-                                )
-                                LazyRow(
-                                    contentPadding = PaddingValues(horizontal = 48.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                                ) {
-                                    items(item.extras, key = { it.id }) { extra ->
-                                        ExtrasFeatureCard(
-                                            extra = extra,
-                                            fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
-                                            onClick = { onPlayItem(extra.id, null) }
-                                        )
-                                    }
-                                }
-                            }
+                            ExtrasSection(
+                                extras = item.extras,
+                                fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
+                                onPlayItem = onPlayItem
+                            )
                         }
                     }
 
                     // Trailers & More
                     if (item.relatedVideos.isNotEmpty()) {
                         item(key = "trailers_and_more") {
-                            Column(modifier = Modifier.padding(top = 24.dp)) {
-                                Text(
-                                    text = "Trailers & More",
-                                    color = colors.white,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
-                                )
-                                LazyRow(
-                                    contentPadding = PaddingValues(horizontal = 48.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                                ) {
-                                    itemsIndexed(item.relatedVideos, key = { idx, v -> "video_${idx}_${v.youtubeKey}_${v.localTrailerItemId}" }) { _, video ->
-                                        RelatedVideoCard(
-                                            video = video,
-                                            fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
-                                            onClick = {
-                                                onPlayTrailer(video.title, video.youtubeKey, video.localTrailerItemId)
-                                            }
-                                        )
-                                    }
-                                }
-                            }
+                            RelatedVideosSection(
+                                videos = item.relatedVideos,
+                                fallbackBackdropUrl = item.backdropUrl ?: item.posterUrl,
+                                onPlayTrailer = onPlayTrailer
+                            )
                         }
                     }
 
                     // Cast Row (clickable for Actor Filmography search)
                     if (item.cast.isNotEmpty()) {
                         item(key = "cast_section") {
-                            Column(modifier = Modifier.padding(top = 24.dp)) {
-                                Text(
-                                    text = "Cast",
-                                    color = colors.white,
-                                    fontSize = 18.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
-                                )
-                                LazyRow(
-                                    contentPadding = PaddingValues(horizontal = 48.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                                ) {
-                                    // TMDB can list the same actor/role twice; name+role alone isn't unique.
-                                    itemsIndexed(item.cast, key = { idx, m -> "cast_${idx}_${m.name}" }) { _, member ->
-                                        var castFocused by remember { mutableStateOf(false) }
-                                        Column(
-                                            modifier = Modifier
-                                                .width(108.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .background(if (castFocused) colors.surfaceElevated else Color.Transparent)
-                                                .then(
-                                                    if (castFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp))
-                                                    else Modifier
-                                                )
-                                                .onFocusChanged { castFocused = it.isFocused }
-                                                .clickable { onSearchActor(member.name, member.personId) }
-                                                .padding(6.dp),
-                                            horizontalAlignment = Alignment.CenterHorizontally
-                                        ) {
-                                            AsyncImage(
-                                                model = member.imageUrl,
-                                                contentDescription = member.name,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .size(84.dp)
-                                                    .clip(RoundedCornerShape(42.dp))
-                                                    .background(colors.surfaceElevated)
-                                            )
-                                            Spacer(Modifier.height(6.dp))
-                                            Text(
-                                                text = member.name,
-                                                color = if (castFocused) colors.white else colors.textPrimary,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (member.role.isNotBlank()) {
-                                                Text(
-                                                    text = member.role,
-                                                    color = colors.textMuted,
-                                                    fontSize = 11.sp,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            CastSection(cast = item.cast, onSearchActor = onSearchActor)
                         }
                     }
 
@@ -618,6 +521,287 @@ fun DetailsContent(
             onDismiss = onCloseReportIssue,
             onSubmit = onSubmitIssue
         )
+    }
+}
+
+// Sections below take only their own slice of the item. DetailsViewModel reuses unchanged list
+// instances across refreshes, so a 15s poll tick that only moves a download bar skips these.
+
+@Composable
+private fun MediaVersionsSection(
+    versions: List<MediaSourceOption>,
+    selectedId: String?,
+    onSelectMediaSource: (String) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    Column(modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)) {
+        Text(
+            text = AppStrings.current.labelVersions,
+            color = colors.white,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(versions, key = { it.id }) { src ->
+                SeasonTabChip(
+                    label = src.displayLabel,
+                    isSelected = src.id == selectedId,
+                    isAvailable = true,
+                    onClick = { onSelectMediaSource(src.id) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ExtrasSection(
+    extras: List<ExtrasItem>,
+    fallbackBackdropUrl: String?,
+    onPlayItem: (String, String?) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    Column(modifier = Modifier.padding(top = 24.dp)) {
+        Text(
+            text = AppStrings.current.labelExtras,
+            color = colors.white,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            items(extras, key = { it.id }) { extra ->
+                ExtrasFeatureCard(
+                    extra = extra,
+                    fallbackBackdropUrl = fallbackBackdropUrl,
+                    onClick = { onPlayItem(extra.id, null) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelatedVideosSection(
+    videos: List<RelatedVideoItem>,
+    fallbackBackdropUrl: String?,
+    onPlayTrailer: (title: String, youtubeKey: String?, localTrailerId: String?) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    Column(modifier = Modifier.padding(top = 24.dp)) {
+        Text(
+            text = "Trailers & More",
+            color = colors.white,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            itemsIndexed(videos, key = { idx, v -> "video_${idx}_${v.youtubeKey}_${v.localTrailerItemId}" }) { _, video ->
+                RelatedVideoCard(
+                    video = video,
+                    fallbackBackdropUrl = fallbackBackdropUrl,
+                    onClick = {
+                        onPlayTrailer(video.title, video.youtubeKey, video.localTrailerItemId)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CastSection(
+    cast: List<CastMember>,
+    onSearchActor: (name: String, personId: Int?) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    Column(modifier = Modifier.padding(top = 24.dp)) {
+        Text(
+            text = "Cast",
+            color = colors.white,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 48.dp, vertical = 10.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // TMDB can list the same actor/role twice; name+role alone isn't unique.
+            itemsIndexed(cast, key = { idx, m -> "cast_${idx}_${m.name}" }) { _, member ->
+                var castFocused by remember { mutableStateOf(false) }
+                Column(
+                    modifier = Modifier
+                        .width(108.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (castFocused) colors.surfaceElevated else Color.Transparent)
+                        .then(
+                            if (castFocused) Modifier.border(2.dp, colors.focusBorder, RoundedCornerShape(8.dp))
+                            else Modifier
+                        )
+                        .onFocusChanged { castFocused = it.isFocused }
+                        .clickable { onSearchActor(member.name, member.personId) }
+                        .padding(6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    AsyncImage(
+                        model = member.imageUrl,
+                        contentDescription = member.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(84.dp)
+                            .clip(RoundedCornerShape(42.dp))
+                            .background(colors.surfaceElevated)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = member.name,
+                        color = if (castFocused) colors.white else colors.textPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (member.role.isNotBlank()) {
+                        Text(
+                            text = member.role,
+                            color = colors.textMuted,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---- Static skeletons (no shimmer: a continuously animating placeholder costs frames on a stick) ----
+
+private val EPISODE_SKELETON_KEYS = listOf("eps_skeleton_0", "eps_skeleton_1", "eps_skeleton_2")
+
+@Composable
+private fun SkeletonBlock(
+    width: Dp,
+    height: Dp,
+    modifier: Modifier = Modifier,
+    corner: Dp = 6.dp
+) {
+    Box(
+        modifier = modifier
+            .size(width, height)
+            .clip(RoundedCornerShape(corner))
+            .background(SeerflixTokens.colors.surfaceElevated.copy(alpha = 0.75f))
+    )
+}
+
+/** Placeholder for action buttons whose state isn't known yet (non-focusable on purpose). */
+@Composable
+private fun SkeletonPill(width: Dp) {
+    SkeletonBlock(width = width, height = 40.dp, corner = SeerflixTokens.spec.buttonCornerRadiusDp.dp)
+}
+
+/** Full-page placeholder used only when there is no seed to show. */
+@Composable
+private fun DetailsLoadingSkeleton() {
+    // The seed usually lands within a frame or two (profile read); don't flash gray blocks first.
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(150L)
+        visible = true
+    }
+    if (!visible) return
+    Column(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(400.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 48.dp, end = 160.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SkeletonBlock(96.dp, 20.dp, corner = 4.dp)
+                    SkeletonBlock(96.dp, 20.dp, corner = 4.dp)
+                }
+                SkeletonBlock(360.dp, 44.dp)
+                SkeletonBlock(240.dp, 16.dp)
+                SkeletonBlock(520.dp, 14.dp)
+                SkeletonBlock(460.dp, 14.dp)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    SkeletonPill(120.dp)
+                    SkeletonPill(150.dp)
+                    SkeletonPill(120.dp)
+                }
+            }
+        }
+    }
+}
+
+/** Below-the-header placeholder while the seed is showing. */
+@Composable
+private fun DetailsSectionsSkeleton(isSeries: Boolean) {
+    Column(
+        modifier = Modifier.padding(horizontal = 48.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        SkeletonBlock(180.dp, 20.dp)
+        if (isSeries) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                repeat(4) { SkeletonPill(96.dp) }
+            }
+            EpisodeRowSkeleton()
+            EpisodeRowSkeleton()
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                repeat(7) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.width(108.dp).padding(6.dp)
+                    ) {
+                        SkeletonBlock(84.dp, 84.dp, corner = 42.dp)
+                        SkeletonBlock(72.dp, 10.dp, corner = 3.dp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EpisodeRowSkeleton(modifier: Modifier = Modifier) {
+    val colors = SeerflixTokens.colors
+    val corner = RoundedCornerShape(SeerflixTokens.spec.cardCornerRadiusDp.dp)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(corner)
+            .background(colors.surface)
+            .padding(12.dp)
+    ) {
+        Spacer(Modifier.width(36.dp))
+        SkeletonBlock(168.dp, 94.dp)
+        Spacer(Modifier.width(16.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SkeletonBlock(220.dp, 16.dp)
+            SkeletonBlock(420.dp, 12.dp)
+            SkeletonBlock(360.dp, 12.dp)
+        }
     }
 }
 
@@ -763,7 +947,9 @@ private fun ExtrasFeatureCard(
 @Composable
 private fun DetailsHeaderSection(
     item: UnifiedMediaItem,
-    episodes: List<EpisodeSummary>,
+    hasPlayableEpisode: Boolean,
+    isRefining: Boolean,
+    focusMemory: DetailsFocusMemory,
     isSeerrConfigured: Boolean,
     canSubmitRequests: Boolean,
     feedbackBanner: String?,
@@ -851,8 +1037,14 @@ private fun DetailsHeaderSection(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 AvailabilityBadge(item = item)
-                TierPill("HD", item.hdStatus)
-                TierPill("4K", item.uhdStatus)
+                if (isRefining) {
+                    // The card's per-tier status may be stale/incomplete; wait for the real one.
+                    SkeletonBlock(96.dp, 20.dp, corner = 4.dp)
+                    SkeletonBlock(96.dp, 20.dp, corner = 4.dp)
+                } else {
+                    TierPill("HD", item.hdStatus)
+                    TierPill("4K", item.uhdStatus)
+                }
                 item.mediaBadges.take(4).forEach { badge ->
                     Box(
                         modifier = Modifier
@@ -948,18 +1140,27 @@ private fun DetailsHeaderSection(
             Spacer(Modifier.height(16.dp))
 
             val primaryActionFocusRequester = remember { FocusRequester() }
-            val canPlay = item.isPlayable || episodes.any { it.isAvailableInJellyfin }
-            val showReqButton = isSeerrConfigured && item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)
-            val showWatched = item.jellyfinId != null
-            val showRemind = !canPlay && item.overallAvailability == AvailabilityTier.UNKNOWN && item.tmdbId != null
-            val showTrailer = !item.youtubeTrailerKey.isNullOrBlank() || !item.localTrailerItemId.isNullOrBlank()
-            val showIssue = isSeerrConfigured && canPlay && item.tmdbId != null
-            val showRmProgress = item.resumePositionTicks > 0L && item.jellyfinId != null
+            // Play works from the seed alone (a jellyfinId is enough; for a series the playback
+            // manager resolves next-up). Everything that depends on real availability / user data
+            // (request, My List, watched, reminder, issue, cancel) waits for the full load.
+            val canPlay = item.isPlayable || hasPlayableEpisode
+            val actionsReady = !isRefining
+            val showReqButton = actionsReady && isSeerrConfigured && item.tmdbId != null && (item.canRequestHd || item.canRequest4k || item.mediaType == MediaType.SERIES)
+            val showMyList = actionsReady
+            val showWatched = actionsReady && item.jellyfinId != null
+            val showRemind = actionsReady && !canPlay && item.overallAvailability == AvailabilityTier.UNKNOWN && item.tmdbId != null
+            val showTrailer = actionsReady && (!item.youtubeTrailerKey.isNullOrBlank() || !item.localTrailerItemId.isNullOrBlank())
+            val showIssue = actionsReady && isSeerrConfigured && canPlay && item.tmdbId != null
+            val showRmProgress = actionsReady && item.resumePositionTicks > 0L && item.jellyfinId != null
             val pendingReqId = item.uhdRequestId ?: item.hdRequestId
-            val showCancelReq = pendingReqId != null && !canPlay && item.overallAvailability.isRequestedOrDownloading
-            LaunchedEffect(item.id) {
-                delay(60L)
-                runCatching { primaryActionFocusRequester.requestFocus() }
+            val showCancelReq = actionsReady && pendingReqId != null && !canPlay && item.overallAvailability.isRequestedOrDownloading
+            // Which button carries primaryActionFocusRequester (mirrors the modifiers below);
+            // null for the seed of a not-yet-playable title, where nothing is actionable yet.
+            val primaryKey: String? = when {
+                canPlay -> "act_play"
+                showReqButton -> "act_req"
+                showMyList -> "act_mylist"
+                else -> null
             }
 
             // Several actions remove their own button (Remove Progress, Cancel Request, Request once
@@ -967,10 +1168,30 @@ private fun DetailsHeaderSection(
             // is left with nothing focused, so hand focus back to the primary action. A plain var
             // (not state) tracks the focused key so focus callbacks don't trigger recomposition.
             val focusTracker = remember { ActionFocusTracker() }
+            // Initial focus: once, as soon as a primary action exists (seed or full data). Keyed on
+            // the primary button rather than item.id, so the seed -> full swap (whose id can differ)
+            // and later poll updates never pull focus back after the user has moved it.
+            LaunchedEffect(primaryKey) {
+                if (primaryKey == null || focusMemory.initialFocusDone) return@LaunchedEffect
+                repeat(5) { attempt ->
+                    delay(if (attempt == 0) 60L else 50L)
+                    if (focusMemory.initialFocusDone) return@LaunchedEffect
+                    if (focusTracker.focusedKey != null || backFocused) {
+                        // The user already navigated somewhere in the header; leave focus there.
+                        focusMemory.initialFocusDone = true
+                        return@LaunchedEffect
+                    }
+                    // Throws until the requester's node is attached; retry briefly.
+                    if (runCatching { primaryActionFocusRequester.requestFocus() }.isSuccess) {
+                        focusMemory.initialFocusDone = true
+                        return@LaunchedEffect
+                    }
+                }
+            }
             val visibleActionKeys = buildSet {
                 if (canPlay) { add("act_play"); add("act_ext_player") }
                 if (showReqButton) add("act_req")
-                add("act_mylist")
+                if (showMyList) add("act_mylist")
                 if (showWatched) add("act_watched")
                 if (showRemind) add("act_remind")
                 if (showTrailer) add("act_trailer")
@@ -1041,14 +1262,23 @@ private fun DetailsHeaderSection(
                     }
                 }
 
-                HeroPillButton(
-                    text = if (item.isInMyList) "In My List" else "My List",
-                    icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
-                    isPrimary = false,
-                    onClick = onToggleMyList,
-                    modifier = (if (!canPlay && !showReqButton) Modifier.focusRequester(primaryActionFocusRequester) else Modifier)
-                        .trackActionFocus("act_mylist")
-                )
+                if (showMyList) {
+                    HeroPillButton(
+                        text = if (item.isInMyList) "In My List" else "My List",
+                        icon = if (item.isInMyList) Icons.Filled.Check else Icons.Filled.Add,
+                        isPrimary = false,
+                        onClick = onToggleMyList,
+                        modifier = (if (!canPlay && !showReqButton) Modifier.focusRequester(primaryActionFocusRequester) else Modifier)
+                            .trackActionFocus("act_mylist")
+                    )
+                }
+
+                if (isRefining) {
+                    // Request / My List / Watched / ... take these slots once availability is known.
+                    SkeletonPill(if (canPlay) 120.dp else 170.dp)
+                    SkeletonPill(120.dp)
+                    SkeletonPill(150.dp)
+                }
 
                 if (showWatched) {
                     HeroPillButton(
@@ -1764,4 +1994,9 @@ private fun QualityToggleRow(
 /** Holds which header action button currently has focus; deliberately not snapshot state. */
 private class ActionFocusTracker {
     var focusedKey: String? = null
+}
+
+/** Whether the screen has already placed its initial focus; deliberately not snapshot state. */
+private class DetailsFocusMemory {
+    var initialFocusDone: Boolean = false
 }

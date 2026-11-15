@@ -283,7 +283,9 @@ data class JellyfinMediaStreamDto(
     @SerialName("IsExternal") val isExternal: Boolean = false,
     @SerialName("DeliveryUrl") val deliveryUrl: String? = null,
     @SerialName("DeliveryMethod") val deliveryMethod: String? = null,
-    @SerialName("AudioSpatialFormat") val audioSpatialFormat: String? = null
+    @SerialName("AudioSpatialFormat") val audioSpatialFormat: String? = null,
+    @SerialName("RealFrameRate") val realFrameRate: Float? = null,
+    @SerialName("AverageFrameRate") val averageFrameRate: Float? = null
 )
 
 @Serializable

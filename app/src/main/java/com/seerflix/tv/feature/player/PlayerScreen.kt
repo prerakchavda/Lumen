@@ -1,10 +1,10 @@
 package com.seerflix.tv.feature.player
 
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
@@ -54,13 +54,12 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -68,17 +67,20 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -106,18 +108,14 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
-import coil3.SingletonImageLoader
 import coil3.compose.AsyncImage
-import coil3.request.ImageRequest
-import coil3.request.SuccessResult
-import coil3.request.allowHardware
-import coil3.toBitmap
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AssSubtitleMode
 import com.seerflix.tv.core.model.ChapterMarker
@@ -129,14 +127,21 @@ import com.seerflix.tv.core.model.QualityPreset
 import com.seerflix.tv.core.model.RemoteSubtitleOption
 import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.TrickplayCrop
-import com.seerflix.tv.core.player.AssSubtitleOverlay
+import com.seerflix.tv.core.model.TrickplayInfo
+import com.seerflix.tv.core.player.AssActiveCuesOverlay
+import com.seerflix.tv.core.player.AssCue
+import com.seerflix.tv.core.player.AssCueIndex
 import com.seerflix.tv.core.player.AutoSkipHelper
 import com.seerflix.tv.core.player.FrameRateMatcher
+import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.OffsetSubtitleParserFactory
+import com.seerflix.tv.core.player.PlayerTuning
 import com.seerflix.tv.core.player.SkipSegmentType
+import com.seerflix.tv.core.player.TrickplayThumbnailLoader
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.SeerflixTokens
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 
@@ -158,8 +163,10 @@ fun PlayerScreen(
         val mediaSourceFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, upstreamFactory))
             .setSubtitleParserFactory(subtitleParserFactory)
             .experimentalParseSubtitlesDuringExtraction(true)
-        ExoPlayer.Builder(context)
+        ExoPlayer.Builder(context, PlayerTuning.buildRenderersFactory(context))
             .setMediaSourceFactory(mediaSourceFactory)
+            // Faster start + a heap-bounded buffer so 4K remuxes can't OOM 2 GB sticks.
+            .setLoadControl(PlayerTuning.buildLoadControl())
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -187,9 +194,24 @@ fun PlayerScreen(
     var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
     var subtitleOffsetHudText by remember { mutableStateOf<String?>(null) }
     var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
-    var osdInteractionTick by remember { mutableIntStateOf(0) }
-    var assPositionMs by remember { mutableLongStateOf(0L) }
+    // Written on every remote key press but only read inside effects (never during composition), so
+    // key presses / held D-pad repeats don't recompose the whole screen.
+    val lastInteractionTick = remember { mutableLongStateOf(0L) }
     val playPauseFocusRequester = remember { FocusRequester() }
+    val trickplayLoader = remember { TrickplayThumbnailLoader(viewModel.mediaHttpClient) }
+    DisposableEffect(trickplayLoader) { onDispose { trickplayLoader.close() } }
+
+    // Relative seeks (D-pad, ±10 s, scrubbing) snap to a nearby keyframe: no decode-and-drop up to
+    // an exact frame, which is what makes seeking in 4K HEVC remuxes sluggish on weak SoCs.
+    // Absolute targets (skip intro/recap end, chapters, undo) stay frame-exact.
+    val seekFast: (Long) -> Unit = { target ->
+        player.setSeekParameters(PlayerTuning.FAST_SEEK_PARAMETERS)
+        player.seekTo(target.coerceAtLeast(0L))
+    }
+    val seekExact: (Long) -> Unit = { target ->
+        player.setSeekParameters(SeekParameters.DEFAULT)
+        player.seekTo(target.coerceAtLeast(0L))
+    }
     val rootFocusRequester = remember { FocusRequester() }
     // Window display mode before we touched it, restored on exit / when matching is turned off.
     val originalDisplayModeId = remember(activity) { activity?.window?.attributes?.preferredDisplayModeId ?: 0 }
@@ -241,10 +263,18 @@ fun PlayerScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    // True once the current item has played to its end (STATE_ENDED); cleared as soon as the
+    // player leaves that state (next item buffering, seek back, retry).
+    var playbackEnded by remember { mutableStateOf(false) }
+
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                playbackEnded = playbackState == Player.STATE_ENDED
             }
 
             override fun onTracksChanged(tracks: Tracks) {
@@ -325,10 +355,14 @@ fun PlayerScreen(
         subtitleOffsetHudText = null
     }
 
-    // Apply 24fps / frame-rate matching strategy & optional Display.Mode on TV
-    LaunchedEffect(state.frameRateMatchMode, state.session?.isTrailer, detectedVideoFrameRate) {
+    // Apply 24fps / frame-rate matching strategy & optional Display.Mode on TV.
+    // Declared before the media-setup effect: with Jellyfin's frame-rate metadata the display mode
+    // switch (an HDMI resync of 1-3 s on most TVs) is requested before prepare() and overlaps with
+    // initial buffering, instead of blanking the screen right after the first frame.
+    LaunchedEffect(state.frameRateMatchMode, state.session?.isTrailer, detectedVideoFrameRate, state.videoFrameRateHint) {
         val isTrailer = state.session?.isTrailer == true
         val mode = state.frameRateMatchMode
+        val videoFrameRate = detectedVideoFrameRate.takeIf { it > 1f } ?: state.videoFrameRateHint ?: 0f
         player.videoChangeFrameRateStrategy = if (isTrailer || mode == FrameRateMatchMode.OFF) {
             C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF
         } else {
@@ -345,7 +379,7 @@ fun PlayerScreen(
             return@LaunchedEffect
         }
 
-        if (detectedVideoFrameRate > 1f) {
+        if (videoFrameRate > 1f) {
             @Suppress("DEPRECATION")
             val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 activity.display
@@ -353,7 +387,7 @@ fun PlayerScreen(
                 activity.windowManager.defaultDisplay
             }
             if (display != null) {
-                val bestMode = FrameRateMatcher.findBestAndroidDisplayMode(display, detectedVideoFrameRate, mode)
+                val bestMode = FrameRateMatcher.findBestAndroidDisplayMode(display, videoFrameRate, mode)
                 if (bestMode != null && win.attributes.preferredDisplayModeId != bestMode.modeId) {
                     val params = win.attributes
                     params.preferredDisplayModeId = bestMode.modeId
@@ -387,7 +421,21 @@ fun PlayerScreen(
             if (session.isHls) {
                 mediaItemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
             }
+            // Embedded text subtitles of a directly played MKV/MP4 are demuxed in-band by ExoPlayer;
+            // side-loading them too delayed preparation until Jellyfin had extracted each one.
+            val sourceContainer = session.mediaSources.firstOrNull { it.id == session.mediaSourceId }?.container
+            val inBandSubtitleIndexes = session.subtitleTracks
+                .filter {
+                    JellyfinPlaybackManager.isInBandTextSubtitle(
+                        container = sourceContainer,
+                        codec = it.codec,
+                        isExternal = it.isExternal,
+                        isHls = session.isHls
+                    )
+                }
+                .mapTo(HashSet()) { it.index }
             val subConfigs = session.externalSubtitleFiles.mapNotNull { ext ->
+                if (ext.index in inBandSubtitleIndexes) return@mapNotNull null
                 val isAss = ext.codec.equals("ass", ignoreCase = true) || ext.codec.equals("ssa", ignoreCase = true)
                 if (isAss && state.assSubtitleMode != AssSubtitleMode.PLAIN) return@mapNotNull null
                 val mimeType = when (ext.codec?.lowercase()) {
@@ -424,7 +472,7 @@ fun PlayerScreen(
 
         val resumeMs = (session.resumeTicks / 10_000L).coerceAtLeast(0L)
         if (resumeMs > 5_000L) {
-            player.seekTo(resumeMs)
+            seekExact(resumeMs)
         }
         player.prepare()
         player.play()
@@ -435,80 +483,103 @@ fun PlayerScreen(
         player.setPlaybackSpeed(state.selectedSpeed)
     }
 
-    // Track position & report progress to Jellyfin every 10s
+    // Track position & report progress to Jellyfin every 10s.
+    // currentPosMs is only read in narrowly scoped places (derived flags, the OSD seek bar, effects)
+    // so this 2 Hz update doesn't recompose the whole screen.
     LaunchedEffect(state.session?.itemId) {
-        var tick = 0
+        var lastReportAt = System.currentTimeMillis()
         while (true) {
-            delay(500L)
             isPlaying = player.isPlaying
             currentPosMs = player.currentPosition.coerceAtLeast(0L)
             durationMs = player.duration.coerceAtLeast(0L)
-            tick++
-            if (tick % 20 == 0 && state.session != null) {
+            val now = System.currentTimeMillis()
+            if (now - lastReportAt >= PROGRESS_REPORT_INTERVAL_MS && state.session != null) {
+                lastReportAt = now
                 viewModel.reportProgress(currentPosMs, !player.playWhenReady)
             }
+            // 4 Hz while the OSD (time label / seek bar) is on screen, 2 Hz otherwise.
+            delay(if (osdVisible) 250L else 500L)
+        }
+    }
+
+    // Stop the previous stream while the next one is resolved (next episode, version / quality /
+    // audio switch, retry) so it doesn't keep downloading and decoding in the background,
+    // competing with the new PlaybackInfo request and start-up buffering.
+    LaunchedEffect(state.isLoading) {
+        if (state.isLoading && player.playbackState != Player.STATE_IDLE) {
+            player.stop()
         }
     }
 
     val useAssOverlay = state.assSubtitleMode == AssSubtitleMode.STYLED && state.activeAssCues.isNotEmpty()
-    // ASS cues need finer timing than the 500ms progress loop provides.
-    LaunchedEffect(useAssOverlay) {
-        while (useAssOverlay) {
-            assPositionMs = player.currentPosition.coerceAtLeast(0L)
-            delay(100L)
+
+    // Auto-hide Netflix OSD after 4.5s of no remote interaction
+    val isScrubbing by remember { derivedStateOf { scrubPreviewMs != null } }
+    LaunchedEffect(osdVisible, showTracksDialog, showEpisodesDrawer, isScrubbing, isPlaying) {
+        if (osdVisible && !showTracksDialog && !showEpisodesDrawer && !isScrubbing && isPlaying) {
+            // Restarts the countdown on every key press without recomposing on each press.
+            snapshotFlow { lastInteractionTick.longValue }.collectLatest {
+                delay(4500L)
+                osdVisible = false
+            }
         }
     }
 
-    // Auto-hide Netflix OSD after 4.5s of no remote interaction
-    LaunchedEffect(osdVisible, showTracksDialog, showEpisodesDrawer, scrubPreviewMs, isPlaying, osdInteractionTick) {
-        if (osdVisible && !showTracksDialog && !showEpisodesDrawer && scrubPreviewMs == null && isPlaying) {
-            delay(4500L)
-            osdVisible = false
+    // Seek-bar scrubbing only moves the preview; the actual (keyframe-snapped) seek is debounced so
+    // holding the D-pad doesn't fire a seek — and a decoder flush — on every step.
+    LaunchedEffect(player) {
+        snapshotFlow { scrubPreviewMs }.collectLatest { target ->
+            if (target != null) {
+                delay(SCRUB_SEEK_DEBOUNCE_MS)
+                seekFast(target)
+            }
         }
     }
 
     val session = state.session
-    val currentTicks = currentPosMs * 10_000L
 
-    // Loop-safe Auto-Skip Recap & Intro
-    LaunchedEffect(currentTicks, session?.itemId, state.autoSkipIntro, state.autoSkipRecap) {
-        val activeSession = session ?: return@LaunchedEffect
-        // Only evaluate once the new item is actually loaded and ready; right after a session switch
-        // currentTicks can still hold the previous item's position.
-        if (state.isLoading || player.playbackState != Player.STATE_READY) return@LaunchedEffect
-        val liveTicks = player.currentPosition.coerceAtLeast(0L) * 10_000L
-        if (AutoSkipHelper.shouldAutoSkip(
-                enabled = state.autoSkipRecap,
-                isTrailer = activeSession.isTrailer,
-                itemId = activeSession.itemId,
-                currentTicks = liveTicks,
-                startTicks = activeSession.recapStartTicks,
-                endTicks = activeSession.recapEndTicks,
-                alreadySkippedItemId = skippedRecapItemId
-            )
-        ) {
-            skippedRecapItemId = activeSession.itemId
-            val startMs = (activeSession.recapStartTicks ?: 0L) / 10_000L
-            val targetMs = (activeSession.recapEndTicks ?: 0L) / 10_000L
-            player.seekTo(targetMs)
-            currentPosMs = targetMs
-            autoSkipUndoPrompt = SkipSegmentType.RECAP to startMs
-        } else if (AutoSkipHelper.shouldAutoSkip(
-                enabled = state.autoSkipIntro,
-                isTrailer = activeSession.isTrailer,
-                itemId = activeSession.itemId,
-                currentTicks = liveTicks,
-                startTicks = activeSession.introStartTicks,
-                endTicks = activeSession.introEndTicks,
-                alreadySkippedItemId = skippedIntroItemId
-            )
-        ) {
-            skippedIntroItemId = activeSession.itemId
-            val startMs = (activeSession.introStartTicks ?: 0L) / 10_000L
-            val targetMs = (activeSession.introEndTicks ?: 0L) / 10_000L
-            player.seekTo(targetMs)
-            currentPosMs = targetMs
-            autoSkipUndoPrompt = SkipSegmentType.INTRO to startMs
+    // Loop-safe Auto-Skip Recap & Intro. Evaluated on position updates (not as a composition key),
+    // reading the latest session so markers that arrive after playback started are honoured.
+    LaunchedEffect(session?.itemId) {
+        snapshotFlow { currentPosMs }.collect {
+            val activeSession = state.session ?: return@collect
+            // Only evaluate once the new item is actually loaded and ready; right after a session switch
+            // currentPosMs can still hold the previous item's position.
+            if (state.isLoading || player.playbackState != Player.STATE_READY) return@collect
+            val liveTicks = player.currentPosition.coerceAtLeast(0L) * 10_000L
+            if (AutoSkipHelper.shouldAutoSkip(
+                    enabled = state.autoSkipRecap,
+                    isTrailer = activeSession.isTrailer,
+                    itemId = activeSession.itemId,
+                    currentTicks = liveTicks,
+                    startTicks = activeSession.recapStartTicks,
+                    endTicks = activeSession.recapEndTicks,
+                    alreadySkippedItemId = skippedRecapItemId
+                )
+            ) {
+                skippedRecapItemId = activeSession.itemId
+                val startMs = (activeSession.recapStartTicks ?: 0L) / 10_000L
+                val targetMs = (activeSession.recapEndTicks ?: 0L) / 10_000L
+                seekExact(targetMs)
+                currentPosMs = targetMs
+                autoSkipUndoPrompt = SkipSegmentType.RECAP to startMs
+            } else if (AutoSkipHelper.shouldAutoSkip(
+                    enabled = state.autoSkipIntro,
+                    isTrailer = activeSession.isTrailer,
+                    itemId = activeSession.itemId,
+                    currentTicks = liveTicks,
+                    startTicks = activeSession.introStartTicks,
+                    endTicks = activeSession.introEndTicks,
+                    alreadySkippedItemId = skippedIntroItemId
+                )
+            ) {
+                skippedIntroItemId = activeSession.itemId
+                val startMs = (activeSession.introStartTicks ?: 0L) / 10_000L
+                val targetMs = (activeSession.introEndTicks ?: 0L) / 10_000L
+                seekExact(targetMs)
+                currentPosMs = targetMs
+                autoSkipUndoPrompt = SkipSegmentType.INTRO to startMs
+            }
         }
     }
 
@@ -519,18 +590,42 @@ fun PlayerScreen(
         }
     }
 
-    val showSkipRecap = session?.recapStartTicks != null &&
-        session.recapEndTicks != null &&
-        currentTicks in session.recapStartTicks..session.recapEndTicks
+    // derivedStateOf: the screen only recomposes when these flip, not on every position tick.
+    val showSkipRecap by remember {
+        derivedStateOf {
+            val s = state.session
+            val ticks = currentPosMs * 10_000L
+            s?.recapStartTicks != null && s.recapEndTicks != null && ticks in s.recapStartTicks..s.recapEndTicks
+        }
+    }
 
-    val showSkipIntro = session?.introStartTicks != null &&
-        session.introEndTicks != null &&
-        currentTicks in session.introStartTicks..session.introEndTicks
+    val showSkipIntro by remember {
+        derivedStateOf {
+            val s = state.session
+            val ticks = currentPosMs * 10_000L
+            s?.introStartTicks != null && s.introEndTicks != null && ticks in s.introStartTicks..s.introEndTicks
+        }
+    }
 
-    val showNextEpisode = session?.nextEpisodeId != null && (
-        (session.creditsStartTicks != null && currentTicks >= session.creditsStartTicks) ||
-            (durationMs > 60_000L && currentPosMs >= durationMs - 25_000L)
-        )
+    // nextEpisodeId arrives asynchronously after playback started; until then this stays false.
+    val showNextEpisode by remember {
+        derivedStateOf {
+            val s = state.session
+            val pos = currentPosMs
+            val dur = durationMs
+            // Last 25 s, or the last fifth for short episodes (a fixed 25 s window with a 60 s
+            // minimum never showed Up Next for short-form shows), or once playback has ended.
+            s?.nextEpisodeId != null && (
+                (s.creditsStartTicks != null && pos * 10_000L >= s.creditsStartTicks) ||
+                    (dur > 0L && pos >= dur - minOf(25_000L, dur / 5)) ||
+                    playbackEnded
+                )
+        }
+    }
+
+    val activeChapterName by remember {
+        derivedStateOf { state.session?.chapters?.lastOrNull { it.startPositionMs <= currentPosMs }?.name }
+    }
 
     var nextEpisodeCountdown by remember(session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled) {
         mutableIntStateOf(5)
@@ -539,14 +634,37 @@ fun PlayerScreen(
     // Keyed on isLoading so the countdown stops once "Play Now"/Next already started loading the
     // next episode (otherwise it fired a second stopped report + loadItem).
     LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading) {
-        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && session?.nextEpisodeId != null) {
+        val nextId = state.session?.nextEpisodeId
+        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && nextId != null) {
             nextEpisodeCountdown = 5
             while (nextEpisodeCountdown > 0) {
                 delay(1000L)
                 nextEpisodeCountdown--
             }
             viewModel.reportStopped(currentPosMs)
-            viewModel.loadItem(session.nextEpisodeId)
+            viewModel.loadItem(nextId)
+        }
+    }
+
+    // Reaching the end of the stream: roll straight into the next episode when autoplay is on
+    // (e.g. the countdown was skipped by seeking to the end), otherwise leave the player instead
+    // of sitting frozen on the last frame (movies, last episode, autoplay cancelled/off).
+    LaunchedEffect(playbackEnded, state.isLoading) {
+        if (!playbackEnded || state.isLoading) return@LaunchedEffect
+        val s = state.session ?: return@LaunchedEffect
+        val nextId = s.nextEpisodeId
+        if (nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
+            delay(400L) // let an in-flight Up Next countdown win if it's about to fire
+            if (state.isLoading) return@LaunchedEffect
+            viewModel.reportStopped(durationMs.coerceAtLeast(currentPosMs))
+            viewModel.loadItem(nextId)
+        } else if (nextId == null || !state.autoplayNextEpisode || state.autoplayCancelled) {
+            // Keep the Up Next card up when autoplay is off/cancelled but a next episode exists;
+            // only leave automatically when there's nothing to go to next.
+            if (nextId == null) {
+                delay(1500L)
+                if (playbackEnded) exitPlayer()
+            }
         }
     }
 
@@ -563,7 +681,7 @@ fun PlayerScreen(
 
     val seekBy: (Long) -> Unit = { deltaMs ->
         val target = (player.currentPosition + deltaMs).coerceAtLeast(0L)
-        player.seekTo(target)
+        seekFast(target)
         viewModel.notifySyncPlaySeek(target)
         currentPosMs = target
     }
@@ -575,7 +693,7 @@ fun PlayerScreen(
             .onPreviewKeyEvent { keyEvent ->
                 if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     // Any remote interaction restarts the OSD auto-hide timer.
-                    osdInteractionTick++
+                    lastInteractionTick.longValue += 1
                     // Loading spinner / error screen: let the Retry/Back buttons get normal key handling.
                     if (!playerSurfaceActive) return@onPreviewKeyEvent false
                     when (keyEvent.nativeKeyEvent.keyCode) {
@@ -637,14 +755,56 @@ fun PlayerScreen(
             .focusRequester(rootFocusRequester)
             .focusable()
     ) {
+        // The video surface stays composed across loads (next episode, version/quality switch,
+        // retry): the SurfaceView isn't torn down and re-created each time, and on first start the
+        // surface already exists when the decoder is configured. Loading / error states cover it.
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    useController = false
+                    // Keys are handled by the Compose root; the view must never take focus.
+                    isFocusable = false
+                    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                    this.player = player
+                }
+            },
+            update = { view ->
+                if (view.player !== player) view.player = player
+                // Stop the TV screensaver / sleep timer from kicking in mid-movie.
+                view.keepScreenOn = isPlaying
+                view.subtitleView?.let { sv ->
+                    sv.visibility = if (useAssOverlay) View.GONE else View.VISIBLE
+                    sv.setApplyEmbeddedStyles(false)
+                    sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * state.subtitleFontScale)
+                    val alphaInt = (state.subtitleBackgroundAlpha * 255f).toInt().coerceIn(0, 255)
+                    val bgArgb = android.graphics.Color.argb(alphaInt, 0, 0, 0)
+                    sv.setStyle(
+                        CaptionStyleCompat(
+                            android.graphics.Color.WHITE,
+                            bgArgb,
+                            android.graphics.Color.TRANSPARENT,
+                            CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                            android.graphics.Color.BLACK,
+                            null
+                        )
+                    )
+                }
+            },
+            // Detach on disposal so the player doesn't keep a listener + surface reference to a dead view.
+            onRelease = { view -> view.player = null },
+            modifier = Modifier.fillMaxSize()
+        )
+
         when {
             state.isLoading -> {
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black))
                 CircularProgressIndicator(
                     color = colors.accent,
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
             state.errorMessage != null -> {
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black))
                 val errorRetryFocusRequester = remember { FocusRequester() }
                 LaunchedEffect(state.errorMessage) {
                     delay(60L)
@@ -684,46 +844,13 @@ fun PlayerScreen(
                 }
             }
             else -> {
-                AndroidView(
-                    factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            useController = false
-                            this.player = player
-                        }
-                    },
-                    update = { view ->
-                        if (view.player !== player) view.player = player
-                        // Stop the TV screensaver / sleep timer from kicking in mid-movie.
-                        view.keepScreenOn = isPlaying
-                        view.subtitleView?.let { sv ->
-                            sv.visibility = if (useAssOverlay) View.GONE else View.VISIBLE
-                            sv.setApplyEmbeddedStyles(false)
-                            sv.setFractionalTextSize(SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * state.subtitleFontScale)
-                            val alphaInt = (state.subtitleBackgroundAlpha * 255f).toInt().coerceIn(0, 255)
-                            val bgArgb = android.graphics.Color.argb(alphaInt, 0, 0, 0)
-                            sv.setStyle(
-                                CaptionStyleCompat(
-                                    android.graphics.Color.WHITE,
-                                    bgArgb,
-                                    android.graphics.Color.TRANSPARENT,
-                                    CaptionStyleCompat.EDGE_TYPE_OUTLINE,
-                                    android.graphics.Color.BLACK,
-                                    null
-                                )
-                            )
-                        }
-                    },
-                    // The view is dropped while loading/erroring; detach it so the player doesn't keep
-                    // a listener + surface reference to a dead PlayerView.
-                    onRelease = { view -> view.player = null },
-                    modifier = Modifier.fillMaxSize()
-                )
 
                 if (useAssOverlay) {
-                    AssSubtitleOverlay(
+                    AssOverlayHost(
+                        player = player,
                         cues = state.activeAssCues,
                         // Same sign as the ExoPlayer path: a positive offset delays subtitles.
-                        positionMs = assPositionMs - state.subtitleOffsetMs,
+                        offsetMs = state.subtitleOffsetMs,
                         fontScale = state.subtitleFontScale,
                         backgroundAlpha = state.subtitleBackgroundAlpha
                     )
@@ -774,7 +901,7 @@ fun PlayerScreen(
                             icon = Icons.AutoMirrored.Filled.Undo,
                             isPrimary = false,
                             onClick = {
-                                player.seekTo(seekBackMs)
+                                seekExact(seekBackMs)
                                 viewModel.notifySyncPlaySeek(seekBackMs)
                                 currentPosMs = seekBackMs
                                 autoSkipUndoPrompt = null
@@ -788,7 +915,7 @@ fun PlayerScreen(
                             isPrimary = true,
                             onClick = {
                                 val target = session.recapEndTicks / 10_000L
-                                player.seekTo(target)
+                                seekExact(target)
                                 viewModel.notifySyncPlaySeek(target)
                             }
                         )
@@ -800,7 +927,7 @@ fun PlayerScreen(
                             isPrimary = true,
                             onClick = {
                                 val target = session.introEndTicks / 10_000L
-                                player.seekTo(target)
+                                seekExact(target)
                                 viewModel.notifySyncPlaySeek(target)
                             }
                         )
@@ -831,15 +958,28 @@ fun PlayerScreen(
                     exit = fadeOut()
                 ) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // Top gradient & title + SyncPlay room badge
+                        // Legibility scrims over bright video (only while the OSD is visible):
+                        // one cheap vertical gradient each, no blur.
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .background(OSD_TOP_SCRIM)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .height(300.dp)
+                                .background(OSD_BOTTOM_SCRIM)
+                        )
+                        // Title + SyncPlay room badge
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .background(
-                                    Brush.verticalGradient(listOf(Color(0xCC000000), Color.Transparent))
-                                )
                                 .padding(horizontal = 48.dp, vertical = 28.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -852,10 +992,9 @@ fun PlayerScreen(
                                         fontSize = 22.sp,
                                         fontWeight = FontWeight.Bold
                                     )
-                                    val activeChapter = session?.chapters?.lastOrNull { it.startPositionMs <= currentPosMs }
                                     val subtitleParts = listOfNotNull(
                                         session?.subtitle,
-                                        activeChapter?.name
+                                        activeChapterName
                                     )
                                     if (subtitleParts.isNotEmpty()) {
                                         Text(
@@ -893,78 +1032,28 @@ fun PlayerScreen(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .background(
-                                    Brush.verticalGradient(listOf(Color.Transparent, Color(0xE6000000)))
-                                )
                                 .padding(horizontal = 48.dp, vertical = 28.dp)
                         ) {
-                            // Seekbar Trickplay Thumbnail Preview
-                            val previewTargetMs = scrubPreviewMs
-                            if (previewTargetMs != null && durationMs > 0L) {
-                                val crop = session?.trickplayInfo?.cropForPosition(previewTargetMs)
-                                val frac = (previewTargetMs.toFloat() / durationMs.toFloat()).coerceIn(0.05f, 0.95f)
-                                Row(modifier = Modifier.fillMaxWidth()) {
-                                    if (frac > 0.06f) {
-                                        Spacer(Modifier.weight(frac))
-                                    }
-                                    TrickplayPreviewCard(
-                                        positionMs = previewTargetMs,
-                                        crop = crop
-                                    )
-                                    if (1f - frac > 0.06f) {
-                                        Spacer(Modifier.weight(1f - frac))
-                                    }
-                                }
-                                Spacer(Modifier.height(8.dp))
-                            }
-
-                            val totalFloat = durationMs.coerceAtLeast(1L).toFloat()
-                            val sliderPosMs = scrubPreviewMs ?: currentPosMs
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                Slider(
-                                    value = (sliderPosMs.toFloat() / totalFloat).coerceIn(0f, 1f),
-                                    onValueChange = { frac ->
-                                        val targetMs = (frac * totalFloat).toLong()
-                                        scrubPreviewMs = targetMs
-                                        player.seekTo(targetMs)
-                                    },
-                                    onValueChangeFinished = {
-                                        val target = scrubPreviewMs
-                                        scrubPreviewMs = null
-                                        if (target != null) {
-                                            viewModel.notifySyncPlaySeek(target)
-                                        }
-                                    },
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = colors.accent,
-                                        activeTrackColor = colors.accent,
-                                        inactiveTrackColor = Color(0x55FFFFFF)
-                                    )
-                                )
-                                val chapters = session?.chapters.orEmpty()
-                                if (chapters.isNotEmpty() && durationMs > 0L) {
-                                    Canvas(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(6.dp)
-                                            .align(Alignment.Center)
-                                            .padding(horizontal = 10.dp)
-                                    ) {
-                                        chapters.forEach { ch ->
-                                            if (ch.startPositionMs > 0L && ch.startPositionMs < durationMs) {
-                                                val frac = (ch.startPositionMs.toFloat() / totalFloat).coerceIn(0.01f, 0.99f)
-                                                val x = size.width * frac
-                                                drawLine(
-                                                    color = Color.White.copy(alpha = 0.85f),
-                                                    start = Offset(x, 0f),
-                                                    end = Offset(x, size.height),
-                                                    strokeWidth = 3f
-                                                )
-                                            }
-                                        }
+                            // Position-dependent parts live in their own composable so the 2 Hz
+                            // position updates only recompose the seek bar, not the whole OSD.
+                            OsdSeekBar(
+                                positionMs = { currentPosMs },
+                                durationMs = { durationMs },
+                                scrubPreviewMs = { scrubPreviewMs },
+                                trickplayInfo = session?.trickplayInfo,
+                                trickplayLoader = trickplayLoader,
+                                chapters = session?.chapters.orEmpty(),
+                                onScrub = { targetMs -> scrubPreviewMs = targetMs },
+                                onScrubFinished = {
+                                    val target = scrubPreviewMs
+                                    scrubPreviewMs = null
+                                    if (target != null) {
+                                        seekFast(target)
+                                        currentPosMs = target
+                                        viewModel.notifySyncPlaySeek(target)
                                     }
                                 }
-                            }
+                            )
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -994,11 +1083,10 @@ fun PlayerScreen(
                                         )
                                     }
                                     Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        text = if (session?.isLiveTv == true) "LIVE" else "${formatMs(currentPosMs)} / ${formatMs(durationMs)}",
-                                        color = if (session?.isLiveTv == true) colors.accent else colors.textSecondary,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                    OsdTimeText(
+                                        isLiveTv = session?.isLiveTv == true,
+                                        positionMs = { currentPosMs },
+                                        durationMs = { durationMs }
                                     )
                                     if (state.selectedSpeed != 1.0f) {
                                         Box(
@@ -1017,7 +1105,10 @@ fun PlayerScreen(
                                         PlayerControlIcon(
                                             icon = Icons.AutoMirrored.Filled.List,
                                             label = "Episodes",
-                                            onClick = { showEpisodesDrawer = true }
+                                            onClick = {
+                                                viewModel.ensureDrawerLoaded()
+                                                showEpisodesDrawer = true
+                                            }
                                         )
                                     }
                                     PlayerControlIcon(
@@ -1113,7 +1204,7 @@ fun PlayerScreen(
             },
             onJumpToChapter = { chapter ->
                 showTracksDialog = false
-                player.seekTo(chapter.startPositionMs)
+                seekExact(chapter.startPositionMs)
                 viewModel.notifySyncPlaySeek(chapter.startPositionMs)
                 currentPosMs = chapter.startPositionMs
             },
@@ -1246,42 +1337,205 @@ fun NextEpisodeOverlayCard(
     }
 }
 
+/**
+ * Seek bar + trickplay preview. Reads the playback position through lambdas so only this
+ * composable recomposes on position ticks / scrub steps.
+ */
+@Composable
+private fun OsdSeekBar(
+    positionMs: () -> Long,
+    durationMs: () -> Long,
+    scrubPreviewMs: () -> Long?,
+    trickplayInfo: TrickplayInfo?,
+    trickplayLoader: TrickplayThumbnailLoader,
+    chapters: List<ChapterMarker>,
+    onScrub: (Long) -> Unit,
+    onScrubFinished: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val duration = durationMs()
+    val previewTargetMs = scrubPreviewMs()
+
+    // Warm the trickplay sheet for the current position as soon as the OSD shows, so the first
+    // scrub step already has a thumbnail.
+    LaunchedEffect(trickplayInfo) {
+        trickplayInfo?.cropForPosition(positionMs())?.let(trickplayLoader::prefetch)
+    }
+
+    // Seekbar Trickplay Thumbnail Preview
+    if (previewTargetMs != null && duration > 0L) {
+        val crop = trickplayInfo?.cropForPosition(previewTargetMs)
+        val frac = (previewTargetMs.toFloat() / duration.toFloat()).coerceIn(0.05f, 0.95f)
+        Row(modifier = Modifier.fillMaxWidth()) {
+            if (frac > 0.06f) {
+                Spacer(Modifier.weight(frac))
+            }
+            TrickplayPreviewCard(
+                positionMs = previewTargetMs,
+                crop = crop,
+                loader = trickplayLoader
+            )
+            if (1f - frac > 0.06f) {
+                Spacer(Modifier.weight(1f - frac))
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+
+    val totalFloat = duration.coerceAtLeast(1L).toFloat()
+    val barPosMs = previewTargetMs ?: positionMs()
+    val accent = colors.accent
+    var focused by remember { mutableStateOf(false) }
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(24.dp)
+            .onFocusChanged { focused = it.isFocused }
+            .onKeyEvent { event ->
+                val native = event.nativeKeyEvent
+                when (native.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                        if (duration <= 0L) return@onKeyEvent false
+                        if (native.action == KeyEvent.ACTION_DOWN) {
+                            // Accelerates while the key is held: 10 s, then 30 s, then 60 s steps.
+                            val stepMs = when {
+                                native.repeatCount < 5 -> 10_000L
+                                native.repeatCount < 15 -> 30_000L
+                                else -> 60_000L
+                            }
+                            val direction = if (native.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1L else 1L
+                            val base = scrubPreviewMs() ?: positionMs()
+                            onScrub((base + direction * stepMs).coerceIn(0L, duration))
+                        } else if (native.action == KeyEvent.ACTION_UP) {
+                            onScrubFinished()
+                        }
+                        true
+                    }
+                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                        if (scrubPreviewMs() != null) {
+                            if (native.action == KeyEvent.ACTION_UP) onScrubFinished()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    else -> false
+                }
+            }
+            .focusable()
+    ) {
+        // Lightweight seek bar (replaces Material3 Slider, whose vertical-bar thumb and gapped
+        // track rendered as stray bars over the video): track, progress, chapter ticks, and a
+        // round thumb only while focused.
+        val frac = (barPosMs.toFloat() / totalFloat).coerceIn(0f, 1f)
+        val trackHeight = if (focused) 6.dp.toPx() else 4.dp.toPx()
+        val centerY = size.height / 2f
+        val radius = trackHeight / 2f
+        drawRoundRect(
+            color = Color(0x55FFFFFF),
+            topLeft = Offset(0f, centerY - radius),
+            size = Size(size.width, trackHeight),
+            cornerRadius = CornerRadius(radius, radius)
+        )
+        if (frac > 0f) {
+            drawRoundRect(
+                color = accent,
+                topLeft = Offset(0f, centerY - radius),
+                size = Size(size.width * frac, trackHeight),
+                cornerRadius = CornerRadius(radius, radius)
+            )
+        }
+        if (duration > 0L) {
+            chapters.forEach { ch ->
+                if (ch.startPositionMs > 0L && ch.startPositionMs < duration) {
+                    val x = size.width * (ch.startPositionMs.toFloat() / totalFloat)
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.85f),
+                        start = Offset(x, centerY - radius),
+                        end = Offset(x, centerY + radius),
+                        strokeWidth = 2.dp.toPx()
+                    )
+                }
+            }
+        }
+        if (focused) {
+            drawCircle(color = Color.White, radius = 8.dp.toPx(), center = Offset(size.width * frac, centerY))
+        }
+    }
+}
+
+@Composable
+private fun OsdTimeText(
+    isLiveTv: Boolean,
+    positionMs: () -> Long,
+    durationMs: () -> Long
+) {
+    val colors = SeerflixTokens.colors
+    Text(
+        text = if (isLiveTv) "LIVE" else "${formatMs(positionMs())} / ${formatMs(durationMs())}",
+        color = if (isLiveTv) colors.accent else colors.textSecondary,
+        fontSize = 14.sp,
+        fontWeight = FontWeight.SemiBold
+    )
+}
+
+/**
+ * Styled ASS/SSA overlay with its own ~10 Hz position ticker. It only recomposes when the set of
+ * visible cues changes (instead of the whole player screen 10x per second).
+ */
+@Composable
+private fun AssOverlayHost(
+    player: Player,
+    cues: List<AssCue>,
+    offsetMs: Long,
+    fontScale: Float,
+    backgroundAlpha: Float
+) {
+    val index = remember(cues) { AssCueIndex(cues) }
+    var activeCues by remember(index) { mutableStateOf(emptyList<AssCue>()) }
+    LaunchedEffect(index, offsetMs, player) {
+        while (true) {
+            // Structural equality: assigning an equal list doesn't invalidate anything.
+            activeCues = index.activeAt(player.currentPosition.coerceAtLeast(0L) - offsetMs)
+            delay(ASS_TICK_MS)
+        }
+    }
+    AssActiveCuesOverlay(
+        activeCues = activeCues,
+        fontScale = fontScale,
+        backgroundAlpha = backgroundAlpha
+    )
+}
+
 @Composable
 private fun TrickplayPreviewCard(
     positionMs: Long,
     crop: TrickplayCrop?,
+    loader: TrickplayThumbnailLoader,
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
-    val context = LocalContext.current
-    var croppedBitmap by remember(crop?.tileUrl, crop?.x, crop?.y) { mutableStateOf<ImageBitmap?>(null) }
+    // Keeps the last thumbnail while the next one decodes (no blank flicker while scrubbing).
+    var thumbnail by remember { mutableStateOf<ImageBitmap?>(null) }
 
-    LaunchedEffect(crop?.tileUrl, crop?.x, crop?.y) {
+    LaunchedEffect(crop) {
         if (crop == null) {
-            croppedBitmap = null
+            thumbnail = null
             return@LaunchedEffect
         }
-        runCatching {
-            val loader = SingletonImageLoader.get(context)
-            val request = ImageRequest.Builder(context)
-                .data(crop.tileUrl)
-                .allowHardware(false)
-                .build()
-            val result = loader.execute(request) as? SuccessResult ?: return@runCatching
-            val fullBmp = result.image.toBitmap()
-            val safeX = crop.x.coerceIn(0, (fullBmp.width - 1).coerceAtLeast(0))
-            val safeY = crop.y.coerceIn(0, (fullBmp.height - 1).coerceAtLeast(0))
-            val safeW = crop.width.coerceAtMost(fullBmp.width - safeX).coerceAtLeast(1)
-            val safeH = crop.height.coerceAtMost(fullBmp.height - safeY).coerceAtLeast(1)
-            croppedBitmap = Bitmap.createBitmap(fullBmp, safeX, safeY, safeW, safeH).asImageBitmap()
+        loader.peek(crop)?.let {
+            thumbnail = it
+            return@LaunchedEffect
         }
+        // Region-decoded off the main thread; only a 320x180-ish RGB_565 bitmap is allocated.
+        loader.load(crop)?.let { thumbnail = it }
     }
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = modifier
     ) {
-        if (croppedBitmap != null) {
+        thumbnail?.let { bitmap ->
             Box(
                 modifier = Modifier
                     .width(176.dp)
@@ -1291,7 +1545,7 @@ private fun TrickplayPreviewCard(
                     .background(Color.Black)
             ) {
                 Image(
-                    bitmap = croppedBitmap!!,
+                    bitmap = bitmap,
                     contentDescription = "Seek preview",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -1968,6 +2222,12 @@ private fun TrackChoiceRow(
 }
 
 private const val SUBTITLE_OFFSET_RELOAD_DEBOUNCE_MS = 800L
+private const val SCRUB_SEEK_DEBOUNCE_MS = 300L
+private const val ASS_TICK_MS = 100L
+private const val PROGRESS_REPORT_INTERVAL_MS = 10_000L
+
+private val OSD_TOP_SCRIM = Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.7f), Color.Transparent))
+private val OSD_BOTTOM_SCRIM = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)))
 
 private fun formatMs(ms: Long): String {
     val totalSec = (ms / 1000L).coerceAtLeast(0L)
