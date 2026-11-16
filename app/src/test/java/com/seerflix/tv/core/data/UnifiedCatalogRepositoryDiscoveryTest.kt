@@ -42,6 +42,11 @@ import com.seerflix.tv.core.network.SeerrStatusDto
 import com.seerflix.tv.core.network.SeerrTvDetailsDto
 import com.seerflix.tv.core.network.SeerrUserDto
 import com.seerflix.tv.core.network.SessionPreferences
+import com.seerflix.tv.core.network.TraktApi
+import com.seerflix.tv.core.network.TraktIdsDto
+import com.seerflix.tv.core.network.TraktTitleDto
+import com.seerflix.tv.core.network.TraktWatchedMovieDto
+import com.seerflix.tv.core.network.TraktWatchedShowDto
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -117,26 +122,20 @@ class UnifiedCatalogRepositoryDiscoveryTest {
     }
 
     @Test
-    fun `top 10 tv airing now filters future premieres and supplements from discover tv`() = runTest {
-        seerrApi.upcomingTvHandler = { page ->
+    fun `top 10 tv airing now uses returning series and drops unpremiered or undated shows`() = runTest {
+        seerrApi.upcomingTvHandler = { throw AssertionError("upcoming TV is premieres from today on, not airing now") }
+        seerrApi.airingTvHandler = { page, lte, status ->
+            assertEquals("2026-04-01", lte)
+            assertEquals("0", status)
             if (page == 1) {
                 SeerrDiscoverPageDto(
                     page = 1,
                     results = listOf(
                         tvResult(201, "Airing Show 1", firstAirDate = "2026-02-15"),
                         tvResult(202, "Not Premiered Yet", firstAirDate = "2026-05-01"),
-                        tvResult(203, "Airing Show 2", firstAirDate = "2026-03-20")
-                    )
-                )
-            } else SeerrDiscoverPageDto()
-        }
-        seerrApi.discoverTvHandler = { page, _, _, gte, lte, _ ->
-            if (gte == null && lte == "2026-04-01" && page == 1) {
-                SeerrDiscoverPageDto(
-                    page = 1,
-                    results = (204..215).map { id ->
-                        tvResult(id, "Popular Series $id", firstAirDate = "2025-11-10")
-                    }
+                        tvResult(203, "Airing Show 2", firstAirDate = "2019-03-20"),
+                        tvResult(299, "No Date", firstAirDate = "")
+                    ) + (204..215).map { id -> tvResult(id, "Popular Series $id", firstAirDate = "2025-11-10") }
                 )
             } else SeerrDiscoverPageDto()
         }
@@ -151,7 +150,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         val topTv = rows.first { it.id == "top10_tv_now" }
         assertEquals(RowStyle.TOP_10, topTv.style)
         assertEquals(10, topTv.items.size)
-        assertFalse(topTv.items.any { it.title == "Not Premiered Yet" })
+        assertFalse(topTv.items.any { it.title == "Not Premiered Yet" || it.title == "No Date" })
         assertEquals("Airing Show 1", topTv.items[0].title)
         assertEquals("Airing Show 2", topTv.items[1].title)
         assertEquals("Popular Series 204", topTv.items[2].title)
@@ -163,7 +162,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             if (page == 1) SeerrDiscoverPageDto(results = listOf(movieResult(1, "Now Movie", "2026-03-01")))
             else SeerrDiscoverPageDto()
         }
-        seerrApi.upcomingTvHandler = { page ->
+        seerrApi.airingTvHandler = { page, _, _ ->
             if (page == 1) SeerrDiscoverPageDto(results = listOf(tvResult(2, "Airing Show", "2026-02-01")))
             else SeerrDiscoverPageDto()
         }
@@ -285,6 +284,156 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         val topWatchNow = watchNowRows.first { it.id == "top10_movies_now" }
         assertEquals(listOf("Owned Movie"), topWatchNow.items.map { it.title })
         assertTrue(topWatchNow.items.all { it.isPlayable })
+    }
+
+    @Test
+    fun `genre top 10 rows skip unreleased and undated blockbusters`() = runTest {
+        seerrApi.moviesByGenreHandler = { genreId, page ->
+            if (page == 1) {
+                SeerrDiscoverPageDto(
+                    results = listOf(
+                        movieResult(900 + genreId, "Hyped Sequel (out in December)", "2026-12-18"),
+                        movieResult(800 + genreId, "No Release Date", ""),
+                        movieResult(700 + genreId, "Released Hit $genreId", "2025-06-01")
+                    )
+                )
+            } else SeerrDiscoverPageDto()
+        }
+
+        val rows = repository.loadHomeRows(
+            userId = "u1",
+            filterType = MediaType.MOVIE,
+            availabilityFilter = AvailabilityFilter.ALL,
+            today = fixedToday
+        )
+
+        val action = rows.first { it.id == "top10_action_movies" }
+        assertEquals(listOf("Released Hit 28"), action.items.map { it.title })
+        val movieGenreCalls = seerrApi.genreDiscoverCalls.filter { it[0] == "movie" }
+        assertTrue(movieGenreCalls.isNotEmpty())
+        movieGenreCalls.forEach { call ->
+            assertEquals("2026-04-01", call[2])
+            assertEquals(25, call[3])
+        }
+    }
+
+    @Test
+    fun `trending now leaves unreleased titles to the coming soon rows`() = runTest {
+        seerrApi.trendingHandler = {
+            SeerrDiscoverPageDto(
+                results = listOf(
+                    movieResult(1, "Hyped Sequel", "2026-12-18"),
+                    movieResult(2, "Out Now", "2026-03-01"),
+                    tvResult(3, "Running Show", "2024-01-01")
+                )
+            )
+        }
+
+        val home = repository.loadHomeRows(userId = "u1", availabilityFilter = AvailabilityFilter.ALL, today = fixedToday)
+        assertEquals(listOf("Out Now", "Running Show"), home.first { it.id == "trending_now" }.items.map { it.title })
+
+        val newAndPopular = repository.loadNewAndPopular(userId = "u1", today = fixedToday)
+        val npTrending = newAndPopular.first { it.id == "np_trending" }
+        assertEquals("Trending Now", npTrending.title)
+        assertEquals(listOf("Out Now", "Running Show"), npTrending.items.map { it.title })
+    }
+
+    @Test
+    fun `trakt chart drives top 10 movies in chart order and skips unreleased`() = runTest {
+        val trakt = FakeTraktApi().apply {
+            movies = (501..515).map { traktMovie(it) }
+        }
+        seerrApi.movieDetailsHandler = { id ->
+            SeerrMovieDetailsDto(
+                id = id,
+                title = "Chart $id",
+                releaseDate = if (id == 502) "2026-12-18" else "2026-02-01",
+                posterPath = "/p$id.jpg"
+            )
+        }
+        seerrApi.discoverMoviesHandler = { _, _, _, _, _, _ -> throw AssertionError("Seerr fallback not needed") }
+        val repo = repositoryWithTrakt(trakt)
+
+        val rows = repo.loadHomeRows(
+            userId = "u1",
+            filterType = MediaType.MOVIE,
+            availabilityFilter = AvailabilityFilter.ALL,
+            today = fixedToday
+        )
+
+        val top = rows.first { it.id == "top10_movies_now" }
+        assertEquals(listOf(501) + (503..511), top.items.map { it.tmdbId })
+        assertEquals("2025-2026", trakt.lastMovieYears)
+        // One parallel batch of 12 covers the row; the rest of the chart isn't looked up.
+        assertEquals((501..512).toSet(), seerrApi.movieDetailsRequested.toSet())
+    }
+
+    @Test
+    fun `trakt chart is topped up from seerr and seerr takes over when trakt fails`() = runTest {
+        seerrApi.discoverMoviesHandler = { page, _, _, _, _, _ ->
+            if (page == 1) SeerrDiscoverPageDto(results = (601..615).map { movieResult(it, "Seerr $it", "2026-03-01") })
+            else SeerrDiscoverPageDto()
+        }
+        seerrApi.movieDetailsHandler = { id -> SeerrMovieDetailsDto(id = id, title = "Chart $id", releaseDate = "2026-02-01") }
+
+        val partial = repositoryWithTrakt(FakeTraktApi().apply { movies = listOf(traktMovie(501), traktMovie(502)) })
+        val topped = partial.loadHomeRows(userId = "u1", filterType = MediaType.MOVIE, today = fixedToday)
+            .first { it.id == "top10_movies_now" }
+        assertEquals(listOf(501, 502) + (601..608), topped.items.map { it.tmdbId })
+
+        val failing = repositoryWithTrakt(FakeTraktApi().apply { fail = true })
+        val fallback = failing.loadHomeRows(userId = "u1", filterType = MediaType.MOVIE, today = fixedToday)
+            .first { it.id == "top10_movies_now" }
+        assertEquals((601..610).toList(), fallback.items.map { it.tmdbId })
+    }
+
+    @Test
+    fun `trakt shows chart asks for running shows only`() = runTest {
+        val trakt = FakeTraktApi().apply { shows = (701..712).map { traktShow(it) } }
+        seerrApi.tvDetailsHandler = { id -> SeerrTvDetailsDto(id = id, name = "Show $id", firstAirDate = "2024-09-01") }
+        seerrApi.airingTvHandler = { _, _, _ -> throw AssertionError("Seerr fallback not needed") }
+
+        val rows = repositoryWithTrakt(trakt).loadHomeRows(
+            userId = "u1",
+            filterType = MediaType.SERIES,
+            today = fixedToday
+        )
+
+        assertEquals((701..710).toList(), rows.first { it.id == "top10_tv_now" }.items.map { it.tmdbId })
+        assertEquals("returning series", trakt.lastShowStatus)
+    }
+
+    private fun repositoryWithTrakt(api: TraktApi) = UnifiedCatalogRepository(
+        jellyfinApi,
+        seerrApi,
+        prefs,
+        traktCharts = TraktCharts(api, { tempFolder.newFolder() }, Json { ignoreUnknownKeys = true })
+    )
+
+    private fun traktMovie(tmdb: Int) =
+        TraktWatchedMovieDto(watcherCount = 1000 - tmdb, movie = TraktTitleDto("Trakt $tmdb", 2026, TraktIdsDto(tmdb = tmdb)))
+
+    private fun traktShow(tmdb: Int) =
+        TraktWatchedShowDto(watcherCount = 1000 - tmdb, show = TraktTitleDto("Trakt $tmdb", 2024, TraktIdsDto(tmdb = tmdb)))
+
+    private class FakeTraktApi : TraktApi {
+        var movies: List<TraktWatchedMovieDto> = emptyList()
+        var shows: List<TraktWatchedShowDto> = emptyList()
+        var fail = false
+        var lastMovieYears: String? = null
+        var lastShowStatus: String? = null
+
+        override suspend fun watchedMovies(period: String, limit: Int, years: String?): List<TraktWatchedMovieDto> {
+            if (fail) throw java.io.IOException("trakt down")
+            lastMovieYears = years
+            return movies
+        }
+
+        override suspend fun watchedShows(period: String, limit: Int, status: String?): List<TraktWatchedShowDto> {
+            if (fail) throw java.io.IOException("trakt down")
+            lastShowStatus = status
+            return shows
+        }
     }
 
     @Test
@@ -718,6 +867,12 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         var discoverTvHandler: (Int, String?, String?, String?, String?, Int?) -> SeerrDiscoverPageDto =
             { _, _, _, _, _, _ -> SeerrDiscoverPageDto() }
         var upcomingTvHandler: (Int) -> SeerrDiscoverPageDto = { SeerrDiscoverPageDto() }
+        /** `/discover/tv` with a TMDB status (Top 10 TV Airing Now): (page, firstAirDateLte, status). */
+        var airingTvHandler: (Int, String?, String?) -> SeerrDiscoverPageDto = { _, _, _ -> SeerrDiscoverPageDto() }
+        var trendingHandler: () -> SeerrDiscoverPageDto = { SeerrDiscoverPageDto() }
+        /** (type, genre, release-date upper bound, min votes) for every genre discover call. */
+        val genreDiscoverCalls = mutableListOf<List<Any?>>()
+        val movieDetailsRequested = mutableListOf<Int>()
         var moviesByGenreHandler: (Int, Int) -> SeerrDiscoverPageDto = { _, _ -> SeerrDiscoverPageDto() }
         var tvByGenreHandler: (Int, Int) -> SeerrDiscoverPageDto = { _, _ -> SeerrDiscoverPageDto() }
         var movieDetailsHandler: (Int) -> SeerrMovieDetailsDto = { id -> SeerrMovieDetailsDto(id = id, title = "Movie $id") }
@@ -731,7 +886,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun initiateQuickConnect() = SeerrQuickConnectInitiateResponse("c", "s")
         override suspend fun checkQuickConnect(secret: String) = SeerrQuickConnectCheckResponse(false)
         override suspend fun authenticateQuickConnect(body: SeerrQuickConnectAuthRequest) = SeerrUserDto(1)
-        override suspend fun getTrending(page: Int, language: String) = SeerrDiscoverPageDto()
+        override suspend fun getTrending(page: Int, language: String) = trendingHandler()
 
         override suspend fun getDiscoverMovies(
             page: Int,
@@ -741,7 +896,12 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             primaryReleaseDateGte: String?,
             primaryReleaseDateLte: String?,
             voteCountGte: Int?
-        ) = discoverMoviesHandler(page, sortBy, genre, primaryReleaseDateGte, primaryReleaseDateLte, voteCountGte)
+        ) = if (genre != null) {
+            genreDiscoverCalls += listOf("movie", genre, primaryReleaseDateLte, voteCountGte)
+            moviesByGenreHandler(genre.toInt(), page)
+        } else {
+            discoverMoviesHandler(page, sortBy, genre, primaryReleaseDateGte, primaryReleaseDateLte, voteCountGte)
+        }
 
         override suspend fun getDiscoverTv(
             page: Int,
@@ -750,16 +910,28 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             genre: String?,
             firstAirDateGte: String?,
             firstAirDateLte: String?,
-            voteCountGte: Int?
-        ) = discoverTvHandler(page, sortBy, genre, firstAirDateGte, firstAirDateLte, voteCountGte)
+            voteCountGte: Int?,
+            status: String?
+        ) = when {
+            genre != null -> {
+                genreDiscoverCalls += listOf("tv", genre, firstAirDateLte, voteCountGte)
+                tvByGenreHandler(genre.toInt(), page)
+            }
+            status != null -> airingTvHandler(page, firstAirDateLte, status)
+            else -> discoverTvHandler(page, sortBy, genre, firstAirDateGte, firstAirDateLte, voteCountGte)
+        }
 
         override suspend fun getUpcomingMovies(page: Int, language: String) = SeerrDiscoverPageDto()
         override suspend fun getUpcomingTv(page: Int, language: String) = upcomingTvHandler(page)
-        override suspend fun getMoviesByGenre(genreId: Int, page: Int, language: String) =
-            moviesByGenreHandler(genreId, page)
-        override suspend fun getTvByGenre(genreId: Int, page: Int, language: String) =
-            tvByGenreHandler(genreId, page)
-        override suspend fun getMovieDetails(movieId: Int, language: String) = movieDetailsHandler(movieId)
+        // The genre endpoints have no release-date bound; Top 10 rows must not use them.
+        override suspend fun getMoviesByGenre(genreId: Int, page: Int, language: String): SeerrDiscoverPageDto =
+            throw AssertionError("undated genre endpoint used")
+        override suspend fun getTvByGenre(genreId: Int, page: Int, language: String): SeerrDiscoverPageDto =
+            throw AssertionError("undated genre endpoint used")
+        override suspend fun getMovieDetails(movieId: Int, language: String): SeerrMovieDetailsDto {
+            movieDetailsRequested += movieId
+            return movieDetailsHandler(movieId)
+        }
         override suspend fun getTvDetails(tvId: Int, language: String) = tvDetailsHandler(tvId)
         override suspend fun getTvSeasonDetails(tvId: Int, seasonNumber: Int, language: String) =
             SeerrSeasonDetailDto(seasonNumber = seasonNumber)

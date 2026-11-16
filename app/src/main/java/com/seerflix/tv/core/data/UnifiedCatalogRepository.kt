@@ -65,7 +65,9 @@ class UnifiedCatalogRepository @Inject constructor(
     private val seerrApi: SeerrApi,
     private val prefs: SessionPreferences,
     /** Disk copy of the library index; null (unit tests) keeps the index in memory only. */
-    private val indexStore: LibraryIndexStore? = null
+    private val indexStore: LibraryIndexStore? = null,
+    /** Trakt "most watched this week" charts; null (unit tests) = Seerr popularity only. */
+    private val traktCharts: TraktCharts? = null
 ) {
     /**
      * Snapshot of one Jellyfin user's owned Movies/Series plus the lookup maps derived from it.
@@ -506,7 +508,8 @@ class UnifiedCatalogRepository @Inject constructor(
                 filterType = filterType,
                 genre = genreFilter,
                 availabilityFilter = availabilityFilter,
-                activeProfile = activeProfile
+                activeProfile = activeProfile,
+                today = today
             )
         }
 
@@ -539,7 +542,6 @@ class UnifiedCatalogRepository @Inject constructor(
                 runCatchingCancellable { seerrApi.getUpcomingMovies(language = metaLang).results }.getOrDefault(emptyList())
             } else emptyList()
         }
-        // Also page 1 of "Top 10 TV Airing Now" (same request): fetched once and shared.
         val upcomingTvDeferred = async {
             if (seerrActive && filterType != MediaType.MOVIE) {
                 runCatchingCancellable { seerrApi.getUpcomingTv(language = metaLang).results }.getOrDefault(emptyList())
@@ -628,7 +630,7 @@ class UnifiedCatalogRepository @Inject constructor(
         }
         val topTvAiringNowDeferred = async {
             if (seerrActive && (filterType == null || filterType == MediaType.SERIES)) {
-                fetchTop10TvAiringNow(today, availabilityFilter) { upcomingTvDeferred.await() }
+                fetchTop10TvAiringNow(today, availabilityFilter)
             } else emptyList()
         }
         val topNewTvPremieresDeferred = async {
@@ -638,47 +640,47 @@ class UnifiedCatalogRepository @Inject constructor(
         }
         val topComedyMoviesDeferred = async {
             if (seerrActive && (filterType == null || filterType == MediaType.MOVIE)) {
-                fetchTop10MoviesByGenre(35, availabilityFilter)
+                fetchTop10MoviesByGenre(35, availabilityFilter, today)
             } else emptyList()
         }
         val topActionMoviesDeferred = async {
             if (seerrActive && (filterType == null || filterType == MediaType.MOVIE)) {
-                fetchTop10MoviesByGenre(28, availabilityFilter)
+                fetchTop10MoviesByGenre(28, availabilityFilter, today)
             } else emptyList()
         }
         val topHorrorMoviesDeferred = async {
             if (seerrActive && filterType == MediaType.MOVIE) {
-                fetchTop10MoviesByGenre(27, availabilityFilter)
+                fetchTop10MoviesByGenre(27, availabilityFilter, today)
             } else emptyList()
         }
         val topSciFiMoviesDeferred = async {
             if (seerrActive && filterType == MediaType.MOVIE) {
-                fetchTop10MoviesByGenre(878, availabilityFilter)
+                fetchTop10MoviesByGenre(878, availabilityFilter, today)
             } else emptyList()
         }
         val topAnimatedMoviesDeferred = async {
             if (seerrActive && filterType == MediaType.MOVIE) {
-                fetchTop10MoviesByGenre(16, availabilityFilter)
+                fetchTop10MoviesByGenre(16, availabilityFilter, today)
             } else emptyList()
         }
         val topSciFiTvDeferred = async {
             if (seerrActive && (filterType == null || filterType == MediaType.SERIES)) {
-                fetchTop10TvByGenre(10765, availabilityFilter)
+                fetchTop10TvByGenre(10765, availabilityFilter, today)
             } else emptyList()
         }
         val topComedyTvDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
-                fetchTop10TvByGenre(35, availabilityFilter)
+                fetchTop10TvByGenre(35, availabilityFilter, today)
             } else emptyList()
         }
         val topDramaTvDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
-                fetchTop10TvByGenre(18, availabilityFilter)
+                fetchTop10TvByGenre(18, availabilityFilter, today)
             } else emptyList()
         }
         val topCrimeTvDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
-                fetchTop10TvByGenre(80, availabilityFilter)
+                fetchTop10TvByGenre(80, availabilityFilter, today)
             } else emptyList()
         }
         val readyToWatchDeferred = async {
@@ -826,8 +828,9 @@ class UnifiedCatalogRepository @Inject constructor(
                     else -> null
                 } ?: return@mapNotNull null
                 if (filterType != null && type != filterType) return@mapNotNull null
-                mapSeerrResult(res, type)
+                mapSeerrResult(res, type, today)
             }
+            .filter { isReleasedOnOrBefore(it.releaseDate, today) }
             .filter(availabilityFilter::matches)
         if (trending.isNotEmpty()) {
             rows += CatalogRow(
@@ -1013,24 +1016,21 @@ class UnifiedCatalogRepository @Inject constructor(
         filterType: MediaType?,
         genre: GenreFilterOption,
         availabilityFilter: AvailabilityFilter,
-        activeProfile: UserProfile? = null
+        activeProfile: UserProfile? = null,
+        today: LocalDate = LocalDate.now()
     ): List<CatalogRow> = coroutineScope {
         val seerrActive = isSeerrEnabled
         val movieGenreDeferred = async {
             if (seerrActive && filterType != MediaType.SERIES && genre.movieGenreId != null) {
                 fetchGenrePool(availabilityFilter) { page ->
-                    runCatchingCancellable { seerrApi.getMoviesByGenre(genre.movieGenreId, page = page, language = metaLang).results }
-                        .getOrDefault(emptyList())
-                        .map { mapSeerrResult(it, MediaType.MOVIE) }
+                    discoverReleasedByGenre(MediaType.MOVIE, genre.movieGenreId, page, today)
                 }
             } else emptyList()
         }
         val tvGenreDeferred = async {
             if (seerrActive && filterType != MediaType.MOVIE && genre.tvGenreId != null) {
                 fetchGenrePool(availabilityFilter) { page ->
-                    runCatchingCancellable { seerrApi.getTvByGenre(genre.tvGenreId, page = page, language = metaLang).results }
-                        .getOrDefault(emptyList())
-                        .map { mapSeerrResult(it, MediaType.SERIES) }
+                    discoverReleasedByGenre(MediaType.SERIES, genre.tvGenreId, page, today)
                 }
             } else emptyList()
         }
@@ -1116,7 +1116,6 @@ class UnifiedCatalogRepository @Inject constructor(
             if (seerrActive) runCatchingCancellable { seerrApi.getUpcomingMovies(language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
         }
-        // Also page 1 of "Top 10 TV Airing Now" (same request): fetched once and shared.
         val upcomingTvDeferred = async {
             if (seerrActive) runCatchingCancellable { seerrApi.getUpcomingTv(language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
@@ -1132,7 +1131,7 @@ class UnifiedCatalogRepository @Inject constructor(
             if (seerrActive) fetchTop10MoviesOutNow(today, availabilityFilter) else emptyList()
         }
         val tvNowDeferred = async {
-            if (seerrActive) fetchTop10TvAiringNow(today, availabilityFilter) { upcomingTvDeferred.await() } else emptyList()
+            if (seerrActive) fetchTop10TvAiringNow(today, availabilityFilter) else emptyList()
         }
         val airingThisWeekDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
@@ -1155,9 +1154,12 @@ class UnifiedCatalogRepository @Inject constructor(
                     else -> null
                 } ?: return@mapNotNull null
                 mapSeerrResult(res, type, today)
-            }.filter(availabilityFilter::matches)
+            }
+                .filter { isReleasedOnOrBefore(it.releaseDate, today) }
+                .filter(availabilityFilter::matches)
+            // Unreleased titles live in the Coming Soon rows below, not in a numbered chart.
             if (trending.isNotEmpty()) {
-                add(CatalogRow("np_trending", "Worth the Wait & Trending", RowStyle.TOP_10, trending.take(10)))
+                add(CatalogRow("np_trending", "Trending Now", RowStyle.TOP_10, trending.take(10)))
             }
             val airingThisWeek = airingThisWeekDeferred.await()
                 .filter(availabilityFilter::matches)
@@ -1186,7 +1188,27 @@ class UnifiedCatalogRepository @Inject constructor(
         applyRowCustomizationAndParentalFilters(rows, activeProfile)
     }
 
+    /**
+     * "Top 10 Movies Out Right Now": Trakt's most-watched movies this week when a Trakt client id is
+     * built in, otherwise (or to fill gaps) TMDB popularity among movies released in the last 60 days.
+     * Either way nothing with a future or unknown release date gets in.
+     */
     private suspend fun fetchTop10MoviesOutNow(
+        today: LocalDate,
+        availabilityFilter: AvailabilityFilter
+    ): List<UnifiedMediaItem> {
+        val chart = traktCharts?.movies(today)
+        if (!chart.isNullOrEmpty()) {
+            val fromChart = resolveChart(chart, MediaType.MOVIE, today, availabilityFilter)
+            if (fromChart.size >= TOP_N) return fromChart
+            return (fromChart + seerrMoviesOutNow(today, availabilityFilter))
+                .distinctBy { "${it.mediaType}_${it.tmdbId}" }
+                .take(TOP_N)
+        }
+        return seerrMoviesOutNow(today, availabilityFilter)
+    }
+
+    private suspend fun seerrMoviesOutNow(
         today: LocalDate,
         availabilityFilter: AvailabilityFilter
     ): List<UnifiedMediaItem> {
@@ -1204,7 +1226,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 ).results
             }.getOrDefault(emptyList())
                 .filter { isReleasedOnOrBefore(it.releaseDate, today) }
-                .map { mapSeerrResult(it, MediaType.MOVIE) }
+                .map { mapSeerrResult(it, MediaType.MOVIE, today) }
         }
         if (windowed.isNotEmpty()) return windowed
 
@@ -1213,51 +1235,112 @@ class UnifiedCatalogRepository @Inject constructor(
             runCatchingCancellable { seerrApi.getDiscoverMovies(page = page, language = metaLang).results }
                 .getOrDefault(emptyList())
                 .filter { isReleasedOnOrBefore(it.releaseDate, today) }
-                .map { mapSeerrResult(it, MediaType.MOVIE) }
+                .map { mapSeerrResult(it, MediaType.MOVIE, today) }
         }
     }
 
     /**
-     * @param sharedFirstPage page 1 of `getUpcomingTv` when the caller already fetches it for
-     * another row (same request), so it isn't downloaded twice.
+     * "Top 10 TV Shows Airing Now": Trakt's most-watched still-running shows this week, otherwise
+     * (or to fill gaps) TMDB popularity among shows TMDB marks "Returning Series".
      */
     private suspend fun fetchTop10TvAiringNow(
         today: LocalDate,
-        availabilityFilter: AvailabilityFilter,
-        sharedFirstPage: (suspend () -> List<SeerrMediaResultDto>)? = null
-    ): List<UnifiedMediaItem> = coroutineScope {
-        val airingDeferred = async {
-            fetchTop10Matching(availabilityFilter) { page ->
-                val raw = if (page == 1 && sharedFirstPage != null) {
-                    sharedFirstPage()
-                } else {
-                    runCatchingCancellable { seerrApi.getUpcomingTv(page = page, language = metaLang).results }
-                        .getOrDefault(emptyList())
-                }
-                raw
-                    .filter { isReleasedOnOrBefore(it.firstAirDate, today) }
-                    .map { mapSeerrResult(it, MediaType.SERIES) }
-            }
+        availabilityFilter: AvailabilityFilter
+    ): List<UnifiedMediaItem> {
+        val chart = traktCharts?.shows()
+        if (!chart.isNullOrEmpty()) {
+            val fromChart = resolveChart(chart, MediaType.SERIES, today, availabilityFilter)
+            if (fromChart.size >= TOP_N) return fromChart
+            return (fromChart + seerrTvAiringNow(today, availabilityFilter))
+                .distinctBy { "${it.mediaType}_${it.tmdbId}" }
+                .take(TOP_N)
         }
-        val airing = airingDeferred.await()
-        if (airing.size >= 10) return@coroutineScope airing.take(10)
+        return seerrTvAiringNow(today, availabilityFilter)
+    }
 
-        // Supplement with currently popular TV shows released on or before today
-        val fallbackPool = fetchTop10Matching(availabilityFilter) { page ->
-            runCatchingCancellable {
-                seerrApi.getDiscoverTv(
-                    page = page,
-                    language = metaLang,
-                    sortBy = "popularity.desc",
-                    firstAirDateLte = today.toString()
-                ).results
-            }.getOrDefault(emptyList())
-                .filter { isReleasedOnOrBefore(it.firstAirDate, today) }
-                .map { mapSeerrResult(it, MediaType.SERIES) }
+    private suspend fun seerrTvAiringNow(
+        today: LocalDate,
+        availabilityFilter: AvailabilityFilter
+    ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
+        // Seerr's "upcoming TV" list is premieres from today on, so it can't answer "airing now";
+        // TMDB's Returning Series status can (older Seerr versions ignore `status`, which still
+        // leaves popular, already-premiered shows).
+        runCatchingCancellable {
+            seerrApi.getDiscoverTv(
+                page = page,
+                language = metaLang,
+                sortBy = "popularity.desc",
+                firstAirDateLte = today.toString(),
+                status = TMDB_STATUS_RETURNING
+            ).results
+        }.getOrDefault(emptyList())
+            .filter { isReleasedOnOrBefore(it.firstAirDate, today) }
+            .map { mapSeerrResult(it, MediaType.SERIES, today) }
+    }
+
+    /**
+     * Turns a ranked chart into cards via Seerr details (artwork, availability, rating), keeping chart
+     * order. Looks up a dozen at a time in parallel and stops as soon as [TOP_N] cards pass the
+     * release-date and availability filters, so the usual case is a single parallel batch.
+     */
+    private suspend fun resolveChart(
+        chart: List<ChartEntry>,
+        type: MediaType,
+        today: LocalDate,
+        availabilityFilter: AvailabilityFilter
+    ): List<UnifiedMediaItem> {
+        val collected = mutableListOf<UnifiedMediaItem>()
+        for (batch in chart.distinctBy { it.tmdbId }.chunked(CHART_BATCH).take(CHART_MAX_BATCHES)) {
+            val resolved = coroutineScope {
+                batch.map { entry -> async { chartCard(entry.tmdbId, type, today) } }.map { it.await() }
+            }
+            resolved.asSequence()
+                .filterNotNull()
+                .filter { isReleasedOnOrBefore(it.releaseDate, today) }
+                .filter(availabilityFilter::matches)
+                .forEach { if (collected.size < TOP_N) collected += it }
+            if (collected.size >= TOP_N) break
         }
-        (airing + fallbackPool)
-            .distinctBy { "${it.mediaType}_${it.tmdbId}_${it.id}" }
-            .take(10)
+        return collected
+    }
+
+    private class ChartCardCacheEntry(val atMs: Long, val result: SeerrMediaResultDto, val rating: String?)
+
+    /** Short-lived: charts are re-resolved on every Home load, but availability can change. */
+    private val chartCardCache = java.util.concurrent.ConcurrentHashMap<String, ChartCardCacheEntry>()
+
+    private suspend fun chartCard(tmdbId: Int, type: MediaType, today: LocalDate): UnifiedMediaItem? {
+        val key = "${type.name}_${tmdbId}_$metaLang"
+        val now = System.currentTimeMillis()
+        val cached = chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }
+        val entry = cached ?: runCatchingCancellable {
+            if (type == MediaType.MOVIE) {
+                val d = seerrApi.getMovieDetails(tmdbId, language = metaLang)
+                ChartCardCacheEntry(
+                    now,
+                    SeerrMediaResultDto(
+                        id = d.id, mediaType = "movie", title = d.title, overview = d.overview,
+                        releaseDate = d.releaseDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
+                        voteAverage = d.voteAverage, adult = d.adult, mediaInfo = d.mediaInfo
+                    ),
+                    d.certification()
+                )
+            } else {
+                val d = seerrApi.getTvDetails(tmdbId, language = metaLang)
+                ChartCardCacheEntry(
+                    now,
+                    SeerrMediaResultDto(
+                        id = d.id, mediaType = "tv", name = d.name, overview = d.overview,
+                        firstAirDate = d.firstAirDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
+                        voteAverage = d.voteAverage, mediaInfo = d.mediaInfo
+                    ),
+                    d.certification()
+                )
+            }
+        }.getOrNull()?.also { chartCardCache[key] = it } ?: return null
+        val card = mapSeerrResult(entry.result, type, today)
+        // Certification lets Kids / rating-limited profiles filter chart titles they don't own.
+        return if (card.maturityRating == null && entry.rating != null) card.copy(maturityRating = entry.rating) else card
     }
 
     private suspend fun fetchTop10NewSeriesPremieres(
@@ -1277,27 +1360,62 @@ class UnifiedCatalogRepository @Inject constructor(
                 ).results
             }.getOrDefault(emptyList())
                 .filter { isReleasedOnOrBefore(it.firstAirDate, today) }
-                .map { mapSeerrResult(it, MediaType.SERIES) }
+                .map { mapSeerrResult(it, MediaType.SERIES, today) }
         }
     }
 
     private suspend fun fetchTop10MoviesByGenre(
         genreId: Int,
-        availabilityFilter: AvailabilityFilter
+        availabilityFilter: AvailabilityFilter,
+        today: LocalDate
     ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
-        runCatchingCancellable { seerrApi.getMoviesByGenre(genreId, page = page, language = metaLang).results }
-            .getOrDefault(emptyList())
-            .map { mapSeerrResult(it, MediaType.MOVIE) }
+        discoverReleasedByGenre(MediaType.MOVIE, genreId, page, today)
     }
 
     private suspend fun fetchTop10TvByGenre(
         genreId: Int,
-        availabilityFilter: AvailabilityFilter
+        availabilityFilter: AvailabilityFilter,
+        today: LocalDate
     ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
-        runCatchingCancellable { seerrApi.getTvByGenre(genreId, page = page, language = metaLang).results }
-            .getOrDefault(emptyList())
-            .map { mapSeerrResult(it, MediaType.SERIES) }
+        discoverReleasedByGenre(MediaType.SERIES, genreId, page, today)
     }
+
+    /**
+     * Most popular titles in a genre that are already out. Seerr's `/discover/{movies,tv}/genre/{id}`
+     * has no date bound (an unreleased blockbuster with a big marketing push tops it), so this uses
+     * the main discover list with the same genre, a release date of today or earlier and a minimum
+     * vote count.
+     */
+    private suspend fun discoverReleasedByGenre(
+        type: MediaType,
+        genreId: Int,
+        page: Int,
+        today: LocalDate
+    ): List<UnifiedMediaItem> = runCatchingCancellable {
+        if (type == MediaType.MOVIE) {
+            seerrApi.getDiscoverMovies(
+                page = page,
+                language = metaLang,
+                sortBy = "popularity.desc",
+                genre = genreId.toString(),
+                primaryReleaseDateLte = today.toString(),
+                voteCountGte = GENRE_MIN_VOTES_MOVIE
+            ).results
+                .filter { isReleasedOnOrBefore(it.releaseDate, today) }
+                .map { mapSeerrResult(it, MediaType.MOVIE, today) }
+        } else {
+            seerrApi.getDiscoverTv(
+                page = page,
+                language = metaLang,
+                sortBy = "popularity.desc",
+                genre = genreId.toString(),
+                firstAirDateLte = today.toString(),
+                voteCountGte = GENRE_MIN_VOTES_TV
+            ).results
+                .filter { isReleasedOnOrBefore(it.firstAirDate, today) }
+                .map { mapSeerrResult(it, MediaType.SERIES, today) }
+        }
+    }.getOrDefault(emptyList())
 
     private suspend fun fetchTop10Matching(
         availabilityFilter: AvailabilityFilter,
@@ -1342,9 +1460,10 @@ class UnifiedCatalogRepository @Inject constructor(
     }
 
     private fun isReleasedOnOrBefore(dateStr: String?, cutoff: LocalDate): Boolean {
+        // No (or an unreadable) date means TMDB doesn't know when it comes out: not released.
         val prefix = dateStr?.trim()?.take(10)
-        if (prefix.isNullOrBlank()) return true
-        val parsed = runCatchingCancellable { LocalDate.parse(prefix) }.getOrNull() ?: return true
+        if (prefix.isNullOrBlank()) return false
+        val parsed = runCatchingCancellable { LocalDate.parse(prefix) }.getOrNull() ?: return false
         return !parsed.isAfter(cutoff)
     }
 
@@ -1383,18 +1502,15 @@ class UnifiedCatalogRepository @Inject constructor(
                 .map { mapJellyfinItem(it) }
             return@coroutineScope ContentRatingHelper.filterForProfile(matches, activeProfile)
         }
+        val today = LocalDate.now()
         val movieDeferred = async {
-            genre.movieGenreId?.let { id ->
-                runCatchingCancellable { seerrApi.getMoviesByGenre(id, language = metaLang).results }.getOrDefault(emptyList())
-            }.orEmpty()
+            genre.movieGenreId?.let { id -> discoverReleasedByGenre(MediaType.MOVIE, id, 1, today) }.orEmpty()
         }
         val tvDeferred = async {
-            genre.tvGenreId?.let { id ->
-                runCatchingCancellable { seerrApi.getTvByGenre(id, language = metaLang).results }.getOrDefault(emptyList())
-            }.orEmpty()
+            genre.tvGenreId?.let { id -> discoverReleasedByGenre(MediaType.SERIES, id, 1, today) }.orEmpty()
         }
-        val movies = movieDeferred.await().map { mapSeerrResult(it, MediaType.MOVIE) }
-        val tv = tvDeferred.await().map { mapSeerrResult(it, MediaType.SERIES) }
+        val movies = movieDeferred.await()
+        val tv = tvDeferred.await()
         ContentRatingHelper.filterForProfile(
             (movies + tv).distinctBy { "${it.mediaType}_${it.tmdbId}" },
             activeProfile
@@ -2667,6 +2783,16 @@ class UnifiedCatalogRepository @Inject constructor(
         private const val LIBRARY_INDEX_TTL_MS = 180_000L
         private const val BACKGROUND_INDEX_REFRESH_DELAY_MS = 4_000L
         private const val OVERVIEW_BACKFILL_LIMIT = 60
+
+        // Top 10 charts
+        private const val TOP_N = 10
+        /** Chart titles looked up in parallel per round; 12 leaves room for a couple of misses. */
+        private const val CHART_BATCH = 12
+        private const val CHART_MAX_BATCHES = 3
+        private const val CHART_CARD_TTL_MS = 10L * 60 * 1000
+        private const val TMDB_STATUS_RETURNING = "0"
+        private const val GENRE_MIN_VOTES_MOVIE = 25
+        private const val GENRE_MIN_VOTES_TV = 10
 
         /**
          * Everything index consumers read besides UserData (EnableUserData) and Overview (back-filled

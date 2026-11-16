@@ -102,6 +102,13 @@ The easiest option is the APK attached to the latest [GitHub release](../../rele
    adb install -r app/build/outputs/apk/release/app-release.apk
    ```
 
+### Top 10 charts (optional Trakt key)
+"Top 10 Movies Out Right Now" and "Top 10 TV Shows Airing Now" rank what Trakt members watched this week. Create a free API app at [trakt.tv/oauth/applications](https://trakt.tv/oauth/applications/new) (any redirect URI, e.g. `urn:ietf:wg:oauth:2.0:oob`) and put its **Client ID** in `local.properties`:
+```properties
+trakt.clientId=YOUR_CLIENT_ID
+```
+For GitHub release builds, add it as the `TRAKT_CLIENT_ID` repository secret. Without a key those two rows fall back to TMDB popularity through Seerr. Either way, titles that aren't released yet never appear in a Top 10 row; they're in the Coming Soon rows instead.
+
 ## Tests & Screenshot Verification
 ```bash
 ./gradlew testDebugUnitTest

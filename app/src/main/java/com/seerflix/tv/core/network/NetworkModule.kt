@@ -340,4 +340,33 @@ object NetworkModule {
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
         .create(SeerrApi::class.java)
+
+    /**
+     * Public Trakt charts. Only the app's Trakt client id is sent (no user account); when the
+     * build has no id, [com.seerflix.tv.core.data.TraktCharts] never calls this.
+     */
+    @Provides
+    @Singleton
+    fun provideTraktApi(
+        @GeneralClient general: OkHttpClient,
+        json: Json
+    ): TraktApi = Retrofit.Builder()
+        .baseUrl("https://api.trakt.tv/")
+        .client(
+            general.newBuilder()
+                .addInterceptor { chain ->
+                    chain.proceed(
+                        chain.request().newBuilder()
+                            .header("Content-Type", "application/json")
+                            .header("trakt-api-version", "2")
+                            .header("trakt-api-key", BuildConfig.TRAKT_CLIENT_ID)
+                            .header("User-Agent", "Lumen/${BuildConfig.VERSION_NAME}")
+                            .build()
+                    )
+                }
+                .build()
+        )
+        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+        .build()
+        .create(TraktApi::class.java)
 }

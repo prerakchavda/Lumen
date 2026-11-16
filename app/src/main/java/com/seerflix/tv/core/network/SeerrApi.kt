@@ -57,7 +57,9 @@ interface SeerrApi {
         @Query("genre") genre: String? = null,
         @Query("firstAirDateGte") firstAirDateGte: String? = null,
         @Query("firstAirDateLte") firstAirDateLte: String? = null,
-        @Query("voteCountGte") voteCountGte: Int? = null
+        @Query("voteCountGte") voteCountGte: Int? = null,
+        /** TMDB `with_status`: 0 Returning Series, 1 Planned, 2 In Production, 3 Ended, 4 Cancelled, 5 Pilot. */
+        @Query("status") status: String? = null
     ): SeerrDiscoverPageDto
 
     @GET("api/v1/discover/movies/upcoming")

@@ -350,7 +350,7 @@ class UnifiedCatalogRepositoryFeaturesTest {
         override suspend fun getTrending(page: Int, language: String): SeerrDiscoverPageDto { seerrCallCount++; return SeerrDiscoverPageDto() }
         override suspend fun getDiscoverMovies(page: Int, language: String, sortBy: String?, genre: String?, primaryReleaseDateGte: String?, primaryReleaseDateLte: String?, voteCountGte: Int?) =
             SeerrDiscoverPageDto().also { seerrCallCount++ }
-        override suspend fun getDiscoverTv(page: Int, language: String, sortBy: String?, genre: String?, firstAirDateGte: String?, firstAirDateLte: String?, voteCountGte: Int?) =
+        override suspend fun getDiscoverTv(page: Int, language: String, sortBy: String?, genre: String?, firstAirDateGte: String?, firstAirDateLte: String?, voteCountGte: Int?, status: String?) =
             SeerrDiscoverPageDto().also { seerrCallCount++ }
         override suspend fun getUpcomingMovies(page: Int, language: String) = SeerrDiscoverPageDto().also { seerrCallCount++ }
         override suspend fun getUpcomingTv(page: Int, language: String) = SeerrDiscoverPageDto().also { seerrCallCount++ }

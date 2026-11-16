@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -20,13 +22,30 @@ android {
         versionName = "0.7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Trakt client id for the "Top 10 ... Right Now" charts. Kept out of git: set
+        // `trakt.clientId=...` in local.properties or the TRAKT_CLIENT_ID env var (CI secret).
+        // Blank = the Top 10 rows fall back to Seerr/TMDB popularity.
+        val localProps = Properties()
+        rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { localProps.load(it) }
+        val traktClientId = (System.getenv("TRAKT_CLIENT_ID")?.takeIf { it.isNotBlank() }
+            ?: localProps.getProperty("trakt.clientId") ?: "")
+            .trim().replace("\"", "")
+        buildConfigField("String", "TRAKT_CLIENT_ID", "\"$traktClientId\"")
     }
 
     signingConfigs {
-        val keystorePath = System.getenv("SEERFLIX_KEYSTORE_PATH")
-        val keystorePassword = System.getenv("SEERFLIX_KEYSTORE_PASSWORD")
-        val keyAlias = System.getenv("SEERFLIX_KEY_ALIAS")
-        val keyPassword = System.getenv("SEERFLIX_KEY_PASSWORD")
+        // CI passes the release key through env vars (GitHub secrets). Local builds read the
+        // gitignored keystore.properties that scripts/setup-release-signing.ps1 writes, so APKs
+        // built on this PC and on GitHub share one signature and update over each other.
+        val keystoreProps = Properties()
+        rootProject.file("keystore.properties").takeIf { it.isFile }?.inputStream()?.use { keystoreProps.load(it) }
+        fun signingValue(env: String, prop: String): String? =
+            System.getenv(env)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(prop)
+        val keystorePath = signingValue("SEERFLIX_KEYSTORE_PATH", "storeFile")
+        val keystorePassword = signingValue("SEERFLIX_KEYSTORE_PASSWORD", "storePassword")
+        val keyAlias = signingValue("SEERFLIX_KEY_ALIAS", "keyAlias")
+        val keyPassword = signingValue("SEERFLIX_KEY_PASSWORD", "keyPassword")
         if (!keystorePath.isNullOrBlank() &&
             !keystorePassword.isNullOrBlank() &&
             !keyAlias.isNullOrBlank() &&
