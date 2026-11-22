@@ -384,6 +384,26 @@ interface JellyfinApi {
     @DELETE("LiveTv/SeriesTimers/{timerId}")
     suspend fun cancelLiveTvSeriesTimer(@Path("timerId") timerId: String)
 
+    // ---- Multiple servers ----
+
+    /**
+     * Episodes of one season by season *number*. A series that exists on several servers has a
+     * different season id on each, but the same season numbers.
+     */
+    @GET("Shows/{seriesId}/Episodes")
+    suspend fun getEpisodesBySeasonNumber(
+        @Path("seriesId") seriesId: String,
+        @Query("UserId") userId: String,
+        @Query("Season") season: Int? = null,
+        @Query("Fields") fields: String? = "Overview,RunTimeTicks,UserData",
+        @Query("EnableImages") enableImages: Boolean? = null,
+        @Query("IsMissing") isMissing: Boolean? = false
+    ): JellyfinItemsResponse
+
+    /** Ends this device's session on the server, revoking its access token. */
+    @POST("Sessions/Logout")
+    suspend fun logout()
+
     // ---- Library browsing ----
 
     /** One page of a library for the A-Z grid, with server-side sort and filters. */

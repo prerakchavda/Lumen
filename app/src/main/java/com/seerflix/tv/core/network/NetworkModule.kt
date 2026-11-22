@@ -2,6 +2,7 @@ package com.seerflix.tv.core.network
 
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import com.seerflix.tv.BuildConfig
+import com.seerflix.tv.core.model.ServerScopedId
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -46,24 +47,60 @@ annotation class GeneralClient
 @Retention(AnnotationRetention.BINARY)
 annotation class MediaClient
 
-private class FailoverBaseUrlInterceptor(
-    private val candidatesProvider: () -> List<String>,
-    private val onResolvedUrl: (String) -> Unit
+/** Which Jellyfin server a request is for; set by the routing interceptor for the ones after it. */
+internal data class JellyfinServerTag(val serverId: String)
+
+/** Placeholder base URL of the Retrofit instance for [serverId]; the host names the server. */
+internal fun jellyfinPlaceholderBaseUrl(serverId: String): String =
+    if (serverId == ServerScopedId.HOME) "http://$JELLYFIN_PLACEHOLDER_HOST/"
+    else "http://$serverId.$JELLYFIN_PLACEHOLDER_HOST/"
+
+/** Inverse of [jellyfinPlaceholderBaseUrl]: the server a placeholder host stands for. */
+internal fun serverIdForPlaceholderHost(host: String): String {
+    val suffix = ".$JELLYFIN_PLACEHOLDER_HOST"
+    return if (host.endsWith(suffix, ignoreCase = true)) host.substring(0, host.length - suffix.length)
+    else ServerScopedId.HOME
+}
+
+private const val JELLYFIN_PLACEHOLDER_HOST = "jellyfin.local"
+
+/** Extra servers get tighter timeouts than the home server so a slow one can't hold up a screen. */
+private const val EXTRA_SERVER_CONNECT_TIMEOUT_S = 5
+private const val EXTRA_SERVER_READ_TIMEOUT_S = 20
+
+/**
+ * Rewrites the placeholder base URL to the real one, trying each candidate in turn (LAN, then
+ * remote). [candidatesProvider] / [onResolvedUrl] receive the id of the server the request is for:
+ * always [ServerScopedId.HOME] unless [resolveServerFromHost] is set (the Jellyfin client), in which
+ * case it is read from the placeholder host of the per-server Retrofit instance.
+ */
+internal class FailoverBaseUrlInterceptor(
+    private val resolveServerFromHost: Boolean = false,
+    private val candidatesProvider: (serverId: String) -> List<String>,
+    private val onResolvedUrl: (serverId: String, url: String) -> Unit
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
         val original = chain.request()
-        val candidates = candidatesProvider()
+        val serverId = if (resolveServerFromHost) serverIdForPlaceholderHost(original.url.host) else ServerScopedId.HOME
+        val candidates = candidatesProvider(serverId)
         if (candidates.isEmpty()) {
             throw IOException("Server URL is not configured")
         }
+        val isExtraServer = serverId != ServerScopedId.HOME
+        val effectiveChain = if (isExtraServer) {
+            chain.withConnectTimeout(EXTRA_SERVER_CONNECT_TIMEOUT_S, TimeUnit.SECONDS)
+                .withReadTimeout(EXTRA_SERVER_READ_TIMEOUT_S, TimeUnit.SECONDS)
+        } else chain
 
         var lastError: IOException? = null
         for ((idx, rawBase) in candidates.withIndex()) {
             val targetBase = rawBase.toHttpUrlOrNull() ?: continue
-            val updated = rewriteRequestUrl(original, targetBase)
+            val updated = rewriteRequestUrl(original, targetBase).newBuilder()
+                .tag(JellyfinServerTag::class.java, JellyfinServerTag(serverId))
+                .build()
             try {
-                val response = chain.proceed(updated)
-                onResolvedUrl(rawBase)
+                val response = effectiveChain.proceed(updated)
+                onResolvedUrl(serverId, rawBase)
                 return response
             } catch (io: IOException) {
                 lastError = io
@@ -95,7 +132,7 @@ private class FailoverBaseUrlInterceptor(
     }
 }
 
-private class JellyfinAuthInterceptor(
+internal class JellyfinAuthInterceptor(
     private val prefs: SessionPreferences
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
@@ -103,8 +140,14 @@ private class JellyfinAuthInterceptor(
         // token must not leak into (or interfere with) a fresh authentication for another user.
         val path = chain.request().url.encodedPath
         val isSignInCall = path.endsWith("/AuthenticateByName", ignoreCase = true) ||
-            path.endsWith("/AuthenticateWithQuickConnect", ignoreCase = true)
-        val token = if (isSignInCall) null else prefs.cachedToken
+            path.endsWith("/AuthenticateWithQuickConnect", ignoreCase = true) ||
+            // Starting / polling Quick Connect is part of signing in too: a token that the server
+            // has revoked must not get in the way of signing in again.
+            path.endsWith("/QuickConnect/Initiate", ignoreCase = true) ||
+            path.endsWith("/QuickConnect/Connect", ignoreCase = true)
+        // Each server only ever sees its own token (the routing interceptor tagged the request).
+        val serverId = chain.request().tag(JellyfinServerTag::class.java)?.serverId ?: ServerScopedId.HOME
+        val token = if (isSignInCall) null else prefs.tokenFor(serverId)
         val authHeader = buildJellyfinAuthHeader(prefs.cachedDeviceId, token)
         val request = chain.request().newBuilder()
             .header("Authorization", authHeader)
@@ -199,13 +242,25 @@ private fun OkHttpClient.Builder.applyDynamicSelfSignedTrust(prefs: SessionPrefe
     fun platformTm(): javax.net.ssl.X509TrustManager = systemDefaultTm
         ?: throw java.security.cert.CertificateException("System trust store unavailable")
 
+    // "Trust self-signed certificates" is per server, but a trust manager is not told which host
+    // it is validating. So while at least one server has the toggle on, the trust manager lets the
+    // handshake through and the hostname verifier (which does know the host) decides: a host with
+    // the toggle is accepted as-is, every other host gets the full platform chain check plus the
+    // normal hostname check there. With no toggle on anywhere, nothing changes: the platform trust
+    // manager validates every handshake as usual.
+    val deferredToVerifier = java.util.concurrent.atomic.AtomicBoolean(false)
+
     val delegatingTm = object : javax.net.ssl.X509TrustManager {
         override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
-            if (!prefs.cachedTrustSelfSigned) platformTm().checkClientTrusted(chain, authType)
+            platformTm().checkClientTrusted(chain, authType)
         }
 
         override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
-            if (!prefs.cachedTrustSelfSigned) platformTm().checkServerTrusted(chain, authType)
+            if (prefs.anySelfSignedTrusted) {
+                deferredToVerifier.set(true)
+            } else {
+                platformTm().checkServerTrusted(chain, authType)
+            }
         }
 
         override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> =
@@ -218,10 +273,34 @@ private fun OkHttpClient.Builder.applyDynamicSelfSignedTrust(prefs: SessionPrefe
     sslSocketFactory(sslContext.socketFactory, delegatingTm)
     val defaultVerifier = javax.net.ssl.HttpsURLConnection.getDefaultHostnameVerifier()
     hostnameVerifier { hostname, session ->
-        if (prefs.cachedTrustSelfSigned) true else defaultVerifier.verify(hostname, session)
+        when {
+            prefs.trustsSelfSignedHost(hostname) -> true
+            // Once any handshake has been waved through, the chain is (re)checked here for every
+            // host without the toggle, so a concurrent toggle change can never skip validation.
+            deferredToVerifier.get() -> {
+                val chainOk = runCatching {
+                    val chain = session.peerCertificates
+                        .filterIsInstance<java.security.cert.X509Certificate>()
+                        .toTypedArray()
+                    platformTm().checkServerTrusted(chain, chain.firstOrNull()?.publicKey?.algorithm ?: "RSA")
+                }.isSuccess
+                chainOk && defaultVerifier.verify(hostname, session)
+            }
+            else -> defaultVerifier.verify(hostname, session)
+        }
     }
     return this
 }
+
+/** One Retrofit [JellyfinApi] bound to [serverId] through its placeholder base URL. */
+internal fun buildJellyfinApi(okHttpClient: OkHttpClient, json: Json, serverId: String): JellyfinApi =
+    Retrofit.Builder()
+        .baseUrl(jellyfinPlaceholderBaseUrl(serverId))
+        .client(okHttpClient)
+        .addConverterFactory(UnitConverterFactory)
+        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+        .build()
+        .create(JellyfinApi::class.java)
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -260,8 +339,9 @@ object NetworkModule {
             .applyDynamicSelfSignedTrust(prefs)
             .addInterceptor(
                 FailoverBaseUrlInterceptor(
-                    candidatesProvider = { prefs.jellyfinUrlCandidates },
-                    onResolvedUrl = { prefs.cachedResolvedJellyfinUrl = it }
+                    resolveServerFromHost = true,
+                    candidatesProvider = { serverId -> prefs.urlCandidatesFor(serverId) },
+                    onResolvedUrl = { serverId, url -> prefs.onResolvedServerUrl(serverId, url) }
                 )
             )
             .addInterceptor(JellyfinAuthInterceptor(prefs))
@@ -282,7 +362,7 @@ object NetworkModule {
             .addInterceptor(
                 FailoverBaseUrlInterceptor(
                     candidatesProvider = { prefs.seerrUrlCandidates },
-                    onResolvedUrl = { prefs.cachedResolvedSeerrUrl = it }
+                    onResolvedUrl = { _, url -> prefs.cachedResolvedSeerrUrl = url }
                 )
             )
             .addInterceptor(SeerrAuthInterceptor(prefs))
@@ -320,13 +400,7 @@ object NetworkModule {
     fun provideJellyfinApi(
         @JellyfinClient okHttpClient: OkHttpClient,
         json: Json
-    ): JellyfinApi = Retrofit.Builder()
-        .baseUrl("http://jellyfin.local/")
-        .client(okHttpClient)
-        .addConverterFactory(UnitConverterFactory)
-        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-        .build()
-        .create(JellyfinApi::class.java)
+    ): JellyfinApi = buildJellyfinApi(okHttpClient, json, ServerScopedId.HOME)
 
     @Provides
     @Singleton

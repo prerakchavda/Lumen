@@ -25,6 +25,8 @@ data class ProfilePickerUiState(
     val pinChallengeProfile: UserProfile? = null,
     /** True when the PIN challenge gates "Manage Profiles" editing rather than signing in. */
     val pinChallengeForEdit: Boolean = false,
+    /** True when the challenge asks for a parent's PIN (editing a Kids / rating-limited profile). */
+    val pinChallengeGuardian: Boolean = false,
     val pinEntryInput: String = "",
     val pinError: String? = null,
     val showAuthDialog: Boolean = false,
@@ -61,8 +63,51 @@ class ProfilePickerViewModel @Inject constructor(
         _uiState.update { it.copy(isManageMode = !it.isManageMode) }
     }
 
+    /** Unrestricted profiles protected by a PIN: their PIN unlocks editing restricted profiles. */
+    private fun guardians(): List<UserProfile> =
+        _uiState.value.profiles.filter { it.hasPin && !it.isRestricted }
+
+    /** Run after a parent PIN unlocks the "Servers" button. */
+    private var pendingServersAction: (() -> Unit)? = null
+
+    /**
+     * "Servers" shows the Seerr API key and can repoint the whole app, so it needs a parent's PIN
+     * whenever an unrestricted profile has one.
+     */
+    fun openServers(onOpen: () -> Unit) {
+        val guardian = guardians().firstOrNull()
+        if (guardian == null) {
+            onOpen()
+            return
+        }
+        pendingServersAction = onOpen
+        _uiState.update {
+            it.copy(
+                pinChallengeProfile = guardian,
+                pinChallengeForEdit = false,
+                pinChallengeGuardian = true,
+                pinEntryInput = "",
+                pinError = null
+            )
+        }
+    }
+
     fun selectProfile(profile: UserProfile, onSignedIn: () -> Unit) {
         val manage = _uiState.value.isManageMode
+        // A Kids / rating-limited profile without its own PIN could otherwise open its own settings
+        // and turn Kids Mode off. Editing it needs a parent's PIN whenever a parent profile has one.
+        if (manage && profile.isRestricted && guardians().isNotEmpty()) {
+            _uiState.update {
+                it.copy(
+                    pinChallengeProfile = profile,
+                    pinChallengeForEdit = true,
+                    pinChallengeGuardian = true,
+                    pinEntryInput = "",
+                    pinError = null
+                )
+            }
+            return
+        }
         // A PIN-locked profile must also be unlocked before it can be edited, otherwise anyone could
         // open Manage Profiles, hit "Remove PIN" (or turn off Kids Mode) and walk straight in.
         if (profile.hasPin) {
@@ -115,13 +160,28 @@ class ProfilePickerViewModel @Inject constructor(
             _uiState.update { it.copy(pinError = "Enter 4 digits") }
             return
         }
-        if (authRepository.verifyProfilePin(target, pin)) {
+        val verified = if (_uiState.value.pinChallengeGuardian) {
+            guardians().any { authRepository.verifyProfilePin(it, pin) }
+        } else {
+            authRepository.verifyProfilePin(target, pin)
+        }
+        if (verified) {
             pinFailedAttempts = 0
+            val serversAction = pendingServersAction
+            if (serversAction != null) {
+                pendingServersAction = null
+                _uiState.update {
+                    it.copy(pinChallengeProfile = null, pinChallengeGuardian = false, pinEntryInput = "", pinError = null)
+                }
+                serversAction()
+                return
+            }
             val forEdit = _uiState.value.pinChallengeForEdit
             _uiState.update {
                 it.copy(
                     pinChallengeProfile = null,
                     pinChallengeForEdit = false,
+                    pinChallengeGuardian = false,
                     pinEntryInput = "",
                     pinError = null,
                     editingProfile = if (forEdit) target else it.editingProfile
@@ -158,8 +218,15 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     fun dismissPinChallenge() {
+        pendingServersAction = null
         _uiState.update {
-            it.copy(pinChallengeProfile = null, pinChallengeForEdit = false, pinEntryInput = "", pinError = null)
+            it.copy(
+                pinChallengeProfile = null,
+                pinChallengeForEdit = false,
+                pinChallengeGuardian = false,
+                pinEntryInput = "",
+                pinError = null
+            )
         }
     }
 

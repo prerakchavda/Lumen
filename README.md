@@ -6,7 +6,7 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 
 ### Per-User UI Presets
 
-#### Netflix Preset (Default) — Collapsible Rail & Top 10 Numerals
+#### Netflix Preset (Default) — Collapsible Rail, Profile Menu & Compact Banner
 ![Home Screen (Netflix Preset)](screenshots/home.png)
 
 #### Apple TV+ Preset — Floating Glass Pill Bar & 16:9 Widescreen Cards
@@ -50,6 +50,15 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 > *Note: UI screenshots above are rendered from the real Jetpack Compose TV layouts via CashApp Paparazzi (`./gradlew testDebugUnitTest`) using synthetic poster/backdrop preview artwork.*
 
 ## Key Features
+- **Easier to Navigate (new in 0.9)**:
+  - **Shorter nav**: just the places you go — Search, Home, New & Popular, TV Shows, Movies, Live TV, My List and Requests. Watch Together, Customize Home, Appearance, Refresh, App Update and Settings moved into the **profile menu** at the bottom of the rail (or the avatar in the Apple TV+ / Disney+ top bars). Collections lives inside Movies.
+  - **Home shows more**: a shorter banner, so the whole first row is on screen at launch with focus already on its first card. Once you scroll into the rows, a compact header keeps the focused title's name, rating, details and synopsis on screen.
+  - **Predictable remote**: Left (or Up) into the nav lands on the tab you are on; coming back lands on the row and card you left; each row remembers its position; each tab remembers how far down you were. Back goes to the top of the page, then the nav, then exits.
+  - **Cards you can scan**: titles under every poster, no more PLAY badge on every card, Continue Watching shows "S2 E4 · 32m left".
+  - **Rebuilt Top 10 numbers**: thicker condensed numerals that sit on the poster's baseline, tuck under it by the same amount for every rank, and light up when focused.
+  - **Real ratings**: "84% Match" (which was just the TMDB score × 10) is replaced by the actual ★ rating, and every number uses fixed-width digits and one separator style.
+  - **Library grid**: one **Sort & Filter** button opens a side panel (sort, watched filter, genre); a thin **A–Z strip** down the right side replaces the row of 28 letter chips. You land in the grid right away.
+  - **Details**: three main buttons (Play/Resume, Request, My List) plus a **More** menu (trailer, external player, mark watched, remind me, report issue, remove progress, cancel request); download status appears once; Episodes, Versions, Extras, Trailers, Cast, Collection and More Like This are tabs instead of one long page.
 - **Per-User UI Presets & Customizable Home**: Each profile independently chooses and persists its own streaming UI layout (`Netflix`, `Apple TV+`, or `Disney+ / Max`), default startup tab, pinned Jellyfin library rows, and hidden/reordered Home rows.
 - **Zero-Friction Onboarding & Smart Networking**:
   - **Jellyfin-Only Mode**: Skip Seerr/Jellyseerr entirely and browse/stream your Jellyfin libraries directly.
@@ -75,7 +84,7 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
   - **Kids Mode & Parental Filtering**: Restricts Home, Search, People, Genres, Live TV, and Requests by MPAA/TV maturity rating (`G`, `PG`, `TV-Y`, `TV-G`, `TV-PG`) with optional **4-digit Profile PIN lock** on adult profiles.
   - **Jellyfin SyncPlay**: Create, join, and sync **Watch Together** rooms directly from the top bar or player.
   - **Mark Watched / Unwatched** and Quick Connect 6-digit TV login.
-- **Library Browsing (new in 0.7)**: **All Movies / All TV Shows** grids paged from the server with sort (A-Z, date added, release date, rating, random), Unwatched / Watched / Favorites filters, genre filter and A-Z jump.
+- **Library Browsing (new in 0.7)**: **All Movies / All TV Shows** grids paged from the server with sort (A-Z, date added, release date, rating, random), Unwatched / Watched / Favorites filters and genre filter in a Sort & Filter panel, and an A-Z strip down the right side (0.9).
 - **Settings, Subtitles & Diagnostics (new in 0.7)**:
   - A dedicated **Settings** screen for playback (capability matching, passthrough, downmix, frame-rate matching, autoplay, auto-skip), remote control and server connection.
   - **Subtitle Styling**: text size, color (white / yellow / cyan / green / grey), background opacity, edge style (outline, drop shadow, raised, none) and position, with a live preview.

@@ -1,6 +1,16 @@
 package com.seerflix.tv.core.player
 
+import com.seerflix.tv.core.data.CrossServerCopies
+import com.seerflix.tv.core.data.CrossServerMerge
+import com.seerflix.tv.core.data.ItemCopy
+import com.seerflix.tv.core.data.crossServerVersions
 import com.seerflix.tv.core.model.AssSubtitleMode
+import com.seerflix.tv.core.model.JellyfinServer
+import com.seerflix.tv.core.model.ServerScopedId
+import com.seerflix.tv.core.network.JellyfinServers
+import com.seerflix.tv.core.network.ServerSession
+import com.seerflix.tv.core.network.scopedTo
+import com.seerflix.tv.core.network.unscoped
 import com.seerflix.tv.core.model.ChapterMarker
 import com.seerflix.tv.core.model.ExternalSubtitleFile
 import com.seerflix.tv.core.model.MediaSourceOption
@@ -27,6 +37,7 @@ import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -117,8 +128,24 @@ data class NextEpisodeLookup(val next: NextEpisodeInfo?)
 class JellyfinPlaybackManager @Inject constructor(
     private val jellyfinApi: JellyfinApi,
     private val prefs: SessionPreferences,
-    private val capabilityProvider: DeviceCapabilityProvider = DeviceCapabilityProvider.Permissive
+    private val capabilityProvider: DeviceCapabilityProvider = DeviceCapabilityProvider.Permissive,
+    /** The extra servers; null (unit tests) = the home server only. [jellyfinApi] is the home server. */
+    private val servers: JellyfinServers? = null,
+    private val copies: CrossServerCopies? = null
 ) {
+    /** What is about to be played: the server it is on and the item with that server's raw ids. */
+    private class Target(val session: ServerSession, val item: JellyfinItemDto)
+
+    private fun homeSession(userId: String): ServerSession = ServerSession(HOME_SERVER, jellyfinApi, userId)
+
+    /** The session of the server that owns [scopedId]; null when the profile has no account there. */
+    private fun sessionFor(scopedId: String, userId: String): ServerSession? =
+        if (ServerScopedId.isHome(scopedId)) homeSession(userId) else servers?.sessionForItem(scopedId, userId)
+
+    /** Requested quality limited by the server's own streaming cap (none for the home server). */
+    private fun cappedBitrate(requested: Long?, session: ServerSession): Long? =
+        listOfNotNull(requested, session.server.maxStreamingBitrateBps).minOrNull()
+
     /**
      * Process-lifetime scope for fire-and-forget reports (e.g. "playback stopped") that must
      * survive the PlayerScreen being disposed and its ViewModel being cleared.
@@ -190,29 +217,40 @@ class JellyfinPlaybackManager @Inject constructor(
         burnInSubtitleIndex: Int?
     ): Result<PreparedPlayback> = runCatchingCancellable {
         coroutineScope {
-            val deviceProfile = buildDeviceProfile(
-                maxBitrateBps = maxBitrateBps,
+            // Ids arrive server scoped; from here on each call goes to the owning server with the
+            // raw id, and only the finished session carries scoped ids again.
+            val requestedSession = sessionFor(itemId, userId)
+                ?: error("Sign in again to the server this title is on to play it")
+            val requestedSourceId = mediaSourceId?.let { ServerScopedId.rawOf(it) }
+            val capabilities = if (prefs.cachedMatchDeviceCapabilities) {
+                capabilityProvider.current()
+            } else {
+                DeviceMediaCapabilities.PERMISSIVE
+            }
+            fun deviceProfileFor(session: ServerSession) = buildDeviceProfile(
+                maxBitrateBps = cappedBitrate(maxBitrateBps, session),
                 audioPassthroughEnabled = audioPassthroughEnabled,
                 stereoDownmixEnabled = stereoDownmixEnabled,
                 assSubtitleMode = assSubtitleMode,
                 burnInSubtitleIndex = burnInSubtitleIndex,
-                capabilities = if (prefs.cachedMatchDeviceCapabilities) {
-                    capabilityProvider.current()
-                } else {
-                    DeviceMediaCapabilities.PERMISSIVE
-                }
+                capabilities = capabilities
             )
-            fun playbackInfoAsync(id: String, enableDirectPlay: Boolean? = null): Deferred<JellyfinPlaybackInfoResponse?> = async {
+            fun playbackInfoAsync(
+                session: ServerSession,
+                id: String,
+                sourceId: String?,
+                enableDirectPlay: Boolean? = null
+            ): Deferred<JellyfinPlaybackInfoResponse?> = async {
                 runCatchingCancellable {
-                    jellyfinApi.getPlaybackInfo(
+                    session.api.getPlaybackInfo(
                         itemId = id,
-                        userId = userId,
+                        userId = session.userId,
                         body = JellyfinPlaybackInfoRequest(
-                            userId = userId,
-                            mediaSourceId = mediaSourceId,
+                            userId = session.userId,
+                            mediaSourceId = sourceId,
                             subtitleStreamIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null,
                             maxAudioChannels = if (stereoDownmixEnabled) 2 else null,
-                            deviceProfile = deviceProfile,
+                            deviceProfile = deviceProfileFor(session),
                             enableDirectPlay = enableDirectPlay
                         )
                     )
@@ -222,53 +260,82 @@ class JellyfinPlaybackManager @Inject constructor(
             // Almost every request is a direct movie/episode id, so PlaybackInfo (the slowest call)
             // is requested speculatively alongside the item details instead of after them. For a
             // Series/Season the speculative request is dropped once the episode is resolved.
-            val speculativePlayback = playbackInfoAsync(itemId)
-            val requested = jellyfinApi.getItemDetails(userId, itemId, fields = PLAYBACK_ITEM_FIELDS)
-            val item: JellyfinItemDto
-            var playback: JellyfinPlaybackInfoResponse?
+            val requestedRawId = requestedSession.raw(itemId)
+            val speculativePlayback = playbackInfoAsync(requestedSession, requestedRawId, requestedSourceId)
+            val requested = requestedSession.api.getItemDetails(
+                requestedSession.userId, requestedRawId, fields = PLAYBACK_ITEM_FIELDS
+            )
+            var target: Target
+            var sourceId = requestedSourceId
+            var playbackDeferred: Deferred<JellyfinPlaybackInfoResponse?>
             if (requested.type.equals("Series", ignoreCase = true) || requested.type.equals("Season", ignoreCase = true)) {
                 speculativePlayback.cancel()
-                val candidateEpisode = resolveEpisodeToPlay(userId, requested)
+                val candidate = resolveEpisodeToPlay(userId, requestedSession, requested)
                 // The episode id is known now: fetch its details and PlaybackInfo in parallel.
                 val detailsDeferred = async {
                     runCatchingCancellable {
-                        jellyfinApi.getItemDetails(userId, candidateEpisode.id, fields = PLAYBACK_ITEM_FIELDS)
-                    }.getOrDefault(candidateEpisode)
+                        candidate.session.api.getItemDetails(
+                            candidate.session.userId, candidate.item.id, fields = PLAYBACK_ITEM_FIELDS
+                        )
+                    }.getOrDefault(candidate.item)
                 }
-                val playbackDeferred = playbackInfoAsync(candidateEpisode.id)
-                item = detailsDeferred.await()
-                playback = playbackDeferred.await()
+                playbackDeferred = playbackInfoAsync(candidate.session, candidate.item.id, requestedSourceId)
+                target = Target(candidate.session, detailsDeferred.await())
             } else {
-                item = requested
-                playback = speculativePlayback.await()
+                target = Target(requestedSession, requested)
+                playbackDeferred = speculativePlayback
             }
+
+            // The same title on the other servers (empty unless it really is on several): the home
+            // server's copy is played first, the rest become extra versions, and the most recent
+            // progress of any copy is where playback resumes.
+            var others = copies?.others(
+                target.item.scopedTo(target.session.id), userId, itemFields = PLAYBACK_ITEM_FIELDS
+            ).orEmpty()
+            // An explicitly chosen version (Versions picker / in-player switch) pins this copy.
+            val versionChosen = sourceId != null && target.item.mediaSources.any { it.id == sourceId }
+            val homeCopy = others.firstOrNull { it.session.isHome }
+            if (!versionChosen && !target.session.isHome && homeCopy != null) {
+                playbackDeferred.cancel()
+                val asked = target
+                target = Target(homeCopy.session, homeCopy.item.unscoped())
+                sourceId = null
+                playbackDeferred = playbackInfoAsync(target.session, target.item.id, null)
+                others = others.filterNot { it === homeCopy } +
+                    ItemCopy(asked.session, asked.item.scopedTo(asked.session.id))
+            }
+            val session = target.session
+            val item = target.item
+            var playback = playbackDeferred.await()
 
             // Server quirk: when a file's audio track isn't flagged default, Jellyfin approves direct
             // play without checking the audio codec, so e.g. DTS reaches a box that can't play it
             // (silence). Ask again with direct play off to get a stream with converted audio.
-            if (playback != null && directPlaysUnsupportedAudio(playback, mediaSourceId, deviceProfile)) {
-                playback = playbackInfoAsync(item.id, enableDirectPlay = false).await() ?: playback
+            if (playback != null && directPlaysUnsupportedAudio(playback, sourceId, deviceProfileFor(session))) {
+                playback = playbackInfoAsync(session, item.id, sourceId, enableDirectPlay = false).await() ?: playback
             }
 
             // Start the non-critical lookups now so they overlap with session building / player
             // preparation. They never fail (a failure completes them with null).
             val segmentsDeferred = extrasScope?.async {
-                runCatchingCancellable { PlaybackSegments.from(jellyfinApi.getMediaSegments(item.id).items) }.getOrNull()
+                runCatchingCancellable { PlaybackSegments.from(session.api.getMediaSegments(item.id).items) }.getOrNull()
             }
             val nextEpisodeDeferred = extrasScope?.async {
-                runCatchingCancellable { NextEpisodeLookup(findNextEpisode(userId, item)) }.getOrNull()
+                runCatchingCancellable { NextEpisodeLookup(findNextEpisode(userId, session, item)) }.getOrNull()
             }
             try {
-                val (session, frameRate) = buildSession(
+                val (prepared, frameRate) = buildSession(
+                    server = session,
+                    others = others,
                     item = item,
                     playback = playback,
-                    mediaSourceId = mediaSourceId,
+                    mediaSourceId = sourceId,
                     maxBitrateBps = maxBitrateBps,
                     stereoDownmixEnabled = stereoDownmixEnabled,
                     assSubtitleMode = assSubtitleMode,
                     burnInSubtitleIndex = burnInSubtitleIndex
                 )
-                PreparedPlayback(session, frameRate, segmentsDeferred, nextEpisodeDeferred)
+                PreparedPlayback(prepared, frameRate, segmentsDeferred, nextEpisodeDeferred)
             } catch (t: Throwable) {
                 segmentsDeferred?.cancel()
                 nextEpisodeDeferred?.cancel()
@@ -278,10 +345,28 @@ class JellyfinPlaybackManager @Inject constructor(
     }
 
     /** Picks the episode to play for a Series/Season: in-progress first, then first unwatched. */
-    private suspend fun resolveEpisodeToPlay(userId: String, seriesOrSeason: JellyfinItemDto): JellyfinItemDto {
+    private suspend fun resolveEpisodeToPlay(
+        homeUserId: String,
+        session: ServerSession,
+        seriesOrSeason: JellyfinItemDto
+    ): Target {
         val isSeason = seriesOrSeason.type.equals("Season", ignoreCase = true)
         val targetSeriesId = if (isSeason) seriesOrSeason.seriesId ?: seriesOrSeason.id else seriesOrSeason.id
         val targetSeasonId = if (isSeason) seriesOrSeason.id else null
+        // A series that is on several servers: pick from the merged episode list instead.
+        mergedSeriesEpisodes(homeUserId, session.scope(targetSeriesId))?.let { merged ->
+            val pool = merged
+                .filter { (it.parentIndexNumber ?: 1) > 0 }
+                .filter { !isSeason || seriesOrSeason.indexNumber == null || it.parentIndexNumber == seriesOrSeason.indexNumber }
+            val pick = pool.filter { (it.userData?.playbackPositionTicks ?: 0L) > 0L }
+                .maxByOrNull { CrossServerMerge.parseDateMs(it.userData?.lastPlayedDate) ?: Long.MIN_VALUE }
+                ?: pool.firstOrNull { it.userData?.played != true }
+                ?: pool.firstOrNull()
+            val owner = pick?.let { sessionFor(it.id, homeUserId) }
+            if (pick != null && owner != null) return Target(owner, pick.unscoped())
+        }
+        val userId = session.userId
+        val jellyfinApi = session.api
         val resumeCandidate = if (targetSeasonId == null) {
             runCatchingCancellable {
                 jellyfinApi.getResumeItemsLite(userId, parentId = targetSeriesId, limit = 10)
@@ -290,7 +375,7 @@ class JellyfinPlaybackManager @Inject constructor(
         } else {
             null
         }
-        return resumeCandidate ?: runCatchingCancellable {
+        val episode = resumeCandidate ?: runCatchingCancellable {
             val sortedEpisodes = jellyfinApi.getEpisodesLite(
                 seriesId = targetSeriesId,
                 userId = userId,
@@ -302,6 +387,33 @@ class JellyfinPlaybackManager @Inject constructor(
                 ?: sortedEpisodes.firstOrNull { it.userData?.played != true }
                 ?: sortedEpisodes.firstOrNull()
         }.getOrNull() ?: error("No playable episodes found for ${seriesOrSeason.name}")
+        return Target(session, episode)
+    }
+
+    /**
+     * Every episode of a series that exists on several servers, merged by season / episode number
+     * (ids server scoped, watch state from the most recently played copy, the home server's copy
+     * of each episode first). Null when the series is on one server only.
+     */
+    private suspend fun mergedSeriesEpisodes(homeUserId: String, scopedSeriesId: String): List<JellyfinItemDto>? {
+        val srv = servers ?: return null
+        val seriesCopies = srv.links.copiesOf(scopedSeriesId)
+        if (seriesCopies.size < 2) return null
+        val perServer = coroutineScope {
+            seriesCopies.map { copyId ->
+                async {
+                    val session = sessionFor(copyId, homeUserId) ?: return@async emptyList()
+                    if (!srv.isAvailable(session.id)) return@async emptyList()
+                    suspend fun fetch(s: ServerSession) =
+                        s.api.getEpisodesLite(seriesId = s.raw(copyId), userId = s.userId).items
+                    val episodes = if (session.isHome) runCatchingCancellable { fetch(session) }.getOrNull()
+                    else srv.callExtra(session, CrossServerCopies.LOOKUP_TIMEOUT_MS) { fetch(it) }
+                    episodes?.scopedTo(session.id).orEmpty()
+                }
+            }.awaitAll()
+        }
+        if (perServer.count { it.isNotEmpty() } < 2) return null
+        return CrossServerMerge.mergeEpisodes(perServer).map { it.item }
     }
 
     /**
@@ -309,9 +421,26 @@ class JellyfinPlaybackManager @Inject constructor(
      * first episode of the next (non-special) season. Uses a small `StartItemId` page of the
      * series instead of downloading whole season / series episode lists.
      */
-    private suspend fun findNextEpisode(userId: String, item: JellyfinItemDto): NextEpisodeInfo? {
+    private suspend fun findNextEpisode(homeUserId: String, session: ServerSession, item: JellyfinItemDto): NextEpisodeInfo? {
         val seriesId = item.seriesId
         if (!item.type.equals("Episode", ignoreCase = true) || seriesId.isNullOrBlank()) return null
+        // On several servers: the next episode may only exist on another one.
+        mergedSeriesEpisodes(homeUserId, session.scope(seriesId))?.let { merged ->
+            val idx = merged.indexOfFirst {
+                it.parentIndexNumber == item.parentIndexNumber && it.indexNumber == item.indexNumber
+            }
+            if (idx >= 0) return pickNextEpisode(item, merged.drop(idx + 1))?.let(NextEpisodeInfo::of)
+        }
+        return findNextEpisodeOnServer(session, item, seriesId)?.let { it.copy(id = session.scope(it.id)) }
+    }
+
+    private suspend fun findNextEpisodeOnServer(
+        session: ServerSession,
+        item: JellyfinItemDto,
+        seriesId: String
+    ): NextEpisodeInfo? {
+        val userId = session.userId
+        val jellyfinApi = session.api
         val page = runCatchingCancellable {
             jellyfinApi.getEpisodesLite(
                 seriesId = seriesId,
@@ -346,6 +475,8 @@ class JellyfinPlaybackManager @Inject constructor(
     }
 
     private fun buildSession(
+        server: ServerSession,
+        others: List<ItemCopy>,
         item: JellyfinItemDto,
         playback: JellyfinPlaybackInfoResponse?,
         mediaSourceId: String?,
@@ -374,12 +505,24 @@ class JellyfinPlaybackManager @Inject constructor(
         } ?: error("No playable media sources returned by Jellyfin")
 
         val playSessionId = playback?.playSessionId ?: "${System.currentTimeMillis()}"
-        val base = prefs.cachedResolvedJellyfinUrl
-            .ifBlank { prefs.cachedJellyfinLocalUrl }
-            .ifBlank { prefs.cachedJellyfinUrl }
-            .trim()
-            .trimEnd('/')
-        val token = prefs.cachedToken.orEmpty()
+        // Stream, subtitle and trickplay URLs go to the server that owns this copy, with its token.
+        val base = if (server.isHome) {
+            prefs.cachedResolvedJellyfinUrl
+                .ifBlank { prefs.cachedJellyfinLocalUrl }
+                .ifBlank { prefs.cachedJellyfinUrl }
+                .trim()
+                .trimEnd('/')
+        } else {
+            servers?.baseUrl(server.id).orEmpty()
+        }
+        val token = if (server.isHome) prefs.cachedToken.orEmpty() else servers?.token(server.id).orEmpty()
+
+        // The server's own cap is normally applied by the server (it is in the device profile sent
+        // with PlaybackInfo, so a file under the cap still direct plays). Only when that answer is
+        // missing does the URL itself have to ask for a capped stream.
+        val serverCap = server.server.maxStreamingBitrateBps
+        val urlBitrate = maxBitrateBps?.let { cappedBitrate(it, server) }
+            ?: serverCap?.takeIf { cap -> playback == null && (source.bitrate ?: 0L) > cap }
 
         val (streamUrl, isHls) = buildStreamUrl(
             base = base,
@@ -387,7 +530,7 @@ class JellyfinPlaybackManager @Inject constructor(
             itemId = item.id,
             source = source,
             playSessionId = playSessionId,
-            maxBitrateBps = maxBitrateBps,
+            maxBitrateBps = urlBitrate,
             stereoDownmix = stereoDownmixEnabled,
             burnInSubtitleIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null
         )
@@ -448,7 +591,17 @@ class JellyfinPlaybackManager @Inject constructor(
             }
             .sortedBy { it.startPositionMs }
 
-        val mediaSourceOptions = availableSources.map { ms -> mapMediaSourceOption(ms) }
+        // This copy's files, then the copies on other servers (labelled with their server).
+        val mediaSourceOptions = crossServerVersions(
+            ownServerId = server.id,
+            ownServerName = if (others.isNotEmpty() || !server.isHome) {
+                server.server.displayName.takeIf { servers != null }
+            } else null,
+            ownSources = availableSources,
+            others = others
+        )
+        // Resume from whichever copy was played most recently.
+        val watchState = CrossServerMerge.mergeUserData(listOf(item.userData) + others.map { it.item.userData })
 
         val primaryVideo = source.mediaStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
         val primaryAudio = source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
@@ -498,18 +651,18 @@ class JellyfinPlaybackManager @Inject constructor(
         val directPlayUrl = "$base/Videos/${item.id}/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
 
         val session = PlaybackSessionData(
-            itemId = item.id,
+            itemId = server.scope(item.id),
             title = title,
             subtitle = subtitle,
             streamUrl = streamUrl,
             isHls = isHls,
-            mediaSourceId = source.id,
+            mediaSourceId = server.scope(source.id),
             playSessionId = playSessionId,
-            resumeTicks = item.userData?.playbackPositionTicks ?: 0L,
+            resumeTicks = watchState?.playbackPositionTicks ?: 0L,
             runtimeTicks = source.runTimeTicks ?: item.runTimeTicks ?: 0L,
             trickplayInfo = trickplay,
-            seriesId = item.seriesId,
-            seasonId = item.seasonId,
+            seriesId = item.seriesId?.let { server.scope(it) },
+            seasonId = item.seasonId?.let { server.scope(it) },
             videoCodec = primaryVideo?.codec?.uppercase(),
             audioCodec = audioSummary,
             resolutionLabel = resolutionLabel,
@@ -539,7 +692,8 @@ class JellyfinPlaybackManager @Inject constructor(
         itemId: String,
         language: String = "eng"
     ): Result<List<com.seerflix.tv.core.model.RemoteSubtitleOption>> = runCatchingCancellable {
-        jellyfinApi.searchRemoteSubtitles(itemId = itemId, language = language)
+        val server = sessionFor(itemId, prefs.cachedHomeUserId) ?: error("Not signed in to that server")
+        server.api.searchRemoteSubtitles(itemId = server.raw(itemId), language = language)
             .map { dto ->
                 com.seerflix.tv.core.model.RemoteSubtitleOption(
                     id = dto.id,
@@ -563,35 +717,41 @@ class JellyfinPlaybackManager @Inject constructor(
         itemId: String,
         subtitleId: String
     ): Result<Unit> = runCatchingCancellable {
-        jellyfinApi.downloadRemoteSubtitle(itemId = itemId, subtitleId = subtitleId)
+        val server = sessionFor(itemId, prefs.cachedHomeUserId) ?: error("Not signed in to that server")
+        server.api.downloadRemoteSubtitle(itemId = server.raw(itemId), subtitleId = subtitleId)
     }
 
-    suspend fun reportStart(session: PlaybackSessionData, positionTicks: Long) {
+    /**
+     * Start / progress / stop go only to the server that is actually streaming [session], with
+     * that server's raw ids.
+     */
+    private suspend fun report(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        isPaused: Boolean,
+        send: suspend (JellyfinApi, JellyfinPlaybackProgressRequest) -> Unit
+    ) {
+        val server = sessionFor(session.itemId, prefs.cachedHomeUserId) ?: return
         runCatchingCancellable {
-            jellyfinApi.reportPlaybackStart(
+            send(
+                server.api,
                 JellyfinPlaybackProgressRequest(
-                    itemId = session.itemId,
-                    mediaSourceId = session.mediaSourceId,
-                    playSessionId = session.playSessionId,
-                    positionTicks = positionTicks,
-                    isPaused = false
-                )
-            )
-        }
-    }
-
-    suspend fun reportProgress(session: PlaybackSessionData, positionTicks: Long, isPaused: Boolean) {
-        runCatchingCancellable {
-            jellyfinApi.reportPlaybackProgress(
-                JellyfinPlaybackProgressRequest(
-                    itemId = session.itemId,
-                    mediaSourceId = session.mediaSourceId,
+                    itemId = server.raw(session.itemId),
+                    mediaSourceId = ServerScopedId.rawOf(session.mediaSourceId),
                     playSessionId = session.playSessionId,
                     positionTicks = positionTicks,
                     isPaused = isPaused
                 )
             )
         }
+    }
+
+    suspend fun reportStart(session: PlaybackSessionData, positionTicks: Long) {
+        report(session, positionTicks, isPaused = false) { api, body -> api.reportPlaybackStart(body) }
+    }
+
+    suspend fun reportProgress(session: PlaybackSessionData, positionTicks: Long, isPaused: Boolean) {
+        report(session, positionTicks, isPaused) { api, body -> api.reportPlaybackProgress(body) }
     }
 
     /**
@@ -603,20 +763,12 @@ class JellyfinPlaybackManager @Inject constructor(
     }
 
     suspend fun reportStopped(session: PlaybackSessionData, positionTicks: Long) {
-        runCatchingCancellable {
-            jellyfinApi.reportPlaybackStopped(
-                JellyfinPlaybackProgressRequest(
-                    itemId = session.itemId,
-                    mediaSourceId = session.mediaSourceId,
-                    playSessionId = session.playSessionId,
-                    positionTicks = positionTicks,
-                    isPaused = false
-                )
-            )
-        }
+        report(session, positionTicks, isPaused = false) { api, body -> api.reportPlaybackStopped(body) }
     }
 
     companion object {
+        private val HOME_SERVER = JellyfinServer(id = ServerScopedId.HOME, isHome = true)
+
         /**
          * Only what playback reads from the item (chapters, sources/streams, trickplay; user data
          * and series/season numbering are always included) — not People/Overview/etc.

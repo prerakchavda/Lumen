@@ -31,7 +31,7 @@ class DownloadProgressParserTest {
         assertNotNull(info)
         assertEquals(64.0f, info!!.percentage, 0.1f)
         assertEquals("~6m left", info.etaText)
-        assertEquals("Downloading 4K • 64% • ~6m left", info.label)
+        assertEquals("Downloading 4K · 64% · ~6m left", info.label)
     }
 
     @Test
@@ -48,7 +48,7 @@ class DownloadProgressParserTest {
         assertNotNull(info)
         assertEquals(75.0f, info!!.percentage, 0.1f)
         assertEquals("~1h 15m left", info.etaText)
-        assertEquals("Downloading HD • 75% • ~1h 15m left", info.label)
+        assertEquals("Downloading HD · 75% · ~1h 15m left", info.label)
     }
 
     @Test

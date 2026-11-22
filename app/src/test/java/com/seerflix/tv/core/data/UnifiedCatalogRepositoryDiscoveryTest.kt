@@ -857,6 +857,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun reportPlaybackStart(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackProgress(body: JellyfinPlaybackProgressRequest) = Unit
         override suspend fun reportPlaybackStopped(body: JellyfinPlaybackProgressRequest) = Unit
+        override suspend fun getEpisodesBySeasonNumber(seriesId: String, userId: String, season: Int?, fields: String?, enableImages: Boolean?, isMissing: Boolean?) = JellyfinItemsResponse()
+        override suspend fun logout() = Unit
         override suspend fun getEpisodesLite(seriesId: String, userId: String, seasonId: String?, startItemId: String?, limit: Int?, fields: String?, enableImages: Boolean, isMissing: Boolean?) = JellyfinItemsResponse()
         override suspend fun getResumeItemsLite(userId: String, parentId: String?, limit: Int, mediaTypes: String, enableImages: Boolean) = JellyfinItemsResponse()
     }

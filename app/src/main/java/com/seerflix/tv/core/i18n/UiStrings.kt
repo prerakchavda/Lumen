@@ -744,13 +744,117 @@ data class UiStrings(
         internal set
     var cardBadgePlay: String = "PLAY"
         internal set
-    var cardBadgeRequest: String = "+ REQ"
+    var cardBadgeRequest: String = "+ Request"
         internal set
     var cardCollection: String = "COLLECTION"
         internal set
     var cardTopRank: String = "TOP %d"
         internal set
     var cardHoldOk: String = "Hold OK"
+        internal set
+    var profileMenuSwitchProfile: String = "Switch Profile"
+        internal set
+    var homeFilterAllTitles: String = "All titles"
+        internal set
+    var cardTimeLeft: String = "%s left"
+        internal set
+    var librarySortFilter: String = "Sort & Filter"
+        internal set
+    var librarySortBy: String = "Sort by"
+        internal set
+    var libraryShow: String = "Show"
+        internal set
+    var detailsMore: String = "More"
+        internal set
+    var detailsTabEpisodes: String = "Episodes"
+        internal set
+    var detailsTabCollection: String = "Collection"
+        internal set
+    var profileParentPinName: String = "a parent profile"
+        internal set
+
+    // ---- Several Jellyfin servers ----
+    var serversSection: String = "Other servers"
+        internal set
+    var serversAddTitle: String = "Add another server"
+        internal set
+    var serversAddDesc: String = "Merge a friend's Jellyfin library into Home, search and your libraries. Requests, Live TV and Watch Together stay on your own server."
+        internal set
+    var serverStatusOnline: String = "Signed in as %s"
+        internal set
+    var serverStatusOffline: String = "Can't reach this server right now. Its titles are hidden until it is back."
+        internal set
+    var serverStatusAuth: String = "This server signed you out. Select to sign in again."
+        internal set
+    var serverStatusNotSignedIn: String = "This profile isn't signed in here. Select to sign in."
+        internal set
+    var serverBitrateTitle: String = "Streaming quality limit for %s"
+        internal set
+    var serverBitrateNoLimit: String = "No limit"
+        internal set
+    var serverRemove: String = "Remove %s"
+        internal set
+    var serverRemoveDesc: String = "Its titles disappear from this TV for every profile. Nothing on the server is deleted."
+        internal set
+    var serverRemoveConfirm: String = "Select again to remove %s"
+        internal set
+    var serverSignIn: String = "Sign in"
+        internal set
+    var serverSignInAgain: String = "Sign in again"
+        internal set
+    var serverReSignInTitle: String = "Sign in again to %s"
+        internal set
+    var serverReSignInBody: String = "This server no longer accepts the saved sign-in (the password may have changed). Its titles are hidden until you sign in again. Everything else keeps working."
+        internal set
+    var serverReSignInLater: String = "Later"
+        internal set
+    var addServerIntro: String = "Enter the address of the other Jellyfin server. If it is on this network, pick it from the list. You sign in on the next step."
+        internal set
+    var addServerAddress: String = "Server address"
+        internal set
+    var addServerLocalAddress: String = "Address on this network (optional)"
+        internal set
+    var addServerTrustSelfSigned: String = "Trust this server's self-signed certificate"
+        internal set
+    var addServerContinue: String = "Continue"
+        internal set
+    var addServerChecking: String = "Checking..."
+        internal set
+    var addServerPhoneHint: String = "Or type the address on your phone: scan the code while on the same Wi-Fi."
+        internal set
+    var addServerSignInTitle: String = "Sign in to %s"
+        internal set
+    var addServerSignInHint: String = "Your username from this profile is filled in. Enter the password for your account on this server. Only the sign-in token is kept, never the password."
+        internal set
+    var addServerUsername: String = "Username"
+        internal set
+    var addServerPassword: String = "Password"
+        internal set
+    var addServerSigningIn: String = "Signing in..."
+        internal set
+    var addServerUseQuickConnect: String = "Use Quick Connect"
+        internal set
+    var addServerUsePassword: String = "Use a password instead"
+        internal set
+    var addServerQuickConnectHint: String = "On a device where you are already signed in to %s, open Quick Connect and enter this code:"
+        internal set
+    var addServerQuickConnectWaiting: String = "Waiting for approval..."
+        internal set
+    var addServerSyncing: String = "Signed in. Adding the library of %s..."
+        internal set
+    var addServerErrorUsername: String = "Enter a username."
+        internal set
+    var addServerErrorCredentials: String = "Couldn't sign in as %s. Check the password, try a different username, or use Quick Connect."
+        internal set
+    var addServerErrorQuickConnect: String = "Quick Connect isn't available on this server. Sign in with a password instead."
+        internal set
+    var addServerErrorQuickConnectExpired: String = "The Quick Connect code wasn't approved in time. Try again or use a password."
+        internal set
+    var homeServerOffline: String = "%s is offline. Showing everything else."
+        internal set
+    var homeServerNeedsSignIn: String = "%s needs a new sign-in (Settings > Other servers)."
+        internal set
+    var homeNothingForProfileHint: String = "Nothing here is rated for this profile. Titles without a rating are hidden on Kids and rating-limited profiles."
         internal set
 }
 
@@ -1208,6 +1312,17 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         cardBadgeRequest = "+ SOL"
         cardCollection = "COLECCIÓN"
         cardHoldOk = "Mantén OK"
+        profileMenuSwitchProfile = "Cambiar de perfil"
+        homeFilterAllTitles = "Todos los títulos"
+        cardTimeLeft = "quedan %s"
+        librarySortFilter = "Ordenar y filtrar"
+        librarySortBy = "Ordenar por"
+        libraryShow = "Mostrar"
+        detailsMore = "Más"
+        detailsTabEpisodes = "Episodios"
+        detailsTabCollection = "Colección"
+        profileParentPinName = "un perfil de adulto"
+        homeNothingForProfileHint = "No hay nada clasificado para este perfil. Los títulos sin clasificación se ocultan en perfiles infantiles o con límite de edad."
     }
     "fr" -> UiStrings(
         languageCode = "fr",
@@ -1657,6 +1772,17 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         cardBadgeRequest = "+ DEM"
         cardCollection = "COLLECTION"
         cardHoldOk = "Maintenir OK"
+        profileMenuSwitchProfile = "Changer de profil"
+        homeFilterAllTitles = "Tous les titres"
+        cardTimeLeft = "%s restantes"
+        librarySortFilter = "Trier et filtrer"
+        librarySortBy = "Trier par"
+        libraryShow = "Afficher"
+        detailsMore = "Plus"
+        detailsTabEpisodes = "Épisodes"
+        detailsTabCollection = "Collection"
+        profileParentPinName = "un profil parent"
+        homeNothingForProfileHint = "Rien ici n'est classé pour ce profil. Les titres sans classification sont masqués sur les profils Enfants ou limités."
     }
     "de" -> UiStrings(
         languageCode = "de",
@@ -2103,6 +2229,17 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         cardBadgeRequest = "+ ANF"
         cardCollection = "SAMMLUNG"
         cardHoldOk = "OK halten"
+        profileMenuSwitchProfile = "Profil wechseln"
+        homeFilterAllTitles = "Alle Titel"
+        cardTimeLeft = "noch %s"
+        librarySortFilter = "Sortieren & Filtern"
+        librarySortBy = "Sortieren nach"
+        libraryShow = "Anzeigen"
+        detailsMore = "Mehr"
+        detailsTabEpisodes = "Episoden"
+        detailsTabCollection = "Sammlung"
+        profileParentPinName = "ein Elternprofil"
+        homeNothingForProfileHint = "Hier ist nichts für dieses Profil freigegeben. Titel ohne Altersfreigabe werden in Kinder- und eingeschränkten Profilen ausgeblendet."
     }
     "ja" -> UiStrings(
         languageCode = "ja",
@@ -2554,6 +2691,17 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         cardCollection = "コレクション"
         cardTopRank = "トップ%d"
         cardHoldOk = "OK長押し"
+        profileMenuSwitchProfile = "プロフィールを切り替え"
+        homeFilterAllTitles = "すべての作品"
+        cardTimeLeft = "残り%s"
+        librarySortFilter = "並べ替えと絞り込み"
+        librarySortBy = "並べ替え"
+        libraryShow = "表示"
+        detailsMore = "その他"
+        detailsTabEpisodes = "エピソード"
+        detailsTabCollection = "コレクション"
+        profileParentPinName = "保護者のプロフィール"
+        homeNothingForProfileHint = "このプロフィールで視聴できる作品はありません。年齢区分のない作品はキッズ・制限付きプロフィールでは表示されません。"
     }
     else -> UiStrings()
 }

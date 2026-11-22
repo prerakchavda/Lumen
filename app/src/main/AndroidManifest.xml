@@ -22,7 +22,8 @@
 
     <application
         android:name=".SeerflixApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:banner="@drawable/tv_banner"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -56,7 +57,8 @@
         <provider
             android:name=".core.tv.SeerflixSearchProvider"
             android:authorities="com.seerflix.tv.search"
-            android:exported="true" />
+            android:exported="true"
+            android:readPermission="android.permission.GLOBAL_SEARCH" />
     </application>
 
 </manifest>

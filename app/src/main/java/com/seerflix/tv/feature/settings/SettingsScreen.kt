@@ -43,6 +43,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.FrameRateMatchMode
+import com.seerflix.tv.core.model.JellyfinServer
+import com.seerflix.tv.core.model.ServerHealth
 import com.seerflix.tv.core.model.SubtitleEdgeStyle
 import com.seerflix.tv.core.model.SubtitlePosition
 import com.seerflix.tv.core.model.SubtitleTextColor
@@ -54,6 +56,8 @@ import kotlinx.coroutines.delay
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenServerSettings: () -> Unit,
+    onAddServer: () -> Unit = {},
+    onSignInToServer: (serverId: String) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -215,8 +219,52 @@ fun SettingsScreen(
         }
 
         // ---- Server ----
-        item { SectionHeader(strings.settingsServerSection) }
-        item { ActionRow(strings.settingsServerTitle, strings.settingsServerDesc, onClick = onOpenServerSettings) }
+        // Kids / rating-limited profiles don't get server settings: they show the Seerr API key and
+        // would let a child repoint or reconfigure the app.
+        if (state.profile?.isRestricted != true) {
+            item { SectionHeader(strings.settingsServerSection) }
+            item { ActionRow(strings.settingsServerTitle, strings.settingsServerDesc, onClick = onOpenServerSettings) }
+
+            // ---- Other servers (merged into the same library) ----
+            item { SectionHeader(strings.serversSection) }
+            state.servers.forEach { status ->
+                val server = status.server
+                val needsSignIn = status.health == ServerHealth.AUTH_REQUIRED || status.health == ServerHealth.NOT_SIGNED_IN
+                item(key = "server_${server.id}") {
+                    val statusText = when (status.health) {
+                        ServerHealth.ONLINE -> strings.serverStatusOnline.format(status.userName)
+                        ServerHealth.UNREACHABLE -> strings.serverStatusOffline
+                        ServerHealth.AUTH_REQUIRED -> strings.serverStatusAuth
+                        ServerHealth.NOT_SIGNED_IN -> strings.serverStatusNotSignedIn
+                    }
+                    ActionRow(
+                        title = server.displayName,
+                        description = "${server.remoteUrl.ifBlank { server.localUrl }}\n$statusText",
+                        onClick = { if (needsSignIn) onSignInToServer(server.id) }
+                    )
+                }
+                item(key = "server_bitrate_${server.id}") {
+                    ChoiceRow(
+                        title = strings.serverBitrateTitle.format(server.displayName),
+                        options = JellyfinServer.BITRATE_CHOICES.map { bps ->
+                            if (bps == null) strings.serverBitrateNoLimit else JellyfinServer.bitrateLabel(bps)
+                        },
+                        selectedIndex = JellyfinServer.BITRATE_CHOICES.indexOf(server.maxStreamingBitrateBps),
+                        onSelect = { viewModel.setServerBitrateCap(server.id, JellyfinServer.BITRATE_CHOICES[it]) }
+                    )
+                }
+                item(key = "server_remove_${server.id}") {
+                    val armed = state.pendingRemoveServerId == server.id
+                    ActionRow(
+                        title = if (armed) strings.serverRemoveConfirm.format(server.displayName)
+                        else strings.serverRemove.format(server.displayName),
+                        description = strings.serverRemoveDesc,
+                        onClick = { viewModel.removeServer(server.id) }
+                    )
+                }
+            }
+            item { ActionRow(strings.serversAddTitle, strings.serversAddDesc, onClick = onAddServer) }
+        }
 
         item { SectionHeader(strings.settingsAboutSection) }
         item {

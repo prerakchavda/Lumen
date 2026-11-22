@@ -50,10 +50,10 @@ data class DownloadProgressInfo(
                     append("Importing $tierTag")
                 } else {
                     append("Downloading $tierTag")
-                    if (sizeBytes > 0L) append(" • $pct%")
+                    if (sizeBytes > 0L) append(" · $pct%")
                 }
                 if (!etaText.isNullOrBlank()) {
-                    append(" • $etaText")
+                    append(" · $etaText")
                 }
             }
         }
@@ -314,9 +314,6 @@ data class UnifiedMediaItem(
             else -> AvailabilityTier.UNKNOWN
         }
 
-    val matchPercent: Int?
-        get() = voteAverage?.takeIf { it > 0.0 }?.let { (it * 10.0).roundToInt().coerceIn(50, 99) }
-
     val watchProgressFraction: Float
         get() = if (runtimeTicks > 0L && resumePositionTicks > 0L) {
             (resumePositionTicks.toFloat() / runtimeTicks.toFloat()).coerceIn(0f, 1f)
@@ -401,10 +398,18 @@ data class MediaSourceOption(
     val bitrate: Long? = null,
     val resolutionLabel: String? = null,
     val videoCodec: String? = null,
-    val audioSummary: String? = null
+    val audioSummary: String? = null,
+    /**
+     * Set when this version is a copy of the title on another server: the (server scoped) item to
+     * play for it. Null = a file of the item being shown / played.
+     */
+    val itemId: String? = null,
+    /** The server this version comes from; only set when that isn't obvious (several servers). */
+    val serverName: String? = null
 ) {
     val displayLabel: String
         get() = listOfNotNull(
+            serverName?.takeIf { it.isNotBlank() },
             name.takeIf { it.isNotBlank() },
             resolutionLabel,
             videoCodec,

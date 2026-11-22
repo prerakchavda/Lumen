@@ -8,10 +8,14 @@ import com.seerflix.tv.core.model.CastMember
 import com.seerflix.tv.core.model.CatalogRow
 import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.ContentRatingHelper
+import com.seerflix.tv.core.model.ContentRatingLimit
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExtrasItem
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.JellyfinLibraryView
+import com.seerflix.tv.core.model.JellyfinServer
+import com.seerflix.tv.core.model.MediaSourceOption
+import com.seerflix.tv.core.model.ServerScopedId
 import com.seerflix.tv.core.model.LiveTvChannel
 import com.seerflix.tv.core.model.LiveTvProgram
 import com.seerflix.tv.core.model.LibraryPage
@@ -25,8 +29,12 @@ import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.SeerrIssueType
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
+import com.seerflix.tv.core.network.CrossServerLinks
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinItemDto
+import com.seerflix.tv.core.network.JellyfinServers
+import com.seerflix.tv.core.network.ServerSession
+import com.seerflix.tv.core.network.scopedTo
 import com.seerflix.tv.core.network.JellyfinMediaStreamDto
 import com.seerflix.tv.core.network.JellyfinUpdateUserDataRequest
 import com.seerflix.tv.core.network.SeerrApi
@@ -45,12 +53,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
 import java.time.LocalDate
 import java.time.OffsetDateTime
@@ -67,7 +77,14 @@ class UnifiedCatalogRepository @Inject constructor(
     /** Disk copy of the library index; null (unit tests) keeps the index in memory only. */
     private val indexStore: LibraryIndexStore? = null,
     /** Trakt "most watched this week" charts; null (unit tests) = Seerr popularity only. */
-    private val traktCharts: TraktCharts? = null
+    private val traktCharts: TraktCharts? = null,
+    /**
+     * The extra Jellyfin servers whose libraries are merged in; null (unit tests) or no extra
+     * server configured = the home server only, exactly as before. [jellyfinApi] is always the
+     * home server.
+     */
+    private val servers: JellyfinServers? = null,
+    private val copies: CrossServerCopies? = null
 ) {
     /**
      * Snapshot of one Jellyfin user's owned Movies/Series plus the lookup maps derived from it.
@@ -78,7 +95,9 @@ class UnifiedCatalogRepository @Inject constructor(
         val items: List<JellyfinItemDto>,
         val fetchedAtMs: Long,
         /** false = placeholder after a failed first fetch for this user (not a usable copy). */
-        val isUsable: Boolean
+        val isUsable: Boolean,
+        /** Which items are the same title on another server ([items] lists each title once). */
+        val links: CrossServerLinks = CrossServerLinks.EMPTY
     ) {
         val movies: Map<Int, JellyfinItemDto>
         val series: Map<Int, JellyfinItemDto>
@@ -98,7 +117,10 @@ class UnifiedCatalogRepository @Inject constructor(
                 }
             }
             val bySeriesId = HashMap<String, Int>(s.size)
-            s.forEach { (tmdb, dto) -> bySeriesId.putIfAbsent(dto.id, tmdb) }
+            s.forEach { (tmdb, dto) ->
+                // Every copy of the series resolves to the same TMDB id.
+                links.copiesOf(dto.id).forEach { copyId -> bySeriesId.putIfAbsent(copyId, tmdb) }
+            }
             movies = m
             series = s
             seriesTmdbByJellyfinId = bySeriesId
@@ -220,6 +242,7 @@ class UnifiedCatalogRepository @Inject constructor(
         policy: IndexPolicy = IndexPolicy.STALE_WHILE_REVALIDATE
     ) {
         requestedIndexUserId = userId
+        val serverWithoutIndex = syncIndexWithServers(userId)
         if (policy == IndexPolicy.FORCE) {
             startIndexFetch(userId).await()
             return
@@ -227,6 +250,11 @@ class UnifiedCatalogRepository @Inject constructor(
         val current = currentOrDiskIndex(userId)
         if (current == null) {
             // No copy at all for this user (first run, or a profile switch with no disk copy).
+            startIndexFetch(userId).await()
+            return
+        }
+        if (serverWithoutIndex && syncIndexWithServers(userId)) {
+            // A server was just added (or signed in to) and nothing of it is cached yet.
             startIndexFetch(userId).await()
             return
         }
@@ -238,6 +266,65 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
+    /** One server's share of the index; its item ids are already server scoped. */
+    private class IndexPart(val ownerKey: String, val items: List<JellyfinItemDto>, val fetchedAtMs: Long)
+
+    /** The home server's share of the current index, kept so the other shares can be re-merged. */
+    @Volatile
+    private var homeIndexPart: IndexPart? = null
+    private val extraIndexParts = java.util.concurrent.ConcurrentHashMap<String, IndexPart>()
+
+    /** The extra servers the current index was merged for (ids + accounts). */
+    @Volatile
+    private var indexServersSignature: String = ""
+
+    private fun extraPartKey(userId: String, session: ServerSession) = "$userId@${session.id}:${session.userId}"
+    private fun extraStoreUser(userId: String, session: ServerSession) = "$userId@${session.id}"
+    private fun extraStoreServer(session: ServerSession) = "${session.server.cacheKey}|${session.userId}"
+
+    /**
+     * The index for [userId]: the home server's titles plus those of every extra server that is
+     * usable right now, each title once (see [CrossServerMerge]). A server that is offline or needs
+     * a new sign-in is left out, so nothing that can't be played is offered.
+     */
+    private fun buildIndex(userId: String, home: IndexPart): LibraryIndex {
+        val extraParts = servers?.availableExtras().orEmpty().mapNotNull { session ->
+            extraIndexParts[session.id]?.takeIf { it.ownerKey == extraPartKey(userId, session) }?.items
+        }
+        if (extraParts.isEmpty()) return LibraryIndex(userId, home.items, home.fetchedAtMs, isUsable = true)
+        val merged = CrossServerMerge.mergeLibrary(listOf(home.items) + extraParts)
+        return LibraryIndex(userId, merged.items, home.fetchedAtMs, isUsable = true, links = merged.links)
+    }
+
+    /** Call with [indexLock] held. */
+    private fun installIndex(index: LibraryIndex) {
+        libraryIndex = index
+        servers?.links = index.links
+    }
+
+    /**
+     * Keeps the index in step with the extra servers: when one was added, removed, went offline or
+     * came back, the cached shares are re-merged right away. Returns true when a usable server has
+     * no share yet (so a fetch is needed before its titles can show up).
+     */
+    private fun syncIndexWithServers(userId: String): Boolean {
+        val srv = servers ?: return false
+        val sessions = srv.availableExtras()
+        val signature = sessions.joinToString(",") { "${it.id}:${it.userId}" }
+        if (signature != indexServersSignature) {
+            synchronized(indexLock) {
+                indexServersSignature = signature
+                extraIndexParts.keys.retainAll(srv.signedInExtras().map { it.id }.toSet())
+                val home = homeIndexPart
+                val cur = libraryIndex
+                if (home != null && home.ownerKey == userId && cur != null && cur.userId == userId && cur.isUsable) {
+                    installIndex(buildIndex(userId, home))
+                }
+            }
+        }
+        return sessions.any { extraIndexParts[it.id]?.ownerKey != extraPartKey(userId, it) }
+    }
+
     /** The usable in-memory index for [userId], else its disk copy (installed as current), else null. */
     private suspend fun currentOrDiskIndex(userId: String): LibraryIndex? {
         libraryIndex?.takeIf { it.userId == userId && it.isUsable }?.let { return it }
@@ -246,20 +333,34 @@ class UnifiedCatalogRepository @Inject constructor(
             libraryIndex?.takeIf { it.userId == userId && it.isUsable }?.let { return@withLock it }
             val snapshot = withContext(Dispatchers.IO) { store.read(userId, indexServerKey) }
                 ?: return@withLock null
-            val loaded = LibraryIndex(
-                userId = userId,
-                items = snapshot.items.map { it.toItemDto() },
-                fetchedAtMs = snapshot.fetchedAtMs,
-                isUsable = true
-            )
+            val home = IndexPart(userId, snapshot.items.map { it.toItemDto() }, snapshot.fetchedAtMs)
+            loadExtraPartsFromDisk(userId, store)
             synchronized(indexLock) {
+                val loaded = buildIndex(userId, home)
                 val cur = libraryIndex
                 // Never replace a network copy for this user that landed meanwhile.
                 if (requestedIndexUserId == userId && (cur == null || cur.userId != userId || !cur.isUsable)) {
-                    libraryIndex = loaded
+                    homeIndexPart = home
+                    installIndex(loaded)
                 }
+                loaded
             }
-            loaded
+        }
+    }
+
+    /** Disk copies of the extra servers' shares, so a cold start shows the merged library at once. */
+    private suspend fun loadExtraPartsFromDisk(userId: String, store: LibraryIndexStore) {
+        val sessions = servers?.signedInExtras().orEmpty()
+        for (session in sessions) {
+            val key = extraPartKey(userId, session)
+            if (extraIndexParts[session.id]?.ownerKey == key) continue
+            val snapshot = withContext(Dispatchers.IO) {
+                store.read(extraStoreUser(userId, session), extraStoreServer(session))
+            } ?: continue
+            extraIndexParts.putIfAbsent(
+                session.id,
+                IndexPart(key, snapshot.items.map { it.toItemDto().scopedTo(session.id) }, snapshot.fetchedAtMs)
+            )
         }
     }
 
@@ -291,35 +392,42 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchAndInstallIndex(userId: String): LibraryIndex? {
-        val entries = runCatchingCancellable {
-            val collected = ArrayList<LibraryIndexEntry>()
-            var startIndex = 0
-            while (collected.size < MAX_LIBRARY_INDEX_ITEMS) {
-                val page = jellyfinApi.getLibraryItems(
-                    userId = userId,
-                    fields = LIBRARY_INDEX_FIELDS,
-                    limit = LIBRARY_INDEX_PAGE_SIZE,
-                    startIndex = startIndex.takeIf { it > 0 },
-                    // Only "has a backdrop" is read; skip Primary/Logo/Thumb tags and their blurhashes.
-                    enableImages = true,
-                    imageTypeLimit = 1,
-                    enableImageTypes = "Backdrop",
-                    enableUserData = true,
-                    enableTotalRecordCount = false
-                )
-                // Trim each page right away so full DTOs never pile up for a big library.
-                page.items.mapTo(collected) { it.toIndexEntry() }
-                startIndex += page.items.size
-                // Only a short page means "done". TotalRecordCount can't be trusted here: with
-                // EnableTotalRecordCount=false Jellyfin reports it as the page size (1000), which
-                // stopped paging after the newest 1000 items and dropped the rest of the library.
-                if (page.items.isEmpty() || page.items.size < LIBRARY_INDEX_PAGE_SIZE) {
-                    break
-                }
+    /** Every owned Movie / Series of one server's user, trimmed to what the index keeps. */
+    private suspend fun fetchIndexEntries(api: JellyfinApi, apiUserId: String): List<LibraryIndexEntry> {
+        val collected = ArrayList<LibraryIndexEntry>()
+        var startIndex = 0
+        while (collected.size < MAX_LIBRARY_INDEX_ITEMS) {
+            val page = api.getLibraryItems(
+                userId = apiUserId,
+                fields = LIBRARY_INDEX_FIELDS,
+                limit = LIBRARY_INDEX_PAGE_SIZE,
+                startIndex = startIndex.takeIf { it > 0 },
+                // Only "has a backdrop" is read; skip Primary/Logo/Thumb tags and their blurhashes.
+                enableImages = true,
+                imageTypeLimit = 1,
+                enableImageTypes = "Backdrop",
+                enableUserData = true,
+                enableTotalRecordCount = false
+            )
+            // Trim each page right away so full DTOs never pile up for a big library.
+            page.items.mapTo(collected) { it.toIndexEntry() }
+            startIndex += page.items.size
+            // Only a short page means "done". TotalRecordCount can't be trusted here: with
+            // EnableTotalRecordCount=false Jellyfin reports it as the page size (1000), which
+            // stopped paging after the newest 1000 items and dropped the rest of the library.
+            if (page.items.isEmpty() || page.items.size < LIBRARY_INDEX_PAGE_SIZE) {
+                break
             }
-            collected
-        }.getOrNull()
+        }
+        return collected
+    }
+
+    private suspend fun fetchAndInstallIndex(userId: String): LibraryIndex? {
+        // The extra servers are fetched alongside the home server, each within its own time limit.
+        val extraFetches = servers?.availableExtras().orEmpty().map { session ->
+            indexScope.async { fetchExtraIndexPart(userId, session) }
+        }
+        val entries = runCatchingCancellable { fetchIndexEntries(jellyfinApi, userId) }.getOrNull()
 
         val now = System.currentTimeMillis()
         if (entries == null) {
@@ -327,24 +435,266 @@ class UnifiedCatalogRepository @Inject constructor(
             synchronized(indexLock) {
                 val cur = libraryIndex
                 if (requestedIndexUserId == userId && (cur == null || cur.userId != userId)) {
-                    libraryIndex = LibraryIndex(userId, emptyList(), now, isUsable = false)
+                    homeIndexPart = null
+                    installIndex(LibraryIndex(userId, emptyList(), now, isUsable = false))
                 }
             }
             return null
         }
-        val fresh = LibraryIndex(userId, entries.map { it.toItemDto() }, now, isUsable = true)
-        synchronized(indexLock) {
+        val home = IndexPart(userId, entries.map { it.toItemDto() }, now)
+        // Give the other servers a moment so the first merged view is complete, but never hold the
+        // home library back for a slow one: its share is merged in when it arrives.
+        if (extraFetches.isNotEmpty()) {
+            withTimeoutOrNull(EXTRA_INDEX_WAIT_MS) { extraFetches.awaitAll() }
+        }
+        val fresh = synchronized(indexLock) {
+            val built = buildIndex(userId, home)
             if (requestedIndexUserId == userId || libraryIndex?.userId == userId) {
-                libraryIndex = fresh
+                homeIndexPart = home
+                installIndex(built)
             }
+            built
         }
         indexStore?.write(userId, indexServerKey, now, entries)
+        extraFetches.filterNot { it.isCompleted }.forEach { pending ->
+            indexScope.launch { if (pending.await()) remergeIndex(userId) }
+        }
         return fresh
+    }
+
+    /** Fetches one extra server's share; false when the server didn't answer in time. */
+    private suspend fun fetchExtraIndexPart(userId: String, session: ServerSession): Boolean {
+        val srv = servers ?: return false
+        val entries = srv.callExtra(session, EXTRA_INDEX_FETCH_TIMEOUT_MS) { s ->
+            fetchIndexEntries(s.api, s.userId)
+        } ?: return false
+        val now = System.currentTimeMillis()
+        extraIndexParts[session.id] = IndexPart(
+            extraPartKey(userId, session),
+            entries.map { it.toItemDto().scopedTo(session.id) },
+            now
+        )
+        indexStore?.write(extraStoreUser(userId, session), extraStoreServer(session), now, entries)
+        return true
+    }
+
+    /** Rebuilds the current index from the cached shares (a late share arrived). */
+    private fun remergeIndex(userId: String) {
+        synchronized(indexLock) {
+            val home = homeIndexPart ?: return
+            val cur = libraryIndex ?: return
+            if (home.ownerKey == userId && cur.userId == userId && cur.isUsable) {
+                installIndex(buildIndex(userId, home))
+            }
+        }
     }
 
     /** Ties a disk copy of the index to the configured Jellyfin server. */
     private val indexServerKey: String
         get() = prefs.cachedJellyfinUrl.trim().trimEnd('/')
+
+    // ---------------------------------------------------------------------------------------
+    // Several servers. Everything below works on server scoped ids (see ServerScopedId): the
+    // home server's are plain, another server's carry its id, and each call is sent to the
+    // server that owns the id with the raw id.
+    // ---------------------------------------------------------------------------------------
+
+    private fun homeSession(userId: String): ServerSession = ServerSession(HOME_SERVER, jellyfinApi, userId)
+
+    /** The session that owns [scopedId]; null when the profile has no account on that server. */
+    private fun sessionFor(scopedId: String, userId: String): ServerSession? =
+        if (ServerScopedId.isHome(scopedId)) homeSession(userId) else servers?.sessionForItem(scopedId, userId)
+
+    private fun requireSession(scopedId: String, userId: String): ServerSession =
+        sessionFor(scopedId, userId) ?: error("Not signed in to the server this title is on")
+
+    private val links: CrossServerLinks
+        get() = libraryIndex?.links ?: CrossServerLinks.EMPTY
+
+    private val hasExtraServers: Boolean
+        get() = servers?.availableExtras()?.isNotEmpty() == true
+
+    /** Best-effort call on [session]: null when it fails (an extra server is also time-boxed). */
+    private suspend fun <T : Any> onServer(
+        session: ServerSession,
+        timeoutMs: Long = DETAILS_EXTRA_TIMEOUT_MS,
+        block: suspend (ServerSession) -> T
+    ): T? =
+        if (session.isHome) runCatchingCancellable { block(session) }.getOrNull()
+        else servers?.callExtra(session, timeoutMs, block)
+
+    /**
+     * A list every server contributes to. With no extra server this is exactly [home] (result or
+     * failure). Otherwise the extra servers are asked in parallel within [timeoutMs]; whatever came
+     * back in time is merged with the home list (one entry per title, most recent watch state),
+     * and a server that didn't answer is simply left out.
+     */
+    private suspend fun mergedItems(
+        order: CrossServerMerge.Order = CrossServerMerge.Order.SERVER,
+        timeoutMs: Long = ROW_EXTRA_TIMEOUT_MS,
+        extra: suspend (ServerSession) -> List<JellyfinItemDto>,
+        home: suspend () -> List<JellyfinItemDto>
+    ): List<JellyfinItemDto> {
+        val srv = servers
+        if (srv == null || srv.availableExtras().isEmpty()) return home()
+        return coroutineScope {
+            val extrasDeferred = async { srv.fromExtras(timeoutMs) { s -> extra(s).scopedTo(s.id) } }
+            val homeResult = runCatchingCancellable { home() }
+            val extraLists = extrasDeferred.await().map { it.second }
+            if (homeResult.isFailure && extraLists.all { it.isEmpty() }) homeResult.getOrThrow()
+            CrossServerMerge.mergeItems(listOf(homeResult.getOrDefault(emptyList())) + extraLists, links, order)
+        }
+    }
+
+    private suspend fun resumeDtos(userId: String, limit: Int): List<JellyfinItemDto> = mergedItems(
+        order = CrossServerMerge.Order.LAST_PLAYED,
+        extra = { s -> s.api.getResumeItems(userId = s.userId, limit = limit).items },
+        home = { jellyfinApi.getResumeItems(userId = userId, limit = limit).items }
+    ).take(limit)
+
+    private suspend fun latestDtos(userId: String, limit: Int): List<JellyfinItemDto> {
+        // DateCreated is only needed to interleave several servers' lists.
+        if (!hasExtraServers) return jellyfinApi.getLatestItems(userId = userId, limit = limit)
+        return mergedItems(
+            order = CrossServerMerge.Order.DATE_CREATED,
+            extra = { s -> s.api.getLatestItems(userId = s.userId, limit = limit, fields = LATEST_FIELDS_MERGED) },
+            home = { jellyfinApi.getLatestItems(userId = userId, limit = limit, fields = LATEST_FIELDS_MERGED) }
+        ).take(limit)
+    }
+
+    private suspend fun playedDtos(userId: String, limit: Int): List<JellyfinItemDto> = mergedItems(
+        order = CrossServerMerge.Order.LAST_PLAYED,
+        extra = { s -> s.api.getPlayedItems(userId = s.userId, limit = limit).items },
+        home = { jellyfinApi.getPlayedItems(userId = userId, limit = limit).items }
+    ).take(limit)
+
+    private suspend fun favoriteDtos(userId: String): List<JellyfinItemDto> = mergedItems(
+        extra = { s -> s.api.getFavoriteItems(userId = s.userId).items },
+        home = { jellyfinApi.getFavoriteItems(userId = userId).items }
+    )
+
+    private suspend fun searchDtos(userId: String, query: String): List<JellyfinItemDto> = mergedItems(
+        extra = { s -> s.api.searchItems(s.userId, query).items },
+        home = { jellyfinApi.searchItems(userId, query).items }
+    )
+
+    private suspend fun setFavorite(userId: String, scopedId: String, favorite: Boolean) {
+        val session = requireSession(scopedId, userId)
+        if (favorite) session.api.addFavorite(session.userId, session.raw(scopedId))
+        else session.api.removeFavorite(session.userId, session.raw(scopedId))
+    }
+
+    /** The same title / episode on the other servers (empty with a single server). */
+    private suspend fun otherCopies(userId: String, scopedId: String): List<ItemCopy> =
+        copies?.othersOf(scopedId, userId).orEmpty()
+
+    /**
+     * Parental gate for playback: whatever opened the player (Watch Next, a held deep link, a
+     * collection dialog, "Play on" from a phone), a restricted profile may only play titles within
+     * its rating limit. Episodes are judged by their series' rating, which is where Jellyfin keeps
+     * it. Live TV channels have no rating and stay governed by the Live TV tab. Unrestricted
+     * profiles skip the lookup entirely.
+     */
+    suspend fun isPlayableForProfile(itemId: String, profile: UserProfile?): Boolean {
+        if (profile == null || profile.effectiveRatingLimit == ContentRatingLimit.ALL && !profile.kidsMode) return true
+        val item = runCatchingCancellable { fetchItem(profile.jellyfinUserId, itemId) }.getOrNull() ?: return false
+        if (item.type.equals("TvChannel", ignoreCase = true) || item.type.equals("Program", ignoreCase = true)) return true
+        val series = item.seriesId?.takeIf { item.officialRating.isNullOrBlank() || item.genres.isEmpty() }?.let { sid ->
+            runCatchingCancellable { fetchItem(profile.jellyfinUserId, sid) }.getOrNull()
+        }
+        val probe = UnifiedMediaItem(
+            id = itemId,
+            mediaType = MediaType.MOVIE,
+            title = item.name,
+            maturityRating = item.officialRating?.takeIf { it.isNotBlank() } ?: series?.officialRating,
+            genres = item.genres.ifEmpty { series?.genres.orEmpty() }
+        )
+        return ContentRatingHelper.isAllowed(probe, profile)
+    }
+
+    /** One item from the server that owns it, ids scoped; null when it can't be loaded. */
+    private suspend fun fetchItem(userId: String, scopedId: String): JellyfinItemDto? {
+        val session = sessionFor(scopedId, userId) ?: return null
+        return onServer(session) { s -> s.api.getItemDetails(s.userId, s.raw(scopedId)) }?.scopedTo(session.id)
+    }
+
+    /** Seasons of a series from every server that has it, merged by season number. */
+    private suspend fun seasonsAcrossServers(userId: String, seriesId: String): List<JellyfinItemDto> = coroutineScope {
+        val perServer = links.copiesOf(seriesId).map { copyId ->
+            async {
+                val session = sessionFor(copyId, userId) ?: return@async emptyList()
+                onServer(session) { s -> s.api.getSeasons(s.raw(copyId), s.userId).items }
+                    ?.scopedTo(session.id).orEmpty()
+            }
+        }.awaitAll()
+        if (perServer.size == 1) perServer.first() else CrossServerMerge.mergeSeasons(perServer).map { it.item }
+    }
+
+    /**
+     * Episodes of one season from every server that has the series, merged by episode number: an
+     * episode missing on one server is filled in from another.
+     */
+    private suspend fun episodesAcrossServers(
+        userId: String,
+        seriesId: String,
+        seasonId: String?,
+        seasonNumber: Int
+    ): List<JellyfinItemDto> = coroutineScope {
+        val seriesCopies = links.copiesOf(seriesId)
+        val perServer = seriesCopies.map { copyId ->
+            async {
+                val session = sessionFor(copyId, userId) ?: return@async emptyList()
+                // A season id only means something on the server it came from; the other copies of
+                // the series are asked for the season by its number.
+                val ownSeasonId = seasonId?.takeIf { session.owns(it) }
+                onServer(session) { s ->
+                    if (ownSeasonId != null || seriesCopies.size == 1) {
+                        s.api.getEpisodes(
+                            seriesId = s.raw(copyId),
+                            userId = s.userId,
+                            seasonId = ownSeasonId?.let { s.raw(it) }
+                        ).items.filter { it.parentIndexNumber == seasonNumber || ownSeasonId != null }
+                    } else {
+                        s.api.getEpisodesBySeasonNumber(
+                            seriesId = s.raw(copyId),
+                            userId = s.userId,
+                            season = seasonNumber
+                        ).items.filter { it.parentIndexNumber == seasonNumber }
+                    }
+                }?.scopedTo(session.id).orEmpty()
+            }
+        }.awaitAll()
+        if (perServer.size == 1) perServer.first() else CrossServerMerge.mergeEpisodes(perServer).map { it.item }
+    }
+
+    /**
+     * The Versions list for [item]: its own files, then the copies on other servers, each labelled
+     * with its server. Media source ids are server scoped like item ids, so two servers' files can
+     * never be mixed up.
+     */
+    private fun buildMediaVersions(item: JellyfinItemDto?, others: List<ItemCopy>): List<MediaSourceOption> {
+        if (item == null) return emptyList()
+        val ownServerId = ServerScopedId.serverOf(item.id)
+        // Name the server whenever it isn't obvious: there is another copy, or this one isn't at home.
+        val ownServerName = if (others.isNotEmpty() || ownServerId != ServerScopedId.HOME) {
+            servers?.serverName(ownServerId)?.takeIf { it.isNotBlank() }
+        } else null
+        return crossServerVersions(ownServerId, ownServerName, item.mediaSources, others)
+    }
+
+    // Image URLs are built against the server that owns the item ([homeBase] is the home server's
+    // base URL, already resolved by the caller).
+    private fun imageBase(scopedId: String, homeBase: String): String =
+        if (ServerScopedId.isHome(scopedId)) homeBase else servers?.baseUrlForItem(scopedId).orEmpty()
+
+    private fun primaryImage(homeBase: String, scopedId: String, maxWidth: Int = 340): String? =
+        MediaImageUrls.jellyfinPrimary(imageBase(scopedId, homeBase), ServerScopedId.rawOf(scopedId), maxWidth)
+
+    private fun backdropImage(homeBase: String, scopedId: String): String? =
+        MediaImageUrls.jellyfinBackdrop(imageBase(scopedId, homeBase), ServerScopedId.rawOf(scopedId))
+
+    private fun logoImage(homeBase: String, scopedId: String): String? =
+        MediaImageUrls.jellyfinLogo(imageBase(scopedId, homeBase), ServerScopedId.rawOf(scopedId))
 
     /**
      * The index carries no Overview (it is most of the payload). Rows built from index items
@@ -362,18 +712,26 @@ class UnifiedCatalogRepository @Inject constructor(
             .take(max)
             .toList()
         if (missingIds.isEmpty()) return dtos
-        val overviews = runCatchingCancellable {
-            jellyfinApi.getLibraryItems(
-                userId = userId,
-                fields = "Overview",
-                limit = missingIds.size,
-                ids = missingIds.joinToString(","),
-                enableImages = false,
-                enableUserData = false,
-                enableTotalRecordCount = false
-            ).items.mapNotNull { dto -> dto.overview?.let { dto.id to it } }.toMap()
-        }.getOrNull()
-        if (overviews.isNullOrEmpty()) return dtos
+        // One by-id request per server that owns some of the items.
+        val overviews = coroutineScope {
+            missingIds.groupBy { ServerScopedId.serverOf(it) }.map { (_, ids) ->
+                async {
+                    val session = sessionFor(ids.first(), userId) ?: return@async emptyMap()
+                    onServer(session, ROW_EXTRA_TIMEOUT_MS) { s ->
+                        s.api.getLibraryItems(
+                            userId = s.userId,
+                            fields = "Overview",
+                            limit = ids.size,
+                            ids = ids.joinToString(",") { s.raw(it) },
+                            enableImages = false,
+                            enableUserData = false,
+                            enableTotalRecordCount = false
+                        ).items.mapNotNull { dto -> dto.overview?.let { s.scope(dto.id) to it } }.toMap()
+                    }.orEmpty()
+                }
+            }.awaitAll().fold(emptyMap<String, String>()) { acc, part -> if (acc.isEmpty()) part else acc + part }
+        }
+        if (overviews.isEmpty()) return dtos
         return dtos.map { dto -> overviews[dto.id]?.let { dto.copy(overview = it) } ?: dto }
     }
 
@@ -390,10 +748,16 @@ class UnifiedCatalogRepository @Inject constructor(
     }
 
     suspend fun markWatched(userId: String, itemId: String, watched: Boolean): Result<Unit> = runCatchingCancellable {
+        val session = requireSession(itemId, userId)
         if (watched) {
-            jellyfinApi.markPlayed(userId, itemId)
+            session.api.markPlayed(session.userId, session.raw(itemId))
         } else {
-            jellyfinApi.markUnplayed(userId, itemId)
+            session.api.markUnplayed(session.userId, session.raw(itemId))
+            // The watch state shown is the most recently played copy's, so a copy on another
+            // server that is still marked played would bring the tick straight back.
+            otherCopies(userId, itemId).forEach { copy ->
+                runCatchingCancellable { copy.session.api.markUnplayed(copy.session.userId, copy.session.raw(copy.item.id)) }
+            }
         }
         invalidateDetailsCache()
     }
@@ -414,10 +778,12 @@ class UnifiedCatalogRepository @Inject constructor(
         invalidateDetailsCache()
         if (item.jellyfinId != null) {
             val newState = !item.isInMyList
-            if (newState) {
-                jellyfinApi.addFavorite(userId, item.jellyfinId)
-            } else {
-                jellyfinApi.removeFavorite(userId, item.jellyfinId)
+            setFavorite(userId, item.jellyfinId, newState)
+            if (!newState) {
+                // A favourite on any server keeps the title in My List: clear the other copies too.
+                otherCopies(userId, item.jellyfinId).forEach { copy ->
+                    runCatchingCancellable { setFavorite(userId, copy.item.id, false) }
+                }
             }
             item.tmdbId?.let { tmdb ->
                 prefs.removeFromLocalMyList(userId, tmdb, item.mediaType)
@@ -435,23 +801,32 @@ class UnifiedCatalogRepository @Inject constructor(
     }
 
     suspend fun removeFromContinueWatching(userId: String, itemId: String): Result<Unit> = runCatchingCancellable {
-        val updated = runCatchingCancellable {
-            jellyfinApi.updateUserData(
-                userId = userId,
-                itemId = itemId,
-                body = JellyfinUpdateUserDataRequest(playbackPositionTicks = 0L)
-            )
-        }
-        if (updated.isFailure) {
-            jellyfinApi.markPlayed(userId, itemId)
-            jellyfinApi.markUnplayed(userId, itemId)
+        clearResumePosition(requireSession(itemId, userId), itemId)
+        // In progress on another server too? Clear it there as well, or it comes right back.
+        otherCopies(userId, itemId).forEach { copy ->
+            runCatchingCancellable { clearResumePosition(copy.session, copy.item.id) }
         }
         invalidateDetailsCache()
     }
 
+    private suspend fun clearResumePosition(session: ServerSession, scopedId: String) {
+        val raw = session.raw(scopedId)
+        val updated = runCatchingCancellable {
+            session.api.updateUserData(
+                userId = session.userId,
+                itemId = raw,
+                body = JellyfinUpdateUserDataRequest(playbackPositionTicks = 0L)
+            )
+        }
+        if (updated.isFailure) {
+            session.api.markPlayed(session.userId, raw)
+            session.api.markUnplayed(session.userId, raw)
+        }
+    }
+
     suspend fun loadMyList(userId: String): List<UnifiedMediaItem> = coroutineScope {
         val jfFavsDeferred = async {
-            runCatchingCancellable { jellyfinApi.getFavoriteItems(userId = userId).items }.getOrDefault(emptyList())
+            runCatchingCancellable { favoriteDtos(userId) }.getOrDefault(emptyList())
         }
         ensureLibraryIndex(userId)
         val localEntries = prefs.getLocalMyList(userId)
@@ -465,7 +840,7 @@ class UnifiedCatalogRepository @Inject constructor(
             }
             if (matchedJf != null) {
                 // Auto-promote local My List item to Jellyfin Favorites now that it's in the library
-                runCatchingCancellable { jellyfinApi.addFavorite(userId, matchedJf.id) }
+                runCatchingCancellable { setFavorite(userId, matchedJf.id, true) }
                 prefs.removeFromLocalMyList(userId, entry.tmdbId, entry.mediaType)
             } else {
                 remainingLocal += entry.toUnifiedMediaItem()
@@ -485,7 +860,7 @@ class UnifiedCatalogRepository @Inject constructor(
      * view after playback so progress / newly started titles show up without a full reload.
      */
     suspend fun loadContinueWatchingItems(userId: String, activeProfile: UserProfile?): List<UnifiedMediaItem> {
-        val items = jellyfinApi.getResumeItems(userId = userId, limit = 15).items.map { mapJellyfinItem(it) }
+        val items = resumeDtos(userId, limit = 15).map { mapJellyfinItem(it) }
         return ContentRatingHelper.filterForProfile(items, activeProfile)
     }
 
@@ -518,15 +893,15 @@ class UnifiedCatalogRepository @Inject constructor(
         // (first run / Refresh) overlaps them instead of delaying every request.
         val resumeDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatchingCancellable { jellyfinApi.getResumeItems(userId = userId, limit = 15).items }.getOrDefault(emptyList())
+            else runCatchingCancellable { resumeDtos(userId, limit = 15) }.getOrDefault(emptyList())
         }
         val latestDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatchingCancellable { jellyfinApi.getLatestItems(userId = userId, limit = 20) }.getOrDefault(emptyList())
+            else runCatchingCancellable { latestDtos(userId, limit = 20) }.getOrDefault(emptyList())
         }
         val playedDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatchingCancellable { jellyfinApi.getPlayedItems(userId = userId, limit = 20).items }.getOrDefault(emptyList())
+            else runCatchingCancellable { playedDtos(userId, limit = 20) }.getOrDefault(emptyList())
         }
         val trendingDeferred = async {
             if (!seerrActive) emptyList()
@@ -1122,7 +1497,7 @@ class UnifiedCatalogRepository @Inject constructor(
         }
         val latestDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
-            else runCatchingCancellable { jellyfinApi.getLatestItems(userId = userId, limit = 24) }.getOrDefault(emptyList())
+            else runCatchingCancellable { latestDtos(userId, limit = 24) }.getOrDefault(emptyList())
         }
 
         ensureLibraryIndex(userId, if (forceRefresh) IndexPolicy.FORCE else IndexPolicy.STALE_WHILE_REVALIDATE)
@@ -1539,11 +1914,16 @@ class UnifiedCatalogRepository @Inject constructor(
             val earlySeerrTv = if (earlySeerrTmdbId != null && resolvedType == MediaType.SERIES) {
                 async { runCatchingCancellable { seerrApi.getTvDetails(earlySeerrTmdbId, language = metaLang) } }
             } else null
-            var jfItem: JellyfinItemDto? = jellyfinId?.let { id ->
-                runCatchingCancellable { jellyfinApi.getItemDetails(userId, id) }.getOrNull()
-            }
+            // A title that is on several servers is opened as its preferred copy (the home
+            // server's when it has one); if that server can't be reached, the copy that was asked for.
+            val preferredId = jellyfinId?.let { links.canonical(it) }
+            var jfItem: JellyfinItemDto? = preferredId?.let { id -> fetchItem(userId, id) }
+                ?: jellyfinId?.takeIf { it != preferredId }?.let { id -> fetchItem(userId, id) }
             if (jfItem?.type.equals("Episode", ignoreCase = true) && !jfItem?.seriesId.isNullOrBlank()) {
-                val parentSeries = runCatchingCancellable { jellyfinApi.getItemDetails(userId, jfItem!!.seriesId!!) }.getOrNull()
+                val seriesId = jfItem!!.seriesId!!
+                val preferredSeriesId = links.canonical(seriesId)
+                val parentSeries = fetchItem(userId, preferredSeriesId)
+                    ?: seriesId.takeIf { it != preferredSeriesId }?.let { fetchItem(userId, it) }
                 if (parentSeries != null) {
                     jfItem = parentSeries
                 }
@@ -1561,9 +1941,16 @@ class UnifiedCatalogRepository @Inject constructor(
                 }
             }
 
+            // The same title on the other servers: extra versions, and possibly newer watch state.
+            val otherCopiesDeferred = async {
+                jfItem?.let { item -> copies?.others(item, userId, itemFields = "MediaSources") }.orEmpty()
+            }
+
             val extrasDeferred = async {
                 jfItem?.id?.let { id ->
-                    runCatchingCancellable { jellyfinApi.getSpecialFeatures(id, userId) }.getOrDefault(emptyList())
+                    sessionFor(id, userId)?.let { session ->
+                        onServer(session) { s -> s.api.getSpecialFeatures(s.raw(id), s.userId) }?.scopedTo(session.id)
+                    }
                 }.orEmpty().map { extra ->
                     ExtrasItem(
                         id = extra.id,
@@ -1571,14 +1958,17 @@ class UnifiedCatalogRepository @Inject constructor(
                         overview = extra.overview.orEmpty(),
                         extraType = extra.extraType,
                         runtimeMinutes = extra.runTimeTicks?.let { (it / 600_000_000L).toInt() },
-                        thumbnailUrl = MediaImageUrls.jellyfinPrimary(jfBaseUrl, extra.id, 480)
+                        thumbnailUrl = primaryImage(jfBaseUrl, extra.id, 480)
                     )
                 }
             }
 
             val localTrailerDeferred = async {
                 jfItem?.id?.let { id ->
-                    runCatchingCancellable { jellyfinApi.getLocalTrailers(id, userId).firstOrNull()?.id }.getOrNull()
+                    sessionFor(id, userId)?.let { session ->
+                        onServer(session) { s -> s.api.getLocalTrailers(s.raw(id), s.userId) }
+                            ?.firstOrNull()?.id?.let { session.scope(it) }
+                    }
                 }
             }
 
@@ -1586,8 +1976,20 @@ class UnifiedCatalogRepository @Inject constructor(
             val jfSeasonsDeferred = async {
                 val id = jfItem?.id
                 if (resolvedType == MediaType.SERIES && id != null) {
-                    runCatchingCancellable { jellyfinApi.getSeasons(id, userId).items }.getOrDefault(emptyList())
+                    seasonsAcrossServers(userId, id)
                 } else emptyList()
+            }
+
+            // Watch state (resume position, played, favourite) follows the most recently played copy.
+            val otherCopies = otherCopiesDeferred.await()
+            if (otherCopies.isNotEmpty()) {
+                jfItem = jfItem?.let { item ->
+                    item.copy(
+                        userData = CrossServerMerge.mergeUserData(
+                            listOf(item.userData) + otherCopies.map { it.item.userData }
+                        )
+                    )
+                }
             }
 
             val seerrMergedItem: UnifiedMediaItem? = if (resolvedTmdbId != null && isSeerrEnabled) {
@@ -1644,7 +2046,7 @@ class UnifiedCatalogRepository @Inject constructor(
                             name = s.name,
                             episodeCount = s.childCount ?: 0,
                             overview = s.overview,
-                            posterUrl = MediaImageUrls.jellyfinPrimary(jfBaseUrl, s.id),
+                            posterUrl = primaryImage(jfBaseUrl, s.id),
                             hdStatus = AvailabilityTier.AVAILABLE,
                             jellyfinSeasonId = s.id
                         )
@@ -1668,9 +2070,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 prefs.isReminderSet(userId, it, baseItem.mediaType)
             } ?: false
 
-            val mediaVersions = jfItem?.mediaSources
-                ?.map { JellyfinPlaybackManager.mapMediaSourceOption(it) }
-                .orEmpty()
+            val mediaVersions = buildMediaVersions(jfItem, otherCopies)
 
             earlySeerrMovie?.cancel()
             earlySeerrTv?.cancel()
@@ -1694,13 +2094,7 @@ class UnifiedCatalogRepository @Inject constructor(
     ): List<EpisodeSummary> = coroutineScope {
         val jfEpisodesDeferred = async {
             if (jellyfinSeriesId != null) {
-                runCatchingCancellable {
-                    jellyfinApi.getEpisodes(
-                        seriesId = jellyfinSeriesId,
-                        userId = userId,
-                        seasonId = jellyfinSeasonId
-                    ).items.filter { it.parentIndexNumber == seasonNumber || jellyfinSeasonId != null }
-                }.getOrDefault(emptyList())
+                episodesAcrossServers(userId, jellyfinSeriesId, jellyfinSeasonId, seasonNumber)
             } else emptyList()
         }
         val seerrSeasonDeferred = async {
@@ -1725,7 +2119,7 @@ class UnifiedCatalogRepository @Inject constructor(
                     episodeNumber = ep.episodeNumber,
                     runtimeTicks = jf?.runTimeTicks ?: 0L,
                     resumePositionTicks = jf?.userData?.playbackPositionTicks ?: 0L,
-                    stillUrl = jf?.let { MediaImageUrls.jellyfinPrimary(jfBase, it.id, 480) }
+                    stillUrl = jf?.let { primaryImage(jfBase, it.id, 480) }
                         ?: MediaImageUrls.tmdbBackdrop(ep.stillPath),
                     isAvailableInJellyfin = jf != null,
                     isWatched = jf?.userData?.played == true
@@ -1741,7 +2135,7 @@ class UnifiedCatalogRepository @Inject constructor(
                     episodeNumber = jf.indexNumber ?: 0,
                     runtimeTicks = jf.runTimeTicks ?: 0L,
                     resumePositionTicks = jf.userData?.playbackPositionTicks ?: 0L,
-                    stillUrl = MediaImageUrls.jellyfinPrimary(jfBase, jf.id, 480),
+                    stillUrl = primaryImage(jfBase, jf.id, 480),
                     isAvailableInJellyfin = true,
                     isWatched = jf.userData?.played == true
                 )
@@ -1772,9 +2166,10 @@ class UnifiedCatalogRepository @Inject constructor(
             }
         }
         if (jellyfinId != null) {
-            val similar = runCatchingCancellable {
-                jellyfinApi.getSimilarItems(jellyfinId, userId).items.map { mapJellyfinItem(it) }
-            }.getOrDefault(emptyList())
+            val similar = sessionFor(jellyfinId, userId)?.let { session ->
+                onServer(session) { s -> s.api.getSimilarItems(s.raw(jellyfinId), s.userId).items }
+                    ?.scopedTo(session.id)
+            }.orEmpty().map { mapJellyfinItem(it) }
             return ContentRatingHelper.filterForProfile(similar, activeProfile)
         }
         return emptyList()
@@ -1798,7 +2193,7 @@ class UnifiedCatalogRepository @Inject constructor(
             else emptyList()
         }
         val jfDeferred = async {
-            runCatchingCancellable { jellyfinApi.searchItems(userId, query).items }.getOrDefault(emptyList())
+            runCatchingCancellable { searchDtos(userId, query) }.getOrDefault(emptyList())
         }
 
         val rawSeerr = seerrDeferred.await()
@@ -2131,7 +2526,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 id = ch.id,
                 number = ch.channelNumber,
                 name = ch.name,
-                logoUrl = MediaImageUrls.jellyfinPrimary(base, ch.id, 300),
+                logoUrl = primaryImage(base, ch.id, 300),
                 currentProgram = current,
                 nextProgram = next
             )
@@ -2199,6 +2594,15 @@ class UnifiedCatalogRepository @Inject constructor(
         startIndex: Int,
         limit: Int
     ): LibraryPage {
+        // A specific library (parentId) belongs to the home server; the all-Movies / all-Shows
+        // grids interleave every server's titles.
+        val extras = if (parentId == null) servers?.availableExtras().orEmpty() else emptyList()
+        if (extras.isNotEmpty()) {
+            return browseMerged(
+                userId, extras, includeItemTypes, sortBy, sortOrder, filters, genre,
+                nameStartsWith, nameLessThan, maxOfficialRating, startIndex, limit
+            )
+        }
         val resp = jellyfinApi.browseItems(
             userId = userId,
             parentId = parentId,
@@ -2216,11 +2620,137 @@ class UnifiedCatalogRepository @Inject constructor(
         return LibraryPage(resp.items.map { mapJellyfinItem(it) }, resp.totalRecordCount)
     }
 
-    suspend fun loadGenres(userId: String, parentId: String?, includeItemTypes: String): List<String> =
-        runCatchingCancellable {
+    suspend fun loadGenres(userId: String, parentId: String?, includeItemTypes: String): List<String> = coroutineScope {
+        val extraDeferred = async {
+            if (parentId != null) emptyList()
+            else servers?.fromExtras(ROW_EXTRA_TIMEOUT_MS) { s ->
+                s.api.getGenres(userId = s.userId, includeItemTypes = includeItemTypes).items.map { it.name }
+            }.orEmpty().flatMap { it.second }
+        }
+        val home = runCatchingCancellable {
             jellyfinApi.getGenres(userId = userId, parentId = parentId, includeItemTypes = includeItemTypes)
                 .items.map { it.name }.filter { it.isNotBlank() }
         }.getOrDefault(emptyList())
+        val extra = extraDeferred.await().filter { it.isNotBlank() }
+        if (extra.isEmpty()) home
+        else (home + extra).distinctBy { it.lowercase() }.sortedBy { it.lowercase() }
+    }
+
+    private class BrowseStream(val session: ServerSession) {
+        val buffer = ArrayDeque<JellyfinItemDto>()
+        var nextStart = 0
+        var total = 0
+        var exhausted = false
+    }
+
+    /** Where an interleaved library grid is up to: one paging cursor per server. */
+    private class MergedBrowse(val signature: String, val streams: List<BrowseStream>) {
+        var emitted = 0
+        var duplicates = 0
+        var turn = 0
+        val seen = HashSet<String>()
+    }
+
+    private var mergedBrowse: MergedBrowse? = null
+    private val browseMutex = Mutex()
+
+    /**
+     * One page of a grid that spans several servers. Each server pages through its own sorted
+     * list; the pages are interleaved in the same order, and a title that was already listed from
+     * another server is skipped. A server that stops answering just ends its part of the grid.
+     */
+    private suspend fun browseMerged(
+        userId: String,
+        extras: List<ServerSession>,
+        includeItemTypes: String,
+        sortBy: String,
+        sortOrder: String,
+        filters: String?,
+        genre: String?,
+        nameStartsWith: String?,
+        nameLessThan: String?,
+        maxOfficialRating: String?,
+        startIndex: Int,
+        limit: Int
+    ): LibraryPage = browseMutex.withLock {
+        val signature = listOf(
+            userId, includeItemTypes, sortBy, sortOrder, filters, genre, nameStartsWith, nameLessThan,
+            maxOfficialRating, extras.joinToString(",") { "${it.id}:${it.userId}" }
+        ).joinToString("|")
+        var state = mergedBrowse
+        if (state == null || state.signature != signature || state.emitted != startIndex) {
+            state = MergedBrowse(signature, listOf(BrowseStream(homeSession(userId))) + extras.map { BrowseStream(it) })
+            mergedBrowse = state
+        }
+        val comparator = CrossServerMerge.browseComparator(sortBy, sortOrder.equals("Descending", ignoreCase = true))
+        val pageLinks = links
+
+        suspend fun refill(stream: BrowseStream) {
+            if (stream.exhausted || stream.buffer.isNotEmpty()) return
+            suspend fun page(s: ServerSession) = s.api.browseItems(
+                userId = s.userId,
+                includeItemTypes = includeItemTypes,
+                sortBy = sortBy,
+                sortOrder = sortOrder,
+                filters = filters,
+                genres = genre,
+                nameStartsWith = nameStartsWith,
+                nameLessThan = nameLessThan,
+                maxOfficialRating = maxOfficialRating,
+                startIndex = stream.nextStart,
+                limit = limit,
+                fields = BROWSE_FIELDS_MERGED
+            )
+            // The home server failing is an error, as before; another server failing ends its part.
+            val resp = if (stream.session.isHome) page(stream.session)
+            else servers?.callExtra(stream.session, ROW_EXTRA_TIMEOUT_MS) { page(it) }
+            if (resp == null) {
+                stream.exhausted = true
+                return
+            }
+            stream.total = resp.totalRecordCount
+            stream.nextStart += resp.items.size
+            stream.buffer.addAll(resp.items.scopedTo(stream.session.id))
+            if (resp.items.size < limit || stream.nextStart >= resp.totalRecordCount) stream.exhausted = true
+        }
+
+        suspend fun next(): JellyfinItemDto? {
+            while (true) {
+                coroutineScope { state.streams.map { async { refill(it) } }.awaitAll() }
+                val ready = state.streams.filter { it.buffer.isNotEmpty() }
+                if (ready.isEmpty()) return null
+                val pick = if (comparator != null) {
+                    ready.minWithOrNull { a, b -> comparator.compare(a.buffer.first(), b.buffer.first()) }!!
+                } else {
+                    // No comparable order (Random): take turns.
+                    ready[state.turn++ % ready.size]
+                }
+                val dto = pick.buffer.removeFirst()
+                val keys = listOf("id:${pageLinks.canonical(dto.id)}") + CrossServerMerge.providerKeys(dto)
+                if (keys.any { it in state.seen }) {
+                    state.duplicates++
+                    continue
+                }
+                state.seen.addAll(keys)
+                return dto
+            }
+        }
+
+        // The grid normally asks for consecutive pages; after anything else, catch up from the top.
+        while (state.emitted < startIndex) {
+            next() ?: break
+            state.emitted++
+        }
+        val items = ArrayList<JellyfinItemDto>(limit)
+        while (items.size < limit) {
+            items += next() ?: break
+            state.emitted++
+        }
+        val finished = state.streams.all { it.exhausted && it.buffer.isEmpty() }
+        val total = if (finished) state.emitted
+        else maxOf(state.emitted + 1, state.streams.sumOf { it.total } - state.duplicates)
+        LibraryPage(items.map { mapJellyfinItem(it) }, total)
+    }
 
     suspend fun loadLiveTvRecordings(userId: String): List<UnifiedMediaItem> {
         return runCatchingCancellable {
@@ -2240,18 +2770,18 @@ class UnifiedCatalogRepository @Inject constructor(
         if (url == null || tag.isNullOrBlank()) url else "$url&tag=$tag"
 
     private fun jellyfinPrimaryUrl(base: String, dto: JellyfinItemDto, maxWidth: Int = 340): String? =
-        withImageTag(MediaImageUrls.jellyfinPrimary(base, dto.id, maxWidth), dto.imageTags["Primary"])
+        withImageTag(primaryImage(base, dto.id, maxWidth), dto.imageTags["Primary"])
 
     /** Only when the item actually has a backdrop; null otherwise. */
     private fun jellyfinBackdropUrl(base: String, dto: JellyfinItemDto): String? {
         val tag = dto.backdropImageTags.firstOrNull() ?: return null
-        return withImageTag(MediaImageUrls.jellyfinBackdrop(base, dto.id), tag)
+        return withImageTag(backdropImage(base, dto.id), tag)
     }
 
     /** Only when the item actually has a logo: a guessed URL 404s and hides the hero's title text. */
     private fun jellyfinLogoUrl(base: String, dto: JellyfinItemDto): String? {
         val tag = dto.imageTags["Logo"]?.takeIf { it.isNotBlank() } ?: return null
-        return withImageTag(MediaImageUrls.jellyfinLogo(base, dto.id), tag)
+        return withImageTag(logoImage(base, dto.id), tag)
     }
 
     private fun mapJellyfinItem(dto: JellyfinItemDto): UnifiedMediaItem {
@@ -2272,14 +2802,14 @@ class UnifiedCatalogRepository @Inject constructor(
         val usesSeriesArt = type == MediaType.EPISODE && !dto.seriesId.isNullOrBlank()
         val posterItemId = if (usesSeriesArt) dto.seriesId!! else dto.id
         val posterUrl = if (usesSeriesArt) {
-            MediaImageUrls.jellyfinPrimary(base, posterItemId)
+            primaryImage(base, posterItemId)
         } else {
             jellyfinPrimaryUrl(base, dto)
         }
         val backdropUrl = when {
-            usesSeriesArt -> MediaImageUrls.jellyfinBackdrop(base, posterItemId)
+            usesSeriesArt -> backdropImage(base, posterItemId)
             dto.backdropImageTags.isNotEmpty() -> jellyfinBackdropUrl(base, dto)
-            type == MediaType.EPISODE -> MediaImageUrls.jellyfinBackdrop(base, dto.id)
+            type == MediaType.EPISODE -> backdropImage(base, dto.id)
             else -> jellyfinPrimaryUrl(base, dto, maxWidth = 1280)
         }
         val clearLogoUrl = if (usesSeriesArt) null else jellyfinLogoUrl(base, dto)
@@ -2335,7 +2865,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 CastMember(
                     name = p.name,
                     role = p.role.orEmpty(),
-                    imageUrl = p.id?.let { MediaImageUrls.jellyfinPrimary(base, it, 200) }
+                    imageUrl = p.id?.let { primaryImage(base, it, 200) }
                 )
             }
         )
@@ -2398,8 +2928,8 @@ class UnifiedCatalogRepository @Inject constructor(
                     }
                     append(dto.overview.orEmpty())
                 }.trim(),
-                posterUrl = MediaImageUrls.jellyfinPrimary(base, seriesItemId),
-                backdropUrl = MediaImageUrls.jellyfinBackdrop(base, seriesItemId),
+                posterUrl = primaryImage(base, seriesItemId),
+                backdropUrl = backdropImage(base, seriesItemId),
                 hdStatus = if (dto.seriesId != null) AvailabilityTier.AVAILABLE else AvailabilityTier.UNKNOWN,
                 episodeLabel = epCode,
                 seriesName = dto.seriesName,
@@ -2412,8 +2942,12 @@ class UnifiedCatalogRepository @Inject constructor(
 
     suspend fun loadBoxSetCollections(userId: String): List<CollectionSummary> {
         val base = jfBaseUrl
+        val merged = hasExtraServers
         val boxSets = runCatchingCancellable {
-            jellyfinApi.getCollections(userId = userId).items
+            mergedItems(
+                extra = { s -> s.api.getCollections(userId = s.userId).items },
+                home = { jellyfinApi.getCollections(userId = userId).items }
+            )
         }.getOrDefault(emptyList())
         return boxSets.map { dto ->
             val tmdbColId = dto.providerIds["TmdbCollection"]?.toIntOrNull()
@@ -2430,6 +2964,10 @@ class UnifiedCatalogRepository @Inject constructor(
                 ownedCount = dto.childCount ?: 0,
                 totalCount = null
             )
+        }.let { all ->
+            // The same collection on two servers is listed once (the home server's comes first).
+            if (!merged) all
+            else all.distinctBy { c -> c.tmdbCollectionId?.let { "tmdb:$it" } ?: "name:${c.name.trim().lowercase()}" }
         }
     }
 
@@ -2440,9 +2978,10 @@ class UnifiedCatalogRepository @Inject constructor(
         tmdbCollectionIdHint: Int? = null
     ): CollectionSummary? {
         ensureLibraryIndex(userId)
-        val ownedDtos = runCatchingCancellable {
-            jellyfinApi.getCollectionItems(userId = userId, parentId = boxSetId).items
-        }.getOrDefault(emptyList())
+        val ownedDtos = sessionFor(boxSetId, userId)?.let { session ->
+            onServer(session) { s -> s.api.getCollectionItems(userId = s.userId, parentId = s.raw(boxSetId)).items }
+                ?.scopedTo(session.id)
+        }.orEmpty()
         val ownedItems = ownedDtos
             .map { mapJellyfinItem(it) }
             .sortedBy { it.releaseDate?.takeIf { d -> d.isNotBlank() } ?: it.releaseYear ?: "9999" }
@@ -2783,6 +3322,20 @@ class UnifiedCatalogRepository @Inject constructor(
         private const val LIBRARY_INDEX_TTL_MS = 180_000L
         private const val BACKGROUND_INDEX_REFRESH_DELAY_MS = 4_000L
         private const val OVERVIEW_BACKFILL_LIMIT = 60
+
+        // Several servers
+        private val HOME_SERVER = JellyfinServer(id = ServerScopedId.HOME, isHome = true)
+        /** How long a row / grid / search waits for an extra server before going on without it. */
+        private const val ROW_EXTRA_TIMEOUT_MS = 3_500L
+        private const val DETAILS_EXTRA_TIMEOUT_MS = 5_000L
+        /** How long a blocking index load waits for the extra servers' shares. */
+        private const val EXTRA_INDEX_WAIT_MS = 6_000L
+        /** Whole-library fetch of an extra server (runs in the background past the wait above). */
+        private const val EXTRA_INDEX_FETCH_TIMEOUT_MS = 45_000L
+        private const val LATEST_FIELDS_MERGED =
+            "PrimaryImageAspectRatio,Overview,Genres,ProviderIds,UserData,RunTimeTicks,RemoteTrailers,MediaStreams,DateCreated"
+        private const val BROWSE_FIELDS_MERGED =
+            "ProviderIds,ProductionYear,OfficialRating,CommunityRating,UserData,PrimaryImageAspectRatio,Genres,RunTimeTicks,SortName,DateCreated"
 
         // Top 10 charts
         private const val TOP_N = 10

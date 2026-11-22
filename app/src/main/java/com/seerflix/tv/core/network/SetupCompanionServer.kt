@@ -34,8 +34,13 @@ class SetupCompanionServer {
     var companionUrl: String? = null
         private set
 
+    /**
+     * @param jellyfinOnly the form only asks for a Jellyfin address (adding another server),
+     *   not the Seerr fields of first-time setup.
+     */
     fun start(
         currentValues: CompanionFormResult = CompanionFormResult(),
+        jellyfinOnly: Boolean = false,
         onSubmitted: (CompanionFormResult) -> Unit
     ): String? {
         stop()
@@ -58,7 +63,7 @@ class SetupCompanionServer {
                 val client = runCatching { socket.accept() }.getOrNull() ?: break
                 launch {
                     // Never let one bad connection crash the app (uncaught exception in scope).
-                    runCatching { handleClient(client, token, currentValues, onSubmitted) }
+                    runCatching { handleClient(client, token, currentValues, jellyfinOnly, onSubmitted) }
                     runCatching { client.close() }
                 }
             }
@@ -78,6 +83,7 @@ class SetupCompanionServer {
         socket: Socket,
         token: String,
         defaults: CompanionFormResult,
+        jellyfinOnly: Boolean,
         onSubmitted: (CompanionFormResult) -> Unit
     ) {
         socket.use { client ->
@@ -110,7 +116,7 @@ class SetupCompanionServer {
                 writeHttpResponse(
                     client,
                     status = "200 OK",
-                    html = buildFormHtml(defaults, token)
+                    html = buildFormHtml(defaults, token, jellyfinOnly)
                 )
             }
         }
@@ -170,7 +176,16 @@ class SetupCompanionServer {
         }
     }
 
-    private fun buildFormHtml(defaults: CompanionFormResult, token: String): String = """
+    private fun seerrFieldsHtml(defaults: CompanionFormResult): String = """
+            <label>Seerr / Jellyseerr URL (Optional — leave blank for Jellyfin-Only Mode)</label>
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrUrl" placeholder="https://seerr.example.com" value="${escapeHtml(defaults.seerrUrl)}"/>
+            <label>Seerr Local LAN URL (Optional)</label>
+            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
+            <label>Seerr API Key (Optional)</label>
+            <input type="text" name="seerrApiKey" placeholder="Optional X-Api-Key from Seerr Settings" value="${escapeHtml(defaults.seerrApiKey)}"/>
+    """
+
+    private fun buildFormHtml(defaults: CompanionFormResult, token: String, jellyfinOnly: Boolean = false): String = """
         <!doctype html>
         <html lang="en">
         <head>
@@ -188,18 +203,13 @@ class SetupCompanionServer {
         </head>
         <body>
           <h1>Lumen TV Companion</h1>
-          <p>Paste your server URLs from your phone to send them straight to your TV.</p>
+          <p>${if (jellyfinOnly) "Paste the address of the Jellyfin server you want to add to send it straight to your TV." else "Paste your server URLs from your phone to send them straight to your TV."}</p>
           <form method="POST" action="/$token/save">
             <label>Jellyfin URL (Remote or Primary)</label>
             <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="jellyfinUrl" placeholder="https://jf.example.com" value="${escapeHtml(defaults.jellyfinUrl)}"/>
             <label>Jellyfin Local LAN URL (Optional)</label>
             <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="jellyfinLocalUrl" placeholder="http://192.168.1.50:8096" value="${escapeHtml(defaults.jellyfinLocalUrl)}"/>
-            <label>Seerr / Jellyseerr URL (Optional — leave blank for Jellyfin-Only Mode)</label>
-            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrUrl" placeholder="https://seerr.example.com" value="${escapeHtml(defaults.seerrUrl)}"/>
-            <label>Seerr Local LAN URL (Optional)</label>
-            <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
-            <label>Seerr API Key (Optional)</label>
-            <input type="text" name="seerrApiKey" placeholder="Optional X-Api-Key from Seerr Settings" value="${escapeHtml(defaults.seerrApiKey)}"/>
+            ${if (jellyfinOnly) "" else seerrFieldsHtml(defaults)}
             <label class="check">
               <input type="checkbox" name="trustSelfSigned" value="true" ${if (defaults.trustSelfSigned) "checked" else ""}/>
               <span>Trust self-signed HTTPS certificates</span>

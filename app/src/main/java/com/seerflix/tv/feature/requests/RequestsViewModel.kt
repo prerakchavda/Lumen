@@ -166,9 +166,11 @@ class RequestsViewModel @Inject constructor(
     }
 
     fun approveRequest(requestId: Int) {
+        // Claim the busy slot synchronously: setting it inside the IO coroutine let a quick
+        // double OK start two requests before either had marked itself busy.
         if (_uiState.value.busyRequestId != null) return
+        _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
             catalogRepository.approveRequest(requestId)
                 .onSuccess {
                     // Reflect the new status immediately (Seerr: 2 = approved) so the admin buttons
@@ -194,9 +196,11 @@ class RequestsViewModel @Inject constructor(
     }
 
     fun declineRequest(requestId: Int) {
+        // Claim the busy slot synchronously: setting it inside the IO coroutine let a quick
+        // double OK start two requests before either had marked itself busy.
         if (_uiState.value.busyRequestId != null) return
+        _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
         viewModelScope.launch(Dispatchers.IO) {
-            _uiState.update { it.copy(busyRequestId = requestId, actionMessage = null) }
             catalogRepository.declineRequest(requestId)
                 .onSuccess {
                     // Seerr: 3 = declined.

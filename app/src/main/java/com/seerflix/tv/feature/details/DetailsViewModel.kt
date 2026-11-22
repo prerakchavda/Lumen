@@ -588,10 +588,13 @@ class DetailsViewModel @Inject constructor(
 
         viewModelScope.launch {
             _uiState.update { it.copy(feedbackBanner = "Opening external player...") }
+            val sourceId = _uiState.value.selectedMediaSourceId
+            // A version that lives on another server is played as that server's copy.
+            val versionItemId = sourceId?.let { id -> item.mediaVersions.firstOrNull { it.id == id }?.itemId }
             playbackManager.preparePlayback(
                 userId = activeUserId,
-                itemId = playableId,
-                mediaSourceId = _uiState.value.selectedMediaSourceId
+                itemId = versionItemId ?: playableId,
+                mediaSourceId = sourceId
             )
                 .onSuccess { session ->
                     val launched = ExternalPlayerHelper.launchExternalPlayer(
@@ -643,11 +646,15 @@ class DetailsViewModel @Inject constructor(
         }
     }
 
+    private var requestAllJob: kotlinx.coroutines.Job? = null
+
     fun requestAllMissingInCollection(is4k: Boolean = false) {
         val saga = _uiState.value.collectionSaga ?: return
         val missing = saga.items.filter { !it.isPlayable && it.canRequestHd && it.tmdbId != null }
         if (missing.isEmpty()) return
-        viewModelScope.launch {
+        // A second OK while the batch runs would request every title again.
+        if (requestAllJob?.isActive == true) return
+        requestAllJob = viewModelScope.launch {
             var count = 0
             val requestedIds = mutableSetOf<Int>()
             missing.forEach { part ->

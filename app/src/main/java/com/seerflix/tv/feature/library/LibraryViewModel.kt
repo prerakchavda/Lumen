@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -44,9 +45,13 @@ data class LibraryUiState(
     val letter: String? = null,
     val isLoading: Boolean = true,
     val isLoadingMore: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** A "load more" page failed; the grid stays and shows a retry at the end. */
+    val loadMoreFailed: Boolean = false,
+    /** Server-side offset of the next page (items can be dropped by the on-device profile filter). */
+    val nextServerIndex: Int = 0
 ) {
-    val canLoadMore: Boolean get() = items.size < totalCount
+    val canLoadMore: Boolean get() = nextServerIndex < totalCount
 }
 
 /**
@@ -103,16 +108,29 @@ class LibraryViewModel @Inject constructor(
 
     private fun reload() {
         loadJob?.cancel()
-        _uiState.update { it.copy(isLoading = true, errorMessage = null, items = emptyList(), totalCount = 0) }
+        _uiState.update {
+            it.copy(isLoading = true, errorMessage = null, loadMoreFailed = false, items = emptyList(), totalCount = 0, nextServerIndex = 0)
+        }
         loadJob = viewModelScope.launch { loadPage(startIndex = 0) }
+    }
+
+    /** Retry after a failed first load or a failed "load more". */
+    fun retry() {
+        val state = _uiState.value
+        if (state.items.isEmpty()) {
+            reload()
+        } else if (state.loadMoreFailed) {
+            _uiState.update { it.copy(loadMoreFailed = false) }
+            loadMore()
+        }
     }
 
     /** Called when focus gets close to the end of what is loaded. */
     fun loadMore() {
         val state = _uiState.value
-        if (state.isLoading || state.isLoadingMore || !state.canLoadMore) return
+        if (state.isLoading || state.isLoadingMore || state.loadMoreFailed || !state.canLoadMore) return
         _uiState.update { it.copy(isLoadingMore = true) }
-        loadJob = viewModelScope.launch { loadPage(startIndex = state.items.size) }
+        loadJob = viewModelScope.launch { loadPage(startIndex = state.nextServerIndex) }
     }
 
     private suspend fun loadPage(startIndex: Int) {
@@ -138,24 +156,35 @@ class LibraryViewModel @Inject constructor(
                 startIndex = startIndex,
                 limit = PAGE_SIZE
             )
+            // The server's MaxOfficialRating lets unrated titles through and knows nothing about
+            // the Kids-Mode genre exclusions, so apply the same profile filter as every other row.
+            val allowed = ContentRatingHelper.filterForProfile(page.items, profile)
             _uiState.update {
-                val merged = if (startIndex == 0) page.items else (it.items + page.items).distinctBy { item -> item.id }
+                val merged = if (startIndex == 0) allowed else (it.items + allowed).distinctBy { item -> item.id }
                 it.copy(
                     items = merged,
                     totalCount = page.totalCount,
+                    nextServerIndex = startIndex + page.items.size,
                     isLoading = false,
-                    isLoadingMore = false
+                    isLoadingMore = false,
+                    loadMoreFailed = false
                 )
+            }
+            // A page the filter emptied entirely would leave nothing to focus to trigger the next one.
+            if (allowed.isEmpty() && page.items.isNotEmpty() && _uiState.value.canLoadMore) {
+                loadPage(_uiState.value.nextServerIndex)
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            val message = UnifiedCatalogRepository.formatHttpError(e, "Couldn't load the library")
             _uiState.update {
-                it.copy(
-                    isLoading = false,
-                    isLoadingMore = false,
-                    errorMessage = UnifiedCatalogRepository.formatHttpError(e, "Couldn't load the library")
-                )
+                if (startIndex > 0 && it.items.isNotEmpty()) {
+                    // Keep what is already on screen; offer a retry for the next page.
+                    it.copy(isLoadingMore = false, loadMoreFailed = true)
+                } else {
+                    it.copy(isLoading = false, isLoadingMore = false, errorMessage = message)
+                }
             }
         }
     }

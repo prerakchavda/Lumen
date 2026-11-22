@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.BuildConfig
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.data.ServerAccountRepository
+import com.seerflix.tv.core.model.ServerStatus
 import com.seerflix.tv.core.diagnostics.DiagnosticsRepository
 import com.seerflix.tv.core.diagnostics.LogUploadResult
 import com.seerflix.tv.core.model.FrameRateMatchMode
@@ -34,7 +36,11 @@ data class SettingsUiState(
     val logUploadInProgress: Boolean = false,
     val logUploadMessage: String? = null,
     val hasPendingCrash: Boolean = false,
-    val appVersion: String = BuildConfig.VERSION_NAME
+    val appVersion: String = BuildConfig.VERSION_NAME,
+    /** The extra Jellyfin servers merged into the library, with their state for this profile. */
+    val servers: List<ServerStatus> = emptyList(),
+    /** Server whose "Remove" was pressed once; a second press removes it. */
+    val pendingRemoveServerId: String? = null
 )
 
 @HiltViewModel
@@ -43,7 +49,8 @@ class SettingsViewModel @Inject constructor(
     private val prefs: SessionPreferences,
     private val capabilityProvider: DeviceCapabilityProvider,
     private val diagnostics: DiagnosticsRepository,
-    private val socketClient: JellyfinSocketClient
+    private val socketClient: JellyfinSocketClient,
+    private val serverAccounts: ServerAccountRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -63,10 +70,27 @@ class SettingsViewModel @Inject constructor(
             socketClient.state.collect { v -> _uiState.update { it.copy(socketState = v) } }
         }
         viewModelScope.launch {
+            serverAccounts.statusFlow.collect { v -> _uiState.update { it.copy(servers = v) } }
+        }
+        viewModelScope.launch {
             val summary = withContext(Dispatchers.IO) { runCatching { capabilityProvider.current().summary() }.getOrDefault("") }
             val crash = withContext(Dispatchers.IO) { diagnostics.pendingCrash() != null }
             _uiState.update { it.copy(capabilitySummary = summary, hasPendingCrash = crash) }
         }
+    }
+
+    fun setServerBitrateCap(serverId: String, maxBitrateBps: Long?) {
+        viewModelScope.launch { serverAccounts.setBitrateCap(serverId, maxBitrateBps) }
+    }
+
+    /** First press arms the removal, the second one (on the same server) does it. */
+    fun removeServer(serverId: String) {
+        if (_uiState.value.pendingRemoveServerId != serverId) {
+            _uiState.update { it.copy(pendingRemoveServerId = serverId) }
+            return
+        }
+        _uiState.update { it.copy(pendingRemoveServerId = null) }
+        viewModelScope.launch { serverAccounts.removeServer(serverId) }
     }
 
     fun setMatchDeviceCapabilities(enabled: Boolean) {

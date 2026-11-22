@@ -159,16 +159,15 @@ fun AvailabilityBadge(
 
     val (text, bgColor, textColor) = when {
         activeDownload != null -> {
-            val pct = activeDownload.percentage.roundToInt()
             val label = if (compact) {
-                if (activeDownload.sizeBytes > 0) "DL $pct%" else "DL..."
+                if (activeDownload.sizeBytes > 0) "↓ ${formatPercent(activeDownload.percentage)}" else "↓ …"
             } else {
                 activeDownload.label
             }
             Triple(label, colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PROCESSING -> {
-            Triple(if (compact) "DL..." else strings.cardDownloading, colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
+            Triple(if (compact) "↓ …" else strings.cardDownloading, colors.downloadingBlue.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PENDING -> {
             Triple(strings.commonRequested, colors.pendingAmber.copy(alpha = 0.92f), colors.deepBlack)
@@ -177,7 +176,10 @@ fun AvailabilityBadge(
             Triple(if (compact) "4K" else strings.detailsTierAvailable.format("4K"), colors.matchGreen.copy(alpha = 0.9f), colors.deepBlack)
         }
         item.hasHd -> {
-            Triple(if (compact) strings.cardBadgePlay else strings.commonInLibrary, colors.accent.copy(alpha = 0.92f), colors.white)
+            // On cards "it's in your library" is the normal case, so it gets no badge at all
+            // (a PLAY badge on every poster told you nothing). Banner / Details still say it.
+            if (compact) return
+            Triple(strings.commonInLibrary, colors.accent.copy(alpha = 0.92f), colors.white)
         }
         item.overallAvailability == AvailabilityTier.PARTIALLY_AVAILABLE -> {
             Triple(strings.cardPartial, colors.pendingAmber.copy(alpha = 0.9f), colors.deepBlack)
@@ -203,7 +205,8 @@ fun AvailabilityBadge(
             color = textColor,
             fontSize = if (compact) 10.sp else 12.sp,
             fontWeight = FontWeight.Bold,
-            maxLines = 1
+            maxLines = 1,
+            style = TabularNumbers
         )
     }
 }
@@ -335,10 +338,9 @@ fun NetflixPosterCard(
     }
 
     val cardWidth = if (spec.preset == UiPreset.DISNEY_PLUS) 142.dp else 136.dp
-    Box(
+    Column(
         modifier = modifier
             .width(cardWidth)
-            .aspectRatio(2f / 3f)
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
@@ -361,6 +363,11 @@ fun NetflixPosterCard(
                 onClick = onClick,
                 onLongClick = onOptionsMenu
             )
+    ) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(2f / 3f)
             .clip(corner)
             .background(colors.surface)
             .then(
@@ -371,21 +378,24 @@ fun NetflixPosterCard(
                 }
             )
     ) {
-        val artworkFailed = CardArtwork(
+        CardArtwork(
             url = item.posterUrl ?: item.backdropUrl,
             item = item,
             width = cardWidth,
             height = cardWidth * 1.5f
         )
 
-        // Subtle bottom gradient for legibility
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(60.dp)
-                .align(Alignment.BottomCenter)
-                .background(rememberBottomScrim(colors.deepBlack, 0.82f))
-        )
+        val hasBottomBadge = !item.upcomingBadgeLabel.isNullOrBlank()
+        if (hasBottomBadge) {
+            // Legibility gradient, only when something is drawn over the bottom of the poster.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(60.dp)
+                    .align(Alignment.BottomCenter)
+                    .background(rememberBottomScrim(colors.deepBlack, 0.82f))
+            )
+        }
 
         // Top-left availability or collection badge
         if (item.boxSetId != null) {
@@ -415,56 +425,36 @@ fun NetflixPosterCard(
             )
         }
 
-        // Bottom metadata (title when missing/focused + upcoming countdown / completion pill)
-        // The fallback tile already shows the title in the middle of the card.
-        val hasBottomTitle = (item.posterUrl == null || focused) && !artworkFailed
-        val hasBottomBadge = !item.upcomingBadgeLabel.isNullOrBlank()
-        if (hasBottomTitle || hasBottomBadge) {
-            Column(
+        // Upcoming countdown / completion pill
+        if (hasBottomBadge) {
+            val isHighlight = item.upcomingBadgeLabel.equals("Now in Library", ignoreCase = true) ||
+                item.upcomingBadgeLabel?.contains("Tonight", ignoreCase = true) == true ||
+                item.upcomingBadgeLabel?.equals("Today", ignoreCase = true) == true
+            Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(horizontal = 6.dp, vertical = if (item.watchProgressFraction > 0f) 8.dp else 6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                if (hasBottomTitle) {
-                    Text(
-                        text = item.title,
-                        color = colors.white,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(horizontal = 2.dp)
+                    .padding(horizontal = 6.dp, vertical = if (item.watchProgressFraction > 0f) 8.dp else 6.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(
+                        if (isHighlight) colors.accent.copy(alpha = 0.92f)
+                        else colors.navBarBackground
                     )
-                }
-                if (hasBottomBadge) {
-                    val isHighlight = item.upcomingBadgeLabel.equals("Now in Library", ignoreCase = true) ||
-                        item.upcomingBadgeLabel?.contains("Tonight", ignoreCase = true) == true ||
-                        item.upcomingBadgeLabel?.equals("Today", ignoreCase = true) == true
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
-                            .background(
-                                if (isHighlight) colors.accent.copy(alpha = 0.92f)
-                                else colors.navBarBackground
-                            )
-                            .border(
-                                1.dp,
-                                if (isHighlight) Color.Transparent else colors.badgeBorder,
-                                RoundedCornerShape(4.dp)
-                            )
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = item.upcomingBadgeLabel!!,
-                            color = colors.white,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
+                    .border(
+                        1.dp,
+                        if (isHighlight) Color.Transparent else colors.badgeBorder,
+                        RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = item.upcomingBadgeLabel!!,
+                    color = colors.white,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TabularNumbers
+                )
             }
         }
 
@@ -484,6 +474,17 @@ fun NetflixPosterCard(
                 )
             }
         }
+    }
+    // Title under every poster, so a row can be scanned by name; brighter on the focused card.
+    Spacer(Modifier.height(5.dp))
+    Text(
+        text = item.title,
+        color = if (focused) colors.white else colors.textSecondary,
+        fontSize = 12.sp,
+        fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
     }
 }
 
@@ -565,7 +566,8 @@ fun Top10PosterCard(
                             text = "#$rank",
                             color = colors.white,
                             fontSize = 12.sp,
-                            fontWeight = FontWeight.Black
+                            fontWeight = FontWeight.Black,
+                            style = TabularNumbers
                         )
                     }
                     AvailabilityBadge(
@@ -639,7 +641,8 @@ fun Top10PosterCard(
                         text = AppStrings.current.cardTopRank.format(rank),
                         color = colors.white,
                         fontSize = 10.sp,
-                        fontWeight = FontWeight.Black
+                        fontWeight = FontWeight.Black,
+                        style = TabularNumbers
                     )
                 }
                 AvailabilityBadge(
@@ -653,29 +656,33 @@ fun Top10PosterCard(
         }
         Top10Style.OUTLINED_NUMERAL -> {
             val rankText = remember(rank) { rank.toString() }
-            val (strokePaint, fillPaint) = remember(rank, colors.deepBlack) {
-                val boldSans = android.graphics.Typeface.create(
-                    android.graphics.Typeface.SANS_SERIF,
-                    android.graphics.Typeface.BOLD
-                )
-                val sp = android.graphics.Paint().apply {
+            // Heavy condensed face (Roboto Condensed Bold ships on every Android TV), so "1"
+            // and "8" sit at the same visual weight and "10" fits without shrinking to a smudge.
+            val numeralTypeface = remember {
+                android.graphics.Typeface.create("sans-serif-condensed", android.graphics.Typeface.BOLD)
+            }
+            val strokePaint = remember {
+                android.graphics.Paint().apply {
                     isAntiAlias = true
                     style = android.graphics.Paint.Style.STROKE
-                    strokeWidth = 6f
-                    color = Color(0xFF707070).toArgb()
-                    typeface = boldSans
-                    letterSpacing = -0.1f
+                    strokeJoin = android.graphics.Paint.Join.ROUND
+                    typeface = numeralTypeface
                 }
-                val fp = android.graphics.Paint(sp).apply {
-                    style = android.graphics.Paint.Style.FILL
-                    color = colors.deepBlack.toArgb()
-                }
-                sp to fp
             }
+            val fillPaint = remember {
+                android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    style = android.graphics.Paint.Style.FILL
+                    typeface = numeralTypeface
+                }
+            }
+            val glyphBounds = remember { android.graphics.Rect() }
+            val strokeColor = if (focused) colors.white else TOP10_NUMERAL_IDLE
+            val fillColor = colors.background
             Box(
                 modifier = modifier
-                    .width(198.dp)
-                    .height(196.dp)
+                    .width(TOP10_NUMERAL_SLOT + TOP10_POSTER_WIDTH)
+                    .height(TOP10_POSTER_HEIGHT)
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale
@@ -699,28 +706,45 @@ fun Top10PosterCard(
                         onLongClick = onOptionsMenu
                     )
             ) {
-                // Giant outlined Netflix Top-10 rank numeral on the left
+                // The rank numeral: bottom flush with the poster's bottom edge, right edge tucked
+                // TOP10_NUMERAL_TUCK under the poster — the same overlap for every rank, whatever
+                // the digit's width. Two-digit ranks are narrowed rather than shrunk.
                 Canvas(
                     modifier = Modifier
-                        .width(92.dp)
+                        .width(TOP10_NUMERAL_SLOT + TOP10_NUMERAL_TUCK)
                         .fillMaxHeight()
                         .align(Alignment.BottomStart)
                 ) {
-                    val targetTextSize = if (rank >= 10) size.height * 0.78f else size.height * 0.92f
-                    strokePaint.textSize = targetTextSize
-                    fillPaint.textSize = targetTextSize
+                    val strokePx = TOP10_NUMERAL_STROKE.toPx()
+                    strokePaint.strokeWidth = strokePx
+                    strokePaint.color = strokeColor.toArgb()
+                    fillPaint.color = fillColor.toArgb()
+                    val scaleX = if (rankText.length > 1) 0.72f else 1f
+                    strokePaint.textScaleX = scaleX
+                    fillPaint.textScaleX = scaleX
+                    // Digit height ~= 88% of the poster: Roboto's digits are ~0.71 em tall.
+                    var textSize = size.height * 0.88f / 0.71f
+                    strokePaint.textSize = textSize
+                    strokePaint.getTextBounds(rankText, 0, rankText.length, glyphBounds)
+                    val maxWidth = size.width - strokePx
+                    if (glyphBounds.width() > maxWidth) {
+                        textSize *= maxWidth / glyphBounds.width()
+                        strokePaint.textSize = textSize
+                        strokePaint.getTextBounds(rankText, 0, rankText.length, glyphBounds)
+                    }
+                    fillPaint.textSize = textSize
+                    val x = size.width - glyphBounds.right - strokePx / 2f
+                    val y = size.height - glyphBounds.bottom - strokePx / 2f
                     drawIntoCanvas { canvas ->
-                        val y = size.height * 0.92f
-                        val x = if (rank >= 10) -6f else 6f
                         canvas.nativeCanvas.drawText(rankText, x, y, fillPaint)
                         canvas.nativeCanvas.drawText(rankText, x, y, strokePaint)
                     }
                 }
 
-                // Poster tucked neatly over the right side of the rank number
+                // Poster over the right side of the numeral
                 Box(
                     modifier = Modifier
-                        .width(126.dp)
+                        .width(TOP10_POSTER_WIDTH)
                         .fillMaxHeight()
                         .align(Alignment.CenterEnd)
                         .clip(corner)
@@ -736,8 +760,8 @@ fun Top10PosterCard(
                     CardArtwork(
                         url = item.posterUrl ?: item.backdropUrl,
                         item = item,
-                        width = 126.dp,
-                        height = 196.dp
+                        width = TOP10_POSTER_WIDTH,
+                        height = TOP10_POSTER_HEIGHT
                     )
                     AvailabilityBadge(
                         item = item,
@@ -751,6 +775,15 @@ fun Top10PosterCard(
         }
     }
 }
+
+private val TOP10_POSTER_WIDTH = 126.dp
+private val TOP10_POSTER_HEIGHT = 189.dp
+/** Visible width left of the poster for the numeral. */
+private val TOP10_NUMERAL_SLOT = 78.dp
+/** How far the numeral runs under the poster's left edge. */
+private val TOP10_NUMERAL_TUCK = 22.dp
+private val TOP10_NUMERAL_STROKE = 3.5.dp
+private val TOP10_NUMERAL_IDLE = Color(0xFF8C8C8C)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -827,26 +860,6 @@ fun ContinueWatchingCard(
                     .background(rememberBottomScrim(colors.deepBlack, 0.85f))
             )
 
-            if (!item.episodeLabel.isNullOrBlank()) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(8.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(colors.deepBlack.copy(alpha = 0.78f))
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                ) {
-                    Text(
-                        text = item.episodeLabel,
-                        color = colors.white,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
             if (focused && onOptionsMenu != null) {
                 Box(
                     modifier = Modifier
@@ -884,12 +897,30 @@ fun ContinueWatchingCard(
 
         Spacer(Modifier.height(6.dp))
         Text(
-            text = item.title,
-            color = if (focused) colors.white else colors.textSecondary,
+            text = item.seriesName?.takeIf { it.isNotBlank() && !item.episodeLabel.isNullOrBlank() } ?: item.title,
+            color = if (focused) colors.white else colors.textPrimary,
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
+        // "S2 E4 · 32 min left" — one consistent line instead of a badge on the artwork.
+        val strings = AppStrings.current
+        val subtitle = remember(item.episodeLabel, item.runtimeTicks, item.resumePositionTicks, strings) {
+            listOfNotNull(
+                item.episodeLabel?.takeIf { it.isNotBlank() }?.let(::normalizeEpisodeCode),
+                formatTimeLeft(item.runtimeTicks, item.resumePositionTicks)?.let { strings.cardTimeLeft.format(it) }
+            ).joinToString(" · ")
+        }
+        if (subtitle.isNotEmpty()) {
+            Text(
+                text = subtitle,
+                color = colors.textSecondary,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TabularNumbers
+            )
+        }
     }
 }

@@ -10,6 +10,7 @@ import com.seerflix.tv.core.data.UnifiedCatalogRepository
 import com.seerflix.tv.core.model.AppUpdateInfo
 import com.seerflix.tv.core.model.AvailabilityFilter
 import com.seerflix.tv.core.model.AvailabilityTier
+import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.model.CatalogRow
 import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.GenreFilterOption
@@ -32,6 +33,8 @@ import com.seerflix.tv.core.network.JellyfinSocketClient
 import com.seerflix.tv.core.network.ServerEvent
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterIsInstance
 import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import com.seerflix.tv.core.tv.TvChannelSyncManager
@@ -61,6 +64,10 @@ enum class HomeTab(val label: String, val filter: MediaType?) {
     NEW_AND_POPULAR("New & Popular", null),
     MY_LIST("My List", null)
 }
+
+/** Tabs that show the All / Watch Now / Requestable filter (merged into their chip row). */
+val HomeTab.showsAvailabilityFilter: Boolean
+    get() = this == HomeTab.SHOWS || this == HomeTab.MOVIES || this == HomeTab.NEW_AND_POPULAR
 
 fun HomeTabId.toHomeTab(): HomeTab = when (this) {
     HomeTabId.HOME -> HomeTab.HOME
@@ -183,6 +190,17 @@ class HomeViewModel @Inject constructor(
                     if (isScreenVisible) refreshInBackground() else pendingLibraryRefresh = true
                 }
         }
+        // Another server was added, removed or signed in to: its titles join / leave the rows.
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.combine(prefs.serversFlow, authRepository.activeProfileFlow) { servers, profile ->
+                servers.filter { !it.isHome && profile?.serverCredentials?.containsKey(it.id) == true }.map { it.id }
+            }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    if (isScreenVisible) refreshInBackground() else pendingLibraryRefresh = true
+                }
+        }
         viewModelScope.launch {
             socketClient.events
                 .filterIsInstance<ServerEvent.UserDataChanged>()
@@ -203,7 +221,9 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             prefs.readyAlertsFlow.collect { alerts ->
-                _uiState.update { it.copy(readyAlerts = alerts) }
+                // Alerts are stored per device, not per profile, and carry no rating: a Kids /
+                // rating-limited profile would see (and could play) an adult's fulfilled request.
+                _uiState.update { it.copy(readyAlerts = if (it.profile?.isRestricted == true) emptyList() else alerts) }
             }
         }
         viewModelScope.launch {
@@ -361,7 +381,10 @@ class HomeViewModel @Inject constructor(
             }
             if (alreadyLoaded) return
         }
-        loadCatalog(tab, GenreFilterOption.ALL_GENRES.first(), state.availabilityFilter)
+        // Home / My List have no filter bar any more, so they always show everything; otherwise a
+        // "Requestable" picked on Movies would silently keep filtering Home with no visible control.
+        val filter = if (tab.showsAvailabilityFilter) state.availabilityFilter else AvailabilityFilter.ALL
+        loadCatalog(tab, GenreFilterOption.ALL_GENRES.first(), filter)
     }
 
     fun selectGenre(genre: GenreFilterOption) {
@@ -698,7 +721,11 @@ class HomeViewModel @Inject constructor(
                     boxSetId = boxSetId,
                     fallbackTitle = title,
                     tmdbCollectionIdHint = tmdbCollectionId
-                )
+                )?.let { col ->
+                    // Same parental filter as every row: a collection can mix ratings.
+                    val allowed = ContentRatingHelper.filterForProfile(col.items, profile)
+                    col.copy(items = allowed, ownedCount = allowed.count { it.isPlayable }, totalCount = col.totalCount?.let { allowed.size })
+                }
             } catch (e: CancellationException) {
                 ensureActive() // rethrow if the dialog was dismissed / superseded
                 null
@@ -759,6 +786,8 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    private var requestAllJob: Job? = null
+
     fun requestAllMissingInCollection(is4k: Boolean = false) {
         val profile = _uiState.value.profile
         if (!_uiState.value.isSeerrConfigured) {
@@ -772,7 +801,9 @@ class HomeViewModel @Inject constructor(
         val col = _uiState.value.activeCollectionDetails ?: return
         val missing = col.items.filter { !it.isPlayable && it.canRequestHd && it.tmdbId != null }
         if (missing.isEmpty()) return
-        viewModelScope.launch(Dispatchers.IO) {
+        // A second OK while the batch runs would request every title again.
+        if (requestAllJob?.isActive == true) return
+        requestAllJob = viewModelScope.launch(Dispatchers.IO) {
             var count = 0
             val requestedTmdbIds = mutableSetOf<Int>()
             missing.forEach { part ->
@@ -935,7 +966,9 @@ class HomeViewModel @Inject constructor(
             val result: Result<CatalogLoadBundle> = try {
                 Result.success(coroutineScope {
                     val collectionsDeferred = async {
-                        if (tab == HomeTab.COLLECTIONS) {
+                        // Collections carry no rating of their own, so restricted profiles don't get
+                        // the hub at all (an adult saga's poster and name would otherwise show).
+                        if (tab == HomeTab.COLLECTIONS && !profile.isRestricted) {
                             catalogRepository.loadBoxSetCollections(profile.jellyfinUserId)
                         } else emptyList()
                     }
@@ -1161,7 +1194,9 @@ class HomeViewModel @Inject constructor(
             genreId = genre.id,
             availability = availabilityFilter.name,
             seerrConfigured = serverConfig.isSeerrConfigured,
-            jellyfinServer = serverConfig.jellyfinUrl.ifBlank { serverConfig.jellyfinLocalUrl },
+            // The extra servers this profile is signed in to are part of what Home shows.
+            jellyfinServer = serverConfig.jellyfinUrl.ifBlank { serverConfig.jellyfinLocalUrl } +
+                prefs.extraServers.filter { prefs.userIdFor(it.id) != null }.joinToString("") { "+${it.id}" },
             seerrServer = serverConfig.seerrUrl.ifBlank { serverConfig.seerrLocalUrl },
             metadataLanguage = profile.metadataLanguage.ifBlank { "en" }
         )

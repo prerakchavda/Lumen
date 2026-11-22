@@ -70,6 +70,21 @@ class ParentalControlsAndConfigTest {
     }
 
     @Test
+    fun `unrated titles are hidden from restricted profiles but not from unrestricted ones`() {
+        val unrated = UnifiedMediaItem(id = "u", mediaType = MediaType.MOVIE, title = "Trending R Movie", maturityRating = null)
+        val kid = UserProfile(id = "k", name = "Kids", jellyfinUserId = "j", jellyfinToken = "t", kidsMode = true)
+        val teen = UserProfile(id = "t", name = "Teen", jellyfinUserId = "j", jellyfinToken = "t", maxContentRating = ContentRatingLimit.PG_13)
+        val adult = UserProfile(id = "a", name = "Adult", jellyfinUserId = "j", jellyfinToken = "t")
+        assertEquals(ContentRatingHelper.UNRATED_RANK, ContentRatingHelper.ratingRank(null))
+        assertEquals(false, ContentRatingHelper.isAllowed(unrated, kid))
+        assertEquals(false, ContentRatingHelper.isAllowed(unrated, teen))
+        assertEquals(true, ContentRatingHelper.isAllowed(unrated, adult))
+        assertEquals(true, kid.isRestricted)
+        assertEquals(true, teen.isRestricted)
+        assertEquals(false, adult.isRestricted)
+    }
+
+    @Test
     fun `ContentRatingHelper ranks country-prefixed and age-based ratings`() {
         assertEquals(4, ContentRatingHelper.ratingRank("DE-16"))
         assertEquals(4, ContentRatingHelper.ratingRank("FSK-18"))
@@ -82,7 +97,8 @@ class ParentalControlsAndConfigTest {
         assertEquals(3, ContentRatingHelper.ratingRank("PG-13"))
         assertEquals(4, ContentRatingHelper.ratingRank("TV-MA"))
         assertEquals(1, ContentRatingHelper.ratingRank("TV-Y7-FV"))
-        assertEquals(2, ContentRatingHelper.ratingRank(null))
+        // Unrated counts as mature (0.9): Seerr discovery results carry no rating at all.
+        assertEquals(4, ContentRatingHelper.ratingRank(null))
 
         val pgProfile = UserProfile(
             id = "k1",

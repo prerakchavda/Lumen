@@ -126,6 +126,10 @@ class PlayerViewModel @Inject constructor(
 
     /** The in-flight item/trailer load; a newer load cancels it so a stale result can't win. */
     private var loadJob: Job? = null
+    /** The item the last loadItem() asked for (differs from session.itemId while it loads or after it failed). */
+    private var requestedItemId: String? = null
+    /** True when onPlaybackError pinned a transcode quality; the next item starts at AUTO again. */
+    private var qualityPinnedByError = false
     private var assLoadJob: Job? = null
 
     /** Episodes-drawer data is not needed to start playback; it loads a few seconds later or on open. */
@@ -198,8 +202,11 @@ class PlayerViewModel @Inject constructor(
         itemId: String,
         qualityOverride: QualityPreset = _uiState.value.selectedQuality,
         resumeOverrideMs: Long? = null,
-        mediaSourceIdOverride: String? = _uiState.value.selectedMediaSourceId,
-        burnInSubtitleOverride: Int? = _uiState.value.burnInSubtitleIndex,
+        // KEEP_* = "carry the current choice over" — only ever for the SAME item. A different item
+        // (next episode, drawer, remote, SyncPlay) starts from its own default version and no
+        // burned-in subtitle: the previous episode's MediaSourceId / subtitle index don't exist on it.
+        mediaSourceIdOverride: String? = KEEP_SOURCE,
+        burnInSubtitleOverride: Int? = KEEP_BURN_IN,
         /** True when the group asked for this item; otherwise a new item becomes the group's queue. */
         fromSyncPlay: Boolean = false
     ) {
@@ -208,7 +215,13 @@ class PlayerViewModel @Inject constructor(
             return
         }
         val isSameItem = _uiState.value.session?.itemId == itemId
+        requestedItemId = itemId
         if (!isSameItem) assLoadJob?.cancel()
+        // A quality forced by a playback error applies to that item only.
+        val quality = if (!isSameItem && qualityPinnedByError && qualityOverride == _uiState.value.selectedQuality) {
+            qualityPinnedByError = false
+            QualityPreset.AUTO
+        } else qualityOverride
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             _uiState.update {
@@ -230,7 +243,24 @@ class PlayerViewModel @Inject constructor(
                 return@launch
             }
             activeUserId = profile.jellyfinUserId
-            val resolvedSourceId = if (isSameItem) mediaSourceIdOverride else (mediaSourceIdOverride ?: initialMediaSourceId?.takeIf { itemId == initialItemId })
+            // Restricted profiles: check the rating before anything plays, whatever opened the player.
+            if (!catalogRepository.isPlayableForProfile(itemId, profile)) {
+                _uiState.update {
+                    it.copy(isLoading = false, errorMessage = BLOCKED_FOR_PROFILE_MESSAGE)
+                }
+                return@launch
+            }
+            val keptSource = _uiState.value.selectedMediaSourceId
+            val resolvedSourceId = when {
+                mediaSourceIdOverride !== KEEP_SOURCE -> mediaSourceIdOverride
+                isSameItem -> keptSource
+                else -> initialMediaSourceId?.takeIf { itemId == initialItemId }
+            }
+            val resolvedBurnIn = when {
+                burnInSubtitleOverride != KEEP_BURN_IN -> burnInSubtitleOverride
+                isSameItem -> _uiState.value.burnInSubtitleIndex
+                else -> null
+            }
             _uiState.update {
                 it.copy(
                     autoplayNextEpisode = profile.autoplayNextEpisode,
@@ -257,12 +287,12 @@ class PlayerViewModel @Inject constructor(
                 extrasScope = this,
                 userId = activeUserId,
                 itemId = itemId,
-                maxBitrateBps = qualityOverride.maxBitrateBps,
+                maxBitrateBps = quality.maxBitrateBps,
                 mediaSourceId = resolvedSourceId,
                 audioPassthroughEnabled = profile.audioPassthroughEnabled,
                 stereoDownmixEnabled = profile.stereoDownmixEnabled,
                 assSubtitleMode = profile.assSubtitleMode,
-                burnInSubtitleIndex = burnInSubtitleOverride
+                burnInSubtitleIndex = resolvedBurnIn
             )
                 .onSuccess { prepared ->
                     val previousSession = _uiState.value.session
@@ -280,16 +310,18 @@ class PlayerViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             session = adjustedSession,
-                            selectedQuality = qualityOverride,
+                            selectedQuality = quality,
                             selectedMediaSourceId = adjustedSession.mediaSourceId,
-                            burnInSubtitleIndex = burnInSubtitleOverride,
+                            burnInSubtitleIndex = resolvedBurnIn,
                             videoFrameRateHint = prepared.videoFrameRate,
                             isLoading = false
                         )
                     }
                     val playSessionId = adjustedSession.playSessionId
                     syncPlayManager.localPlayingItemId = SyncPlayManager.normalizeId(adjustedSession.itemId)
-                    if (!isSameItem && !fromSyncPlay && syncPlayManager.isActive) {
+                    // Watch Together runs on the home server, which only knows its own items.
+                    val onHomeServer = com.seerflix.tv.core.model.ServerScopedId.isHome(adjustedSession.itemId)
+                    if (!isSameItem && !fromSyncPlay && syncPlayManager.isActive && onHomeServer) {
                         // Watching together: make this the group's item; the server then tells every
                         // member (us included) to load it and starts playback once all are ready.
                         launch {
@@ -319,6 +351,9 @@ class PlayerViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
+                            // A different item failed: drop the previous episode's session so the
+                            // External Player button and Retry don't act on the old episode.
+                            session = if (isSameItem) it.session else null,
                             errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Playback initialization failed")
                         )
                     }
@@ -351,11 +386,11 @@ class PlayerViewModel @Inject constructor(
             trailerResolver.evict(trailerYoutubeKey)
             loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
         } else {
+            val retryId = requestedItemId ?: currentSession?.itemId ?: initialItemId
             loadItem(
-                itemId = currentSession?.itemId ?: initialItemId,
+                itemId = retryId,
                 qualityOverride = _uiState.value.selectedQuality,
-                resumeOverrideMs = currentPosMs.takeIf { it > 0L && currentSession != null },
-                mediaSourceIdOverride = _uiState.value.selectedMediaSourceId ?: initialMediaSourceId
+                resumeOverrideMs = currentPosMs.takeIf { it > 0L && currentSession?.itemId == retryId }
             )
         }
     }
@@ -370,6 +405,7 @@ class PlayerViewModel @Inject constructor(
                 QualityPreset.HD_1080P
             }
             reportStopped(currentPosMs)
+            qualityPinnedByError = true
             loadItem(
                 itemId = session.itemId,
                 qualityOverride = fallbackQuality,
@@ -401,9 +437,13 @@ class PlayerViewModel @Inject constructor(
             it.codec.equals("ass", ignoreCase = true) || it.codec.equals("ssa", ignoreCase = true)
         }
         if (assFiles.isEmpty()) return
-        val preferredMatch = preferredLang?.takeIf { it.isNotBlank() }?.let { lang ->
-            assFiles.firstOrNull { it.language?.equals(lang, ignoreCase = true) == true }
-        } ?: assFiles.firstOrNull() ?: return
+        val lang = preferredLang?.takeIf { it.isNotBlank() }
+        val preferredMatch = if (lang != null) {
+            // A preferred language with no matching track: don't force a foreign-language track on.
+            assFiles.firstOrNull { it.language?.equals(lang, ignoreCase = true) == true } ?: return
+        } else {
+            assFiles.firstOrNull() ?: return
+        }
         loadAssSubtitleFile(preferredMatch)
     }
 
@@ -460,8 +500,12 @@ class PlayerViewModel @Inject constructor(
         }
         viewModelScope.launch {
             authRepository.updatePlaybackPreferences(assSubtitleMode = mode)
+            if (session == null || session.isTrailer) return@launch
+            applyAssSubtitleMode(session, mode, currentPosMs)
         }
-        if (session == null || session.isTrailer) return
+    }
+
+    private fun applyAssSubtitleMode(session: PlaybackSessionData, mode: AssSubtitleMode, currentPosMs: Long) {
         val firstAss = session.externalSubtitleFiles.firstOrNull {
             it.codec.equals("ass", ignoreCase = true) || it.codec.equals("ssa", ignoreCase = true)
         }
@@ -495,9 +539,12 @@ class PlayerViewModel @Inject constructor(
     fun switchMediaSource(mediaSourceId: String, currentPosMs: Long) {
         val session = _uiState.value.session ?: return
         if (session.isTrailer || mediaSourceId == session.mediaSourceId) return
+        // A version that lives on another server is a different item there: from here on that
+        // copy is what plays (and what progress is reported for).
+        val otherCopyId = session.mediaSources.firstOrNull { it.id == mediaSourceId }?.itemId
         reportStopped(currentPosMs)
         loadItem(
-            itemId = session.itemId,
+            itemId = otherCopyId ?: session.itemId,
             mediaSourceIdOverride = mediaSourceId,
             resumeOverrideMs = currentPosMs
         )
@@ -792,6 +839,10 @@ class PlayerViewModel @Inject constructor(
     private companion object {
         const val TRAILER_RESOLVE_TIMEOUT_MS = 15_000L
         const val DRAWER_PRELOAD_DELAY_MS = 6_000L
+        /** Sentinel: keep the current version (same item only). Compared by identity. */
+        val KEEP_SOURCE: String = String(charArrayOf('\u0000'))
+        const val KEEP_BURN_IN = Int.MIN_VALUE
+        const val BLOCKED_FOR_PROFILE_MESSAGE = "This title isn't available on this profile."
     }
 }
 

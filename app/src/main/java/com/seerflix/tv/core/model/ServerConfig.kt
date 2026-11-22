@@ -131,8 +131,22 @@ data class UserProfile(
     val hiddenHomeRowIds: List<String> = emptyList(),
     val homeRowOrder: List<String> = emptyList(),
     val metadataLanguage: String = "en",
-    val uiLanguage: String = "en"
+    val uiLanguage: String = "en",
+    /**
+     * Accounts on the extra (non-home) servers, keyed by [JellyfinServer.id]. The home server's
+     * account stays in [jellyfinUserId] / [jellyfinToken], which is also what older versions read.
+     */
+    val serverCredentials: Map<String, ServerCredentials> = emptyMap()
 ) {
+    /** The account this profile uses on [serverId], or null when it has none there. */
+    fun credentialsFor(serverId: String): ServerCredentials? =
+        if (serverId == ServerScopedId.HOME) {
+            if (jellyfinUserId.isBlank()) null
+            else ServerCredentials(userId = jellyfinUserId, accessToken = jellyfinToken, userName = name)
+        } else {
+            serverCredentials[serverId]
+        }
+
     val hasPin: Boolean
         get() = !pinHash.isNullOrBlank()
 
@@ -145,4 +159,8 @@ data class UserProfile(
 
     val canSubmitRequests: Boolean
         get() = !kidsMode || allowKidsRequests
+
+    /** Kids Mode or a rating limit: may not change server settings or edit itself without a parent. */
+    val isRestricted: Boolean
+        get() = kidsMode || effectiveRatingLimit != ContentRatingLimit.ALL
 }

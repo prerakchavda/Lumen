@@ -48,6 +48,8 @@ import com.seerflix.tv.feature.requests.RequestsScreen
 import com.seerflix.tv.feature.search.SearchScreen
 import com.seerflix.tv.feature.setup.SetupScreen
 import com.seerflix.tv.feature.settings.SettingsScreen
+import com.seerflix.tv.feature.servers.AddServerScreen
+import com.seerflix.tv.feature.servers.ServerStatusOverlay
 import com.seerflix.tv.feature.library.LibraryScreen
 import com.seerflix.tv.core.diagnostics.DiagnosticsRepository
 import com.seerflix.tv.ui.components.CrashReportPrompt
@@ -78,7 +80,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        latestIntentState = intent
+        // Only a fresh launch carries a new deep link; after process death the restored back stack
+        // already reflects it, and replaying it would open the link a second time.
+        if (savedInstanceState == null) latestIntentState = intent
         setContent {
             val activeProfile by authRepository.activeProfileFlow.collectAsState(initial = null)
             val activePreset = activeProfile?.uiPreset ?: UiPreset.NETFLIX
@@ -130,6 +134,8 @@ private object Routes {
     const val DETAILS = "details/{tmdbId}/{jellyfinId}/{mediaType}"
     const val PLAYER = "player/{itemId}?mediaSourceId={mediaSourceId}&startMs={startMs}&syncplay={syncplay}"
     const val SETTINGS = "settings"
+    /** Add another Jellyfin server; with a server id, sign in again to that one. */
+    const val ADD_SERVER = "servers/add?serverId={serverId}"
     const val LIBRARY = "library?parentId={parentId}&title={title}&types={types}"
     const val TRAILER = "trailer?title={title}&youtubeKey={youtubeKey}&localTrailerId={localTrailerId}"
 
@@ -165,6 +171,8 @@ private object Routes {
     fun library(parentId: String?, title: String, types: String): String =
         "library?parentId=${Uri.encode(parentId.orEmpty())}&title=${Uri.encode(title)}&types=${Uri.encode(types)}"
 
+    fun addServer(serverId: String? = null): String = "servers/add?serverId=${Uri.encode(serverId.orEmpty())}"
+
     fun trailer(title: String, youtubeKey: String?, localTrailerId: String?): String {
         val encTitle = Uri.encode(title)
         val encKey = Uri.encode(youtubeKey ?: "none")
@@ -186,9 +194,13 @@ private fun resolveDeepLinkRoute(intent: Intent?): String? {
         "player" -> segments.firstOrNull()?.let { Routes.player(it) }
         "details" -> {
             val tmdb = segments.getOrNull(0)?.toIntOrNull() ?: 0
-            val jf = segments.getOrNull(1)?.takeIf { it.isNotBlank() } ?: "none"
-            val type = segments.getOrNull(2)?.takeIf { it.isNotBlank() } ?: MediaType.MOVIE.name
-            "details/$tmdb/$jf/$type"
+            // Decoded segments are re-encoded: "a%2Fb" would otherwise become an extra path level,
+            // an unknown route, and a crash in navigate() (the activity is exported / BROWSABLE).
+            val jf = segments.getOrNull(1)?.takeIf { it.isNotBlank() }?.let(Uri::encode) ?: "none"
+            val type = segments.getOrNull(2)
+                ?.let { t -> MediaType.entries.firstOrNull { it.name.equals(t, ignoreCase = true) } }
+                ?: MediaType.MOVIE
+            "details/$tmdb/$jf/${type.name}"
         }
         "search" -> Routes.search(query = data.getQueryParameter("q").orEmpty())
         "home" -> Routes.HOME
@@ -232,7 +244,8 @@ private fun SeerflixNavGraph(
         if (route == Routes.HOME) {
             navController.popBackStack(Routes.HOME, inclusive = false)
         } else if (route != null) {
-            navController.navigate(route)
+            // An unknown or malformed route must never crash the app from outside.
+            runCatching { navController.navigate(route) }
         }
     }
 
@@ -362,6 +375,11 @@ private fun SeerflixNavGraph(
                 onSwitchProfile = { navController.navigate(Routes.PROFILES) { launchSingleTop = true } },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } }
             )
+            // Drawn over Home, outside its focus handling: offline note / sign-in-again prompt
+            // for the extra servers.
+            ServerStatusOverlay(
+                onSignInAgain = { serverId -> navController.navigate(Routes.addServer(serverId)) { launchSingleTop = true } }
+            )
         }
 
         composable(
@@ -381,7 +399,19 @@ private fun SeerflixNavGraph(
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
-                onOpenServerSettings = { navController.navigate(Routes.SETUP) { launchSingleTop = true } }
+                onOpenServerSettings = { navController.navigate(Routes.SETUP) { launchSingleTop = true } },
+                onAddServer = { navController.navigate(Routes.addServer()) { launchSingleTop = true } },
+                onSignInToServer = { serverId -> navController.navigate(Routes.addServer(serverId)) { launchSingleTop = true } }
+            )
+        }
+
+        composable(
+            route = Routes.ADD_SERVER,
+            arguments = listOf(navArgument("serverId") { type = NavType.StringType; defaultValue = "" })
+        ) {
+            AddServerScreen(
+                onDone = { navController.popBackStack() },
+                onBack = { navController.popBackStack() }
             )
         }
 

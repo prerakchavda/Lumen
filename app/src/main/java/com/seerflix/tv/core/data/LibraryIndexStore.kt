@@ -36,7 +36,9 @@ internal data class LibraryIndexEntry(
     @SerialName("pp") val playbackPositionTicks: Long = 0L,
     @SerialName("pl") val played: Boolean = false,
     @SerialName("f") val isFavorite: Boolean = false,
-    @SerialName("b") val hasBackdrop: Boolean = false
+    @SerialName("b") val hasBackdrop: Boolean = false,
+    /** When it was last played (epoch ms): decides whose progress wins for a title on several servers. */
+    @SerialName("lp") val lastPlayedMs: Long? = null
 )
 
 internal fun JellyfinItemDto.toIndexEntry(): LibraryIndexEntry = LibraryIndexEntry(
@@ -54,7 +56,8 @@ internal fun JellyfinItemDto.toIndexEntry(): LibraryIndexEntry = LibraryIndexEnt
     playbackPositionTicks = userData?.playbackPositionTicks ?: 0L,
     played = userData?.played == true,
     isFavorite = userData?.isFavorite == true,
-    hasBackdrop = backdropImageTags.isNotEmpty()
+    hasBackdrop = backdropImageTags.isNotEmpty(),
+    lastPlayedMs = CrossServerMerge.parseDateMs(userData?.lastPlayedDate)
 )
 
 internal fun LibraryIndexEntry.toItemDto(): JellyfinItemDto = JellyfinItemDto(
@@ -76,7 +79,8 @@ internal fun LibraryIndexEntry.toItemDto(): JellyfinItemDto = JellyfinItemDto(
     userData = JellyfinUserDataDto(
         playbackPositionTicks = playbackPositionTicks,
         played = played,
-        isFavorite = isFavorite
+        isFavorite = isFavorite,
+        lastPlayedDate = lastPlayedMs?.let { java.time.Instant.ofEpochMilli(it).toString() }
     )
 )
 

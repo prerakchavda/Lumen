@@ -105,7 +105,8 @@ class DiagnosticsRepository @Inject constructor(
             if (includeCrash) {
                 pendingCrash()?.let {
                     appendLine("===== Last crash =====")
-                    appendLine(it)
+                    // Exception messages can carry URLs with api_key / tokens; same redaction as the log.
+                    appendLine(redact(it))
                     appendLine()
                 }
             }

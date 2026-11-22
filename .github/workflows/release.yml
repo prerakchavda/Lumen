@@ -37,6 +37,11 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > /tmp/seerflix-release.jks
             echo "SEERFLIX_KEYSTORE_PATH=/tmp/seerflix-release.jks" >> "$GITHUB_ENV"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            # A tag build without the release key would be signed with this runner's throwaway
+            # debug key: it can't install over the previous release (in-app updater fails).
+            echo "::error::SEERFLIX_KEYSTORE_BASE64 is not set; refusing to publish a debug-signed release."
+            exit 1
           fi
 
       - name: Run unit tests & build release APK

@@ -58,7 +58,9 @@ data class JellyfinUserDataDto(
     @SerialName("PlaybackPositionTicks") val playbackPositionTicks: Long = 0L,
     @SerialName("Played") val played: Boolean = false,
     @SerialName("IsFavorite") val isFavorite: Boolean = false,
-    @SerialName("UnplayedItemCount") val unplayedItemCount: Int? = null
+    @SerialName("UnplayedItemCount") val unplayedItemCount: Int? = null,
+    /** When the item was last played; decides which server's progress wins for a merged title. */
+    @SerialName("LastPlayedDate") val lastPlayedDate: String? = null
 )
 
 @Serializable
@@ -133,7 +135,10 @@ data class JellyfinItemDto(
     @SerialName("StartDate") val startDate: String? = null,
     @SerialName("EndDate") val endDate: String? = null,
     @SerialName("IsSeries") val isSeries: Boolean = false,
-    @SerialName("ChannelId") val channelId: String? = null
+    @SerialName("ChannelId") val channelId: String? = null,
+    // Only requested (and only read) when lists from several servers are interleaved.
+    @SerialName("DateCreated") val dateCreated: String? = null,
+    @SerialName("SortName") val sortName: String? = null
 )
 
 @Serializable

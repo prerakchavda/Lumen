@@ -10,8 +10,15 @@ object ContentRatingHelper {
     private val COUNTRY_PREFIX = Regex("^[A-Z]{2}-(.+)$")
     private val AGE_DIGITS = Regex("(\\d{1,2})")
 
+    /**
+     * Rank of a title with no rating at all. Treated as mature: discovery rows built from Seerr
+     * carry no certification unless the title is in the library, and counting those as PG let
+     * R-rated trending / search results through to Kids profiles.
+     */
+    const val UNRATED_RANK = 4
+
     fun ratingRank(officialRating: String?): Int {
-        if (officialRating.isNullOrBlank()) return 2
+        if (officialRating.isNullOrBlank()) return UNRATED_RANK
         val norm = officialRating.trim().uppercase()
         knownRank(norm)?.let { return it }
         // Jellyfin often stores country-prefixed ratings ("DE-16", "GB-15", "AU-MA15+").

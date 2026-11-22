@@ -123,7 +123,8 @@ class TvChannelSyncManager @Inject constructor(
         }
 
         val currentProviderIds = mutableSetOf<String>()
-        items.take(10).forEach { item ->
+        // Watch Next mirrors the home server only (titles from the extra servers are left out).
+        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEach { item ->
             val jfId = item.jellyfinId ?: return@forEach
             currentProviderIds += jfId
             val program = buildWatchNextProgram(item) ?: return@forEach

@@ -53,14 +53,15 @@ class YouTubeTrailerResolver @Inject constructor(
     }
 
     fun buildJellyfinTrailerUrl(localTrailerId: String): String? {
-        val base = prefs.cachedResolvedJellyfinUrl
-            .ifBlank { prefs.cachedJellyfinLocalUrl }
-            .ifBlank { prefs.cachedJellyfinUrl }
+        // The trailer is served by the server that owns the title (ids are server scoped).
+        val serverId = com.seerflix.tv.core.model.ServerScopedId.serverOf(localTrailerId)
+        val base = prefs.resolvedUrlFor(serverId)
             .trim()
             .trimEnd('/')
             .takeIf { it.isNotBlank() } ?: return null
-        val token = prefs.cachedToken.orEmpty()
-        return "$base/Videos/$localTrailerId/stream?Static=true&api_key=$token"
+        val token = prefs.tokenFor(serverId).orEmpty()
+        val rawId = com.seerflix.tv.core.model.ServerScopedId.rawOf(localTrailerId)
+        return "$base/Videos/$rawId/stream?Static=true&api_key=$token"
     }
 
     /** Drops a cached stream so the next [resolvePreview] re-extracts it (e.g. after a 403 on an expired URL). */

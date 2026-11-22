@@ -199,7 +199,7 @@ fun HeroBillboard(
                 .align(Alignment.BottomStart)
                 .padding(
                     start = spec.contentStartPaddingDp.dp,
-                    bottom = if (spec.preset == UiPreset.APPLE_TV) 28.dp else 24.dp
+                    bottom = if (spec.preset == UiPreset.APPLE_TV) 22.dp else 16.dp
                 )
                 // Proportional instead of a fixed 340dp end inset: with the Netflix rail expanded
                 // the fixed inset left too little width and the CTA pills wrapped/clipped.
@@ -270,7 +270,7 @@ fun HeroBillboard(
                         onSuccess = { logoLoaded = true },
                         onError = { logoLoaded = false },
                         modifier = Modifier
-                            .height(if (spec.preset == UiPreset.APPLE_TV) 74.dp else 68.dp)
+                            .height(if (spec.preset == UiPreset.APPLE_TV) 66.dp else 56.dp)
                             .fillMaxWidth(0.75f)
                     )
                 }
@@ -278,77 +278,19 @@ fun HeroBillboard(
                     Text(
                         text = item.title,
                         color = colors.white,
-                        fontSize = if (spec.preset == UiPreset.APPLE_TV) 40.sp else 36.sp,
+                        fontSize = if (spec.preset == UiPreset.APPLE_TV) 36.sp else 32.sp,
                         fontWeight = FontWeight.Black,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        lineHeight = 42.sp
+                        lineHeight = 38.sp
                     )
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
-            // Match score, Year, Rating, Runtime, Media Badges
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                item.matchPercent?.let { match ->
-                    Text(
-                        text = strings.commonMatchPercent.format(match),
-                        color = colors.matchGreen,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                item.releaseYear?.let { year ->
-                    Text(text = year, color = colors.textSecondary, fontSize = 13.sp)
-                }
-                item.maturityRating?.let { rating ->
-                    Box(
-                        modifier = Modifier
-                            .border(1.dp, colors.textMuted, RoundedCornerShape(3.dp))
-                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                    ) {
-                        Text(text = rating, color = colors.textSecondary, fontSize = 11.sp)
-                    }
-                }
-                item.formattedRuntime?.let { rt ->
-                    Text(text = rt, color = colors.textSecondary, fontSize = 13.sp)
-                }
-                if (item.has4k) {
-                    Box(
-                        modifier = Modifier
-                            .border(1.dp, colors.textSecondary, RoundedCornerShape(3.dp))
-                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                    ) {
-                        Text(
-                            text = "4K UHD",
-                            color = colors.white,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                val extraBadges = remember(item.mediaBadges) {
-                    item.mediaBadges.filter { it != "4K" && it != "HD" }.take(2)
-                }
-                extraBadges.forEach { badge ->
-                    Box(
-                        modifier = Modifier
-                            .border(1.dp, colors.textMuted, RoundedCornerShape(3.dp))
-                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                    ) {
-                        Text(
-                            text = badge,
-                            color = colors.textPrimary,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
+            // Rating, year, maturity, runtime, format badges — same line as Details and the header.
+            TitleMetaLine(item = item)
 
             if (item.overview.isNotBlank()) {
                 Spacer(Modifier.height(8.dp))
@@ -357,12 +299,13 @@ fun HeroBillboard(
                     color = colors.textPrimary,
                     fontSize = 14.sp,
                     lineHeight = 19.sp,
-                    maxLines = 2,
+                    // The Disney+ banner is shorter (its header bar takes room) — one line there.
+                    maxLines = if (spec.heroHeightDp < 240) 1 else 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(14.dp))
 
             val ownFocusRequester = remember { FocusRequester() }
             val primaryActionFocusRequester = primaryFocusRequester ?: ownFocusRequester

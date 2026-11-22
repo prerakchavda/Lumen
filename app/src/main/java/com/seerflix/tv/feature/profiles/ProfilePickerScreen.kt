@@ -91,7 +91,7 @@ fun ProfilePickerScreen(
     }
     ProfilePickerContent(
         state = state,
-        onOpenSettings = onOpenSettings,
+        onOpenSettings = { viewModel.openServers(onOpenSettings) },
         onSelectProfile = { profile -> viewModel.selectProfile(profile, onProfileSelected) },
         onOpenAddProfile = { viewModel.openAddProfile(onProfileSelected) },
         onCloseAuthDialog = viewModel::closeAuthDialog,
@@ -220,7 +220,7 @@ fun ProfilePickerContent(
 
     state.pinChallengeProfile?.let { profile ->
         PinEntryDialog(
-            profileName = profile.name,
+            profileName = if (state.pinChallengeGuardian) AppStrings.current.profileParentPinName else profile.name,
             pinInput = state.pinEntryInput,
             errorMessage = state.pinError,
             onDigit = onAppendPinDigit,
