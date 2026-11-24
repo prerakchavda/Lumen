@@ -90,21 +90,22 @@ class UnifiedCatalogRepositoryDiscoveryTest {
     }
 
     @Test
-    fun `top 10 movies out right now uses 60 day rolling window and filters unreleased future dates`() = runTest {
+    fun `top 10 movies out right now uses 90 day rolling window and filters unreleased future dates`() = runTest {
         seerrApi.discoverMoviesHandler = { page, sortBy, _, gte, lte, voteCount ->
             assertEquals("popularity.desc", sortBy)
-            assertEquals("2026-01-31", gte)
-            assertEquals("2026-04-01", lte)
-            assertEquals(10, voteCount)
-            if (page == 1) {
-                SeerrDiscoverPageDto(
-                    page = 1,
-                    results = listOf(
-                        movieResult(101, "Released Hit", releaseDate = "2026-03-10"),
-                        movieResult(102, "Future Leak", releaseDate = "2026-04-15"),
-                        movieResult(103, "Borderline Today", releaseDate = "2026-04-01")
+            // Only assert the Top-10 window call (home-release candidate pool uses a wider 150-day window).
+            if (gte == "2026-01-01" && lte == "2026-04-01") {
+                assertEquals(10, voteCount)
+                if (page == 1) {
+                    SeerrDiscoverPageDto(
+                        page = 1,
+                        results = listOf(
+                            movieResult(101, "Released Hit", releaseDate = "2026-03-10"),
+                            movieResult(102, "Future Leak", releaseDate = "2026-04-15"),
+                            movieResult(103, "Borderline Today", releaseDate = "2026-04-01")
+                        )
                     )
-                )
+                } else SeerrDiscoverPageDto()
             } else SeerrDiscoverPageDto()
         }
 
@@ -656,16 +657,154 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         assertEquals(1, jellyfinApi.overviewBackfillCalls)
     }
 
+    @Test
+    fun `streaming service top 10 rows query watchProviders and rank combined movies and tv by popularity`() = runTest {
+        seerrApi.streamingMoviesHandler = { providers, page ->
+            if (page == 1 && providers == StreamingService.NETFLIX.providerIds) {
+                SeerrDiscoverPageDto(
+                    results = listOf(
+                        movieResult(10, "Netflix Movie Hit", "2026-02-10", popularity = 250.0),
+                        movieResult(11, "Netflix Unreleased Leak", "2026-06-01", popularity = 999.0)
+                    )
+                )
+            } else if (page == 1 && providers == StreamingService.PRIME_VIDEO.providerIds) {
+                SeerrDiscoverPageDto(
+                    results = listOf(movieResult(20, "Prime Action", "2026-01-20", popularity = 180.0))
+                )
+            } else SeerrDiscoverPageDto()
+        }
+        seerrApi.streamingTvHandler = { providers, page ->
+            if (page == 1 && providers == StreamingService.NETFLIX.providerIds) {
+                SeerrDiscoverPageDto(
+                    results = listOf(
+                        tvResult(12, "Netflix Series #1", "2025-11-01", popularity = 420.0),
+                        tvResult(13, "Netflix Series #3", "2025-09-01", popularity = 120.0)
+                    )
+                )
+            } else SeerrDiscoverPageDto()
+        }
+
+        val homeRows = repository.loadHomeRows(userId = "u1", filterType = null, today = fixedToday)
+        val netflixRow = homeRows.first { it.id == StreamingService.NETFLIX.homeRowId }
+        assertEquals("Top 10 on Netflix", netflixRow.title)
+        assertEquals(RowStyle.TOP_10, netflixRow.style)
+        assertEquals(
+            listOf("Netflix Series #1", "Netflix Movie Hit", "Netflix Series #3"),
+            netflixRow.items.map { it.title }
+        )
+
+        val primeRow = homeRows.first { it.id == StreamingService.PRIME_VIDEO.homeRowId }
+        assertEquals("Top 10 on Prime Video", primeRow.title)
+        assertEquals(listOf("Prime Action"), primeRow.items.map { it.title })
+
+        val movieTabRows = repository.loadHomeRows(userId = "u1", filterType = MediaType.MOVIE, today = fixedToday)
+        val netflixMovies = movieTabRows.first { it.id == StreamingService.NETFLIX.homeRowId }
+        assertEquals("Top 10 Movies on Netflix", netflixMovies.title)
+        assertEquals(listOf("Netflix Movie Hit"), netflixMovies.items.map { it.title })
+
+        val tvTabRows = repository.loadHomeRows(userId = "u1", filterType = MediaType.SERIES, today = fixedToday)
+        val netflixTv = tvTabRows.first { it.id == StreamingService.NETFLIX.homeRowId }
+        assertEquals("Top 10 TV Shows on Netflix", netflixTv.title)
+        assertEquals(listOf("Netflix Series #1", "Netflix Series #3"), netflixTv.items.map { it.title })
+    }
+
+    @Test
+    fun `theater-only movies are excluded from Top 10 and Trending while Digital and DVD rows surface home releases`() = runTest {
+        seerrApi.discoverMoviesHandler = { page, _, _, _, _, _ ->
+            if (page == 1) {
+                SeerrDiscoverPageDto(
+                    results = listOf(
+                        movieResult(301, "In Theaters Only", "2026-03-20", popularity = 500.0),
+                        movieResult(302, "Just Hit Digital", "2026-02-10", popularity = 300.0),
+                        movieResult(303, "Coming to Digital Next Week", "2026-02-20", popularity = 400.0),
+                        movieResult(304, "Coming to DVD Next Month", "2026-01-15", popularity = 200.0)
+                    )
+                )
+            } else SeerrDiscoverPageDto()
+        }
+        seerrApi.trendingHandler = {
+            SeerrDiscoverPageDto(
+                results = listOf(
+                    movieResult(301, "In Theaters Only", "2026-03-20"),
+                    movieResult(302, "Just Hit Digital", "2026-02-10")
+                )
+            )
+        }
+        seerrApi.movieDetailsHandler = { id ->
+            when (id) {
+                301 -> movieDetailsWithReleases(301, "In Theaters Only", "2026-03-20", listOf(3 to "2026-03-20T00:00:00.000Z"))
+                302 -> movieDetailsWithReleases(
+                    302, "Just Hit Digital", "2026-02-10",
+                    listOf(3 to "2026-02-10T00:00:00.000Z", 4 to "2026-03-25T00:00:00.000Z")
+                )
+                303 -> movieDetailsWithReleases(
+                    303, "Coming to Digital Next Week", "2026-02-20",
+                    listOf(3 to "2026-02-20T00:00:00.000Z", 4 to "2026-04-08T00:00:00.000Z")
+                )
+                304 -> movieDetailsWithReleases(
+                    304, "Coming to DVD Next Month", "2026-01-15",
+                    listOf(3 to "2026-01-15T00:00:00.000Z", 5 to "2026-05-05T00:00:00.000Z")
+                )
+                else -> SeerrMovieDetailsDto(id = id, title = "Movie $id")
+            }
+        }
+
+        val rows = repository.loadHomeRows(userId = "u1", filterType = MediaType.MOVIE, today = fixedToday)
+
+        val top10 = rows.first { it.id == "top10_movies_now" }
+        assertEquals(listOf("Just Hit Digital"), top10.items.map { it.title })
+
+        val trending = rows.first { it.id == "trending_now" }
+        assertEquals(listOf("Just Hit Digital"), trending.items.map { it.title })
+
+        val newDigital = rows.first { it.id == "new_on_digital" }
+        assertEquals("New on Digital & Streaming", newDigital.title)
+        assertEquals(listOf("Just Hit Digital"), newDigital.items.map { it.title })
+
+        val comingHome = rows.first { it.id == "coming_to_streaming_dvd" }
+        assertEquals("Coming Soon to Streaming & DVD", comingHome.title)
+        assertEquals(
+            listOf("Coming to Digital Next Week", "Coming to DVD Next Month"),
+            comingHome.items.map { it.title }
+        )
+        assertEquals("Digital • In 7 days", comingHome.items[0].upcomingBadgeLabel)
+        assertEquals("DVD / Blu-ray • May 5", comingHome.items[1].upcomingBadgeLabel)
+        assertFalse(comingHome.items.any { it.title == "In Theaters Only" })
+    }
+
+    private fun movieDetailsWithReleases(
+        id: Int,
+        title: String,
+        releaseDate: String,
+        typedDates: List<Pair<Int, String>>
+    ) = SeerrMovieDetailsDto(
+        id = id,
+        title = title,
+        releaseDate = releaseDate,
+        releases = com.seerflix.tv.core.network.SeerrReleasesDto(
+            results = listOf(
+                com.seerflix.tv.core.network.SeerrReleaseCountryDto(
+                    countryCode = "US",
+                    releaseDates = typedDates.map { (type, iso) ->
+                        com.seerflix.tv.core.network.SeerrReleaseDateDto(releaseDate = iso, type = type)
+                    }
+                )
+            )
+        )
+    )
+
     private fun movieResult(
         id: Int,
         title: String,
         releaseDate: String,
-        hdStatusCode: Int? = null
+        hdStatusCode: Int? = null,
+        popularity: Double? = null
     ) = SeerrMediaResultDto(
         id = id,
         mediaType = "movie",
         title = title,
         releaseDate = releaseDate,
+        popularity = popularity,
         mediaInfo = hdStatusCode?.let { SeerrMediaInfoDto(status = it) }
     )
 
@@ -673,12 +812,14 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         id: Int,
         name: String,
         firstAirDate: String,
-        hdStatusCode: Int? = null
+        hdStatusCode: Int? = null,
+        popularity: Double? = null
     ) = SeerrMediaResultDto(
         id = id,
         mediaType = "tv",
         name = name,
         firstAirDate = firstAirDate,
+        popularity = popularity,
         mediaInfo = hdStatusCode?.let { SeerrMediaInfoDto(status = it) }
     )
 
@@ -868,6 +1009,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             { _, _, _, _, _, _ -> SeerrDiscoverPageDto() }
         var discoverTvHandler: (Int, String?, String?, String?, String?, Int?) -> SeerrDiscoverPageDto =
             { _, _, _, _, _, _ -> SeerrDiscoverPageDto() }
+        var streamingMoviesHandler: (String, Int) -> SeerrDiscoverPageDto = { _, _ -> SeerrDiscoverPageDto() }
+        var streamingTvHandler: (String, Int) -> SeerrDiscoverPageDto = { _, _ -> SeerrDiscoverPageDto() }
         var upcomingTvHandler: (Int) -> SeerrDiscoverPageDto = { SeerrDiscoverPageDto() }
         /** `/discover/tv` with a TMDB status (Top 10 TV Airing Now): (page, firstAirDateLte, status). */
         var airingTvHandler: (Int, String?, String?) -> SeerrDiscoverPageDto = { _, _, _ -> SeerrDiscoverPageDto() }
@@ -897,12 +1040,16 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             genre: String?,
             primaryReleaseDateGte: String?,
             primaryReleaseDateLte: String?,
-            voteCountGte: Int?
-        ) = if (genre != null) {
-            genreDiscoverCalls += listOf("movie", genre, primaryReleaseDateLte, voteCountGte)
-            moviesByGenreHandler(genre.toInt(), page)
-        } else {
-            discoverMoviesHandler(page, sortBy, genre, primaryReleaseDateGte, primaryReleaseDateLte, voteCountGte)
+            voteCountGte: Int?,
+            watchRegion: String?,
+            watchProviders: String?
+        ) = when {
+            watchProviders != null -> streamingMoviesHandler(watchProviders, page)
+            genre != null -> {
+                genreDiscoverCalls += listOf("movie", genre, primaryReleaseDateLte, voteCountGte)
+                moviesByGenreHandler(genre.toInt(), page)
+            }
+            else -> discoverMoviesHandler(page, sortBy, genre, primaryReleaseDateGte, primaryReleaseDateLte, voteCountGte)
         }
 
         override suspend fun getDiscoverTv(
@@ -913,8 +1060,11 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             firstAirDateGte: String?,
             firstAirDateLte: String?,
             voteCountGte: Int?,
-            status: String?
+            status: String?,
+            watchRegion: String?,
+            watchProviders: String?
         ) = when {
+            watchProviders != null -> streamingTvHandler(watchProviders, page)
             genre != null -> {
                 genreDiscoverCalls += listOf("tv", genre, firstAirDateLte, voteCountGte)
                 tvByGenreHandler(genre.toInt(), page)

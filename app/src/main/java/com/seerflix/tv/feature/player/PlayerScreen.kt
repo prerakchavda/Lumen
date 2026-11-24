@@ -41,6 +41,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Groups
@@ -53,6 +55,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -89,7 +92,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -118,6 +120,9 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaSession
 import com.seerflix.tv.core.player.SyncPlayAction
 import com.seerflix.tv.core.model.SubtitleEdgeStyle
+import com.seerflix.tv.core.model.SubtitlePosition
+import com.seerflix.tv.core.model.SubtitleTextColor
+import com.seerflix.tv.feature.settings.localized
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
 import coil3.compose.AsyncImage
@@ -193,8 +198,10 @@ fun PlayerScreen(
     var currentPosMs by remember { mutableLongStateOf(0L) }
     var durationMs by remember { mutableLongStateOf(0L) }
     var osdVisible by remember { mutableStateOf(true) }
-    var showTracksDialog by remember { mutableStateOf(false) }
+    var activeSheet by remember { mutableStateOf<PlayerSheet?>(null) }
     var showEpisodesDrawer by remember { mutableStateOf(false) }
+    var focusedOsdActionLabel by remember { mutableStateOf<String?>(null) }
+    var tracksRevision by remember { mutableIntStateOf(0) }
     var scrubPreviewMs by remember { mutableStateOf<Long?>(null) }
     var detectedVideoFrameRate by remember { mutableFloatStateOf(0f) }
     var skippedIntroItemId by remember { mutableStateOf<String?>(null) }
@@ -247,9 +254,9 @@ fun PlayerScreen(
         }
     }
 
-    LaunchedEffect(osdVisible, showEpisodesDrawer, showTracksDialog, state.isLoading, state.errorMessage) {
+    LaunchedEffect(osdVisible, showEpisodesDrawer, activeSheet, state.isLoading, state.errorMessage) {
         // The error screen focuses its own Retry button.
-        if (showEpisodesDrawer || showTracksDialog || state.errorMessage != null) return@LaunchedEffect
+        if (showEpisodesDrawer || activeSheet != null || state.errorMessage != null) return@LaunchedEffect
         delay(60L)
         if (osdVisible) {
             runCatching { playPauseFocusRequester.requestFocus() }
@@ -302,6 +309,7 @@ fun PlayerScreen(
             }
 
             override fun onTracksChanged(tracks: Tracks) {
+                tracksRevision++
                 val videoRate = tracks.groups
                     .filter { it.type == C.TRACK_TYPE_VIDEO && it.isSelected }
                     .firstNotNullOfOrNull { group ->
@@ -580,8 +588,8 @@ fun PlayerScreen(
 
     // Auto-hide Netflix OSD after 4.5s of no remote interaction
     val isScrubbing by remember { derivedStateOf { scrubPreviewMs != null } }
-    LaunchedEffect(osdVisible, showTracksDialog, showEpisodesDrawer, isScrubbing, isPlaying) {
-        if (osdVisible && !showTracksDialog && !showEpisodesDrawer && !isScrubbing && isPlaying) {
+    LaunchedEffect(osdVisible, activeSheet, showEpisodesDrawer, isScrubbing, isPlaying) {
+        if (osdVisible && activeSheet == null && !showEpisodesDrawer && !isScrubbing && isPlaying) {
             // Restarts the countdown on every key press without recomposing on each press.
             snapshotFlow { lastInteractionTick.longValue }.collectLatest {
                 delay(4500L)
@@ -733,14 +741,13 @@ fun PlayerScreen(
         }
     }
 
-    // Back closes the episodes drawer, then hides the OSD, and only then leaves the player.
-    // (The settings Dialog handles Back itself via onDismissRequest.)
+    // Back closes an open side sheet or episodes drawer, then hides the OSD, and only then leaves the player.
     val playerSurfaceActive = session != null && !state.isLoading && state.errorMessage == null
-    BackHandler(enabled = !hasExited && (showEpisodesDrawer || (osdVisible && playerSurfaceActive))) {
-        if (showEpisodesDrawer) {
-            showEpisodesDrawer = false
-        } else {
-            osdVisible = false
+    BackHandler(enabled = !hasExited && (activeSheet != null || showEpisodesDrawer || (osdVisible && playerSurfaceActive))) {
+        when {
+            activeSheet != null -> activeSheet = null
+            showEpisodesDrawer -> showEpisodesDrawer = false
+            else -> osdVisible = false
         }
     }
 
@@ -877,27 +884,31 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER -> {
-                            if (!osdVisible) {
+                            if (activeSheet != null || showEpisodesDrawer) false
+                            else if (!osdVisible) {
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_UP,
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
-                            if (!osdVisible) {
+                            if (activeSheet != null || showEpisodesDrawer) false
+                            else if (!osdVisible) {
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
-                            if (!osdVisible && session?.isLiveTv != true) {
+                            if (activeSheet != null || showEpisodesDrawer) false
+                            else if (!osdVisible && session?.isLiveTv != true) {
                                 seekBy(-10_000L)
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                            if (!osdVisible && session?.isLiveTv != true) {
+                            if (activeSheet != null || showEpisodesDrawer) false
+                            else if (!osdVisible && session?.isLiveTv != true) {
                                 seekBy(10_000L)
                                 osdVisible = true
                                 true
@@ -1099,7 +1110,7 @@ fun PlayerScreen(
                 }
 
                 // Next Episode Overlay Card with Auto-Play Countdown
-                if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer) {
+                if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer && activeSheet == null) {
                     NextEpisodeOverlayCard(
                         nextEpisodeTitle = session.nextEpisodeTitle ?: strings.playerNextEpisode,
                         autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled,
@@ -1115,9 +1126,14 @@ fun PlayerScreen(
                     )
                 }
 
+                val captionsActive = remember(tracksRevision, state.activeAssSubtitleIndex) {
+                    state.activeAssSubtitleIndex != null ||
+                        player.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
+                }
+
                 // OSD Overlay
                 AnimatedVisibility(
-                    visible = osdVisible && !showEpisodesDrawer,
+                    visible = osdVisible && !showEpisodesDrawer && activeSheet == null,
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
@@ -1219,6 +1235,23 @@ fun PlayerScreen(
                                 }
                             )
 
+                            // Subtle action label above the right-side icons when focused on TV
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(22.dp),
+                                contentAlignment = Alignment.CenterEnd
+                            ) {
+                                focusedOsdActionLabel?.let { label ->
+                                    Text(
+                                        text = label,
+                                        color = colors.textSecondary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1232,18 +1265,21 @@ fun PlayerScreen(
                                         icon = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                                         label = if (isPlaying) strings.playerPause else strings.actionPlay,
                                         onClick = togglePlayPause,
+                                        onFocusChange = { if (it) focusedOsdActionLabel = null },
                                         modifier = Modifier.focusRequester(playPauseFocusRequester)
                                     )
                                     if (session?.isLiveTv != true) {
                                         PlayerControlIcon(
                                             icon = Icons.Filled.Replay10,
                                             label = strings.playerBack10,
-                                            onClick = { seekBy(-10_000L) }
+                                            onClick = { seekBy(-10_000L) },
+                                            onFocusChange = { if (it) focusedOsdActionLabel = null }
                                         )
                                         PlayerControlIcon(
                                             icon = Icons.Filled.Forward10,
                                             label = strings.playerForward10,
-                                            onClick = { seekBy(10_000L) }
+                                            onClick = { seekBy(10_000L) },
+                                            onFocusChange = { if (it) focusedOsdActionLabel = null }
                                         )
                                     }
                                     Spacer(Modifier.width(12.dp))
@@ -1272,26 +1308,51 @@ fun PlayerScreen(
                                             onClick = {
                                                 viewModel.ensureDrawerLoaded()
                                                 showEpisodesDrawer = true
+                                            },
+                                            onFocusChange = { focused ->
+                                                if (focused) focusedOsdActionLabel = strings.playerEpisodes
+                                                else if (focusedOsdActionLabel == strings.playerEpisodes) focusedOsdActionLabel = null
+                                            }
+                                        )
+                                    }
+                                    if (session?.isTrailer != true && session?.chapters.orEmpty().isNotEmpty()) {
+                                        PlayerControlIcon(
+                                            icon = Icons.Filled.Bookmarks,
+                                            label = strings.playerChapters,
+                                            onClick = { activeSheet = PlayerSheet.CHAPTERS },
+                                            onFocusChange = { focused ->
+                                                if (focused) focusedOsdActionLabel = strings.playerChapters
+                                                else if (focusedOsdActionLabel == strings.playerChapters) focusedOsdActionLabel = null
                                             }
                                         )
                                     }
                                     PlayerControlIcon(
-                                        icon = Icons.AutoMirrored.Filled.OpenInNew,
-                                        label = AppStrings.current.actionExternalPlayer,
-                                        onClick = {
-                                            player.pause()
-                                            viewModel.openInExternalPlayer(context, currentPosMs)
+                                        icon = Icons.Filled.Subtitles,
+                                        label = strings.playerCaptions,
+                                        showActiveDot = captionsActive,
+                                        onClick = { activeSheet = PlayerSheet.CAPTIONS },
+                                        onFocusChange = { focused ->
+                                            if (focused) focusedOsdActionLabel = strings.playerCaptions
+                                            else if (focusedOsdActionLabel == strings.playerCaptions) focusedOsdActionLabel = null
                                         }
                                     )
                                     PlayerControlIcon(
-                                        icon = Icons.Filled.Subtitles,
-                                        label = strings.playerAudioSubtitles,
-                                        onClick = { showTracksDialog = true }
+                                        icon = Icons.AutoMirrored.Filled.VolumeUp,
+                                        label = strings.playerAudio,
+                                        onClick = { activeSheet = PlayerSheet.AUDIO },
+                                        onFocusChange = { focused ->
+                                            if (focused) focusedOsdActionLabel = strings.playerAudio
+                                            else if (focusedOsdActionLabel == strings.playerAudio) focusedOsdActionLabel = null
+                                        }
                                     )
                                     PlayerControlIcon(
                                         icon = Icons.Filled.Settings,
                                         label = strings.playerPlaybackSettings,
-                                        onClick = { showTracksDialog = true }
+                                        onClick = { activeSheet = PlayerSheet.PLAYBACK },
+                                        onFocusChange = { focused ->
+                                            if (focused) focusedOsdActionLabel = strings.playerPlaybackSettings
+                                            else if (focusedOsdActionLabel == strings.playerPlaybackSettings) focusedOsdActionLabel = null
+                                        }
                                     )
                                     session?.nextEpisodeId?.let { nextId ->
                                         PlayerControlIcon(
@@ -1300,6 +1361,10 @@ fun PlayerScreen(
                                             onClick = {
                                                 viewModel.reportStopped(currentPosMs)
                                                 viewModel.loadItem(nextId)
+                                            },
+                                            onFocusChange = { focused ->
+                                                if (focused) focusedOsdActionLabel = strings.playerNextEpisode
+                                                else if (focusedOsdActionLabel == strings.playerNextEpisode) focusedOsdActionLabel = null
                                             }
                                         )
                                     }
@@ -1329,83 +1394,104 @@ fun PlayerScreen(
                         onClose = { showEpisodesDrawer = false }
                     )
                 }
+
+                // Dedicated Jellyfin-style Player Side Sheets (Captions, Audio, Chapters, Playback Settings)
+                when (activeSheet) {
+                    PlayerSheet.CAPTIONS -> CaptionsSideSheet(
+                        player = player,
+                        tracksRevision = tracksRevision,
+                        session = session,
+                        isTrailer = session?.isTrailer == true,
+                        subtitleFontScale = state.subtitleFontScale,
+                        subtitleBackgroundAlpha = state.subtitleBackgroundAlpha,
+                        subtitleTextColor = state.subtitleTextColor,
+                        subtitleEdgeStyle = state.subtitleEdgeStyle,
+                        subtitlePosition = state.subtitlePosition,
+                        subtitleOffsetMs = state.subtitleOffsetMs,
+                        assSubtitleMode = state.assSubtitleMode,
+                        activeAssSubtitleIndex = state.activeAssSubtitleIndex,
+                        remoteSubtitles = state.remoteSubtitles,
+                        remoteSubtitlesLoading = state.remoteSubtitlesLoading,
+                        remoteSubtitleLanguage = state.remoteSubtitleLanguage,
+                        downloadingSubtitleId = state.downloadingSubtitleId,
+                        subtitleSearchMessage = state.subtitleSearchMessage,
+                        onSetSubtitleAppearance = viewModel::setSubtitleAppearance,
+                        onSetSubtitleStyle = viewModel::setSubtitleStyle,
+                        onAdjustSubtitleOffset = viewModel::adjustSubtitleOffset,
+                        onResetSubtitleOffset = viewModel::resetSubtitleOffset,
+                        onSelectAssMode = { mode -> viewModel.setAssSubtitleMode(mode, currentPosMs) },
+                        onSelectExternalAssTrack = { ext ->
+                            viewModel.selectExternalAssTrack(ext, currentPosMs)
+                            if (ext != null) activeSheet = null
+                        },
+                        onSearchRemoteSubtitles = viewModel::searchRemoteSubtitles,
+                        onDownloadRemoteSubtitle = { subId ->
+                            activeSheet = null
+                            viewModel.downloadRemoteSubtitle(subId, currentPosMs)
+                        },
+                        onClose = { activeSheet = null }
+                    )
+                    PlayerSheet.AUDIO -> AudioSideSheet(
+                        player = player,
+                        tracksRevision = tracksRevision,
+                        isTrailer = session?.isTrailer == true,
+                        audioPassthroughEnabled = state.audioPassthroughEnabled,
+                        stereoDownmixEnabled = state.stereoDownmixEnabled,
+                        onToggleAudioPassthrough = {
+                            activeSheet = null
+                            viewModel.toggleAudioPassthrough(currentPosMs)
+                        },
+                        onToggleStereoDownmix = {
+                            activeSheet = null
+                            viewModel.toggleStereoDownmix(currentPosMs)
+                        },
+                        onClose = { activeSheet = null }
+                    )
+                    PlayerSheet.CHAPTERS -> ChaptersSideSheet(
+                        chapters = session?.chapters.orEmpty(),
+                        currentPosMs = currentPosMs,
+                        onJumpToChapter = { chapter ->
+                            activeSheet = null
+                            seekExact(chapter.startPositionMs)
+                            viewModel.notifySyncPlaySeek(chapter.startPositionMs)
+                            currentPosMs = chapter.startPositionMs
+                        },
+                        onClose = { activeSheet = null }
+                    )
+                    PlayerSheet.PLAYBACK -> PlaybackSettingsSideSheet(
+                        session = session,
+                        isTrailer = session?.isTrailer == true,
+                        selectedSpeed = state.selectedSpeed,
+                        selectedQuality = state.selectedQuality,
+                        selectedMediaSourceId = state.selectedMediaSourceId,
+                        autoSkipIntro = state.autoSkipIntro,
+                        autoSkipRecap = state.autoSkipRecap,
+                        frameRateMatchMode = state.frameRateMatchMode,
+                        showStreamInfo = state.showStreamInfo,
+                        onSelectSpeed = viewModel::setPlaybackSpeed,
+                        onSelectQuality = { preset ->
+                            activeSheet = null
+                            viewModel.selectQuality(preset, currentPosMs)
+                        },
+                        onSwitchMediaSource = { sourceId ->
+                            activeSheet = null
+                            viewModel.switchMediaSource(sourceId, currentPosMs)
+                        },
+                        onToggleAutoSkipIntro = viewModel::toggleAutoSkipIntro,
+                        onToggleAutoSkipRecap = viewModel::toggleAutoSkipRecap,
+                        onSelectFrameRateMatchMode = viewModel::setFrameRateMatchMode,
+                        onToggleStreamInfo = viewModel::toggleStreamInfo,
+                        onOpenExternalPlayer = {
+                            activeSheet = null
+                            player.pause()
+                            viewModel.openInExternalPlayer(context, currentPosMs)
+                        },
+                        onClose = { activeSheet = null }
+                    )
+                    null -> {}
+                }
             }
         }
-    }
-
-    if (showTracksDialog) {
-        PlayerSettingsDialog(
-            player = player,
-            session = session,
-            isTrailer = session?.isTrailer == true,
-            selectedSpeed = state.selectedSpeed,
-            selectedQuality = state.selectedQuality,
-            selectedMediaSourceId = state.selectedMediaSourceId,
-            subtitleFontScale = state.subtitleFontScale,
-            subtitleBackgroundAlpha = state.subtitleBackgroundAlpha,
-            subtitleOffsetMs = state.subtitleOffsetMs,
-            autoSkipIntro = state.autoSkipIntro,
-            autoSkipRecap = state.autoSkipRecap,
-            frameRateMatchMode = state.frameRateMatchMode,
-            audioPassthroughEnabled = state.audioPassthroughEnabled,
-            stereoDownmixEnabled = state.stereoDownmixEnabled,
-            assSubtitleMode = state.assSubtitleMode,
-            activeAssSubtitleIndex = state.activeAssSubtitleIndex,
-            remoteSubtitles = state.remoteSubtitles,
-            remoteSubtitlesLoading = state.remoteSubtitlesLoading,
-            remoteSubtitleLanguage = state.remoteSubtitleLanguage,
-            downloadingSubtitleId = state.downloadingSubtitleId,
-            subtitleSearchMessage = state.subtitleSearchMessage,
-            showStreamInfo = state.showStreamInfo,
-            onSelectSpeed = viewModel::setPlaybackSpeed,
-            onSelectQuality = { preset ->
-                showTracksDialog = false
-                viewModel.selectQuality(preset, currentPosMs)
-            },
-            onSwitchMediaSource = { sourceId ->
-                showTracksDialog = false
-                viewModel.switchMediaSource(sourceId, currentPosMs)
-            },
-            onJumpToChapter = { chapter ->
-                showTracksDialog = false
-                seekExact(chapter.startPositionMs)
-                viewModel.notifySyncPlaySeek(chapter.startPositionMs)
-                currentPosMs = chapter.startPositionMs
-            },
-            onSetSubtitleAppearance = viewModel::setSubtitleAppearance,
-            onAdjustSubtitleOffset = viewModel::adjustSubtitleOffset,
-            onResetSubtitleOffset = viewModel::resetSubtitleOffset,
-            onToggleAutoSkipIntro = viewModel::toggleAutoSkipIntro,
-            onToggleAutoSkipRecap = viewModel::toggleAutoSkipRecap,
-            onSelectFrameRateMatchMode = viewModel::setFrameRateMatchMode,
-            onToggleAudioPassthrough = {
-                showTracksDialog = false
-                viewModel.toggleAudioPassthrough(currentPosMs)
-            },
-            onToggleStereoDownmix = {
-                showTracksDialog = false
-                viewModel.toggleStereoDownmix(currentPosMs)
-            },
-            onSelectAssMode = { mode ->
-                viewModel.setAssSubtitleMode(mode, currentPosMs)
-            },
-            onSelectExternalAssTrack = { ext ->
-                viewModel.selectExternalAssTrack(ext, currentPosMs)
-                showTracksDialog = false
-            },
-            onOpenExternalPlayer = {
-                showTracksDialog = false
-                player.pause()
-                viewModel.openInExternalPlayer(context, currentPosMs)
-            },
-            onSearchRemoteSubtitles = viewModel::searchRemoteSubtitles,
-            onDownloadRemoteSubtitle = { subId ->
-                showTracksDialog = false
-                viewModel.downloadRemoteSubtitle(subId, currentPosMs)
-            },
-            onToggleStreamInfo = viewModel::toggleStreamInfo,
-            onDismiss = { showTracksDialog = false }
-        )
     }
 }
 
@@ -1911,12 +1997,21 @@ fun EpisodesDrawerOverlay(
     }
 }
 
+private enum class PlayerSheet {
+    CAPTIONS,
+    AUDIO,
+    CHAPTERS,
+    PLAYBACK
+}
+
 @Composable
 private fun PlayerControlIcon(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    showActiveDot: Boolean = false,
+    onFocusChange: ((Boolean) -> Unit)? = null
 ) {
     val colors = SeerflixTokens.colors
     var focused by remember { mutableStateOf(false) }
@@ -1926,7 +2021,10 @@ private fun PlayerControlIcon(
             .clip(RoundedCornerShape(23.dp))
             .background(if (focused) colors.white else colors.surface.copy(alpha = 0.72f))
             .then(if (focused) Modifier.border(2.dp, colors.accent, RoundedCornerShape(23.dp)) else Modifier)
-            .onFocusChanged { focused = it.isFocused }
+            .onFocusChanged {
+                focused = it.isFocused
+                onFocusChange?.invoke(it.isFocused)
+            }
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -1936,25 +2034,146 @@ private fun PlayerControlIcon(
             tint = if (focused) colors.deepBlack else colors.white,
             modifier = Modifier.size(24.dp)
         )
+        if (showActiveDot) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 5.dp)
+                    .size(5.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(colors.accent)
+            )
+        }
+    }
+}
+
+/**
+ * Shared right-aligned Jellyfin-style side sheet. Leaves the left half of the screen clear with a
+ * light scrim so live subtitle / caption style adjustments remain visible over the video.
+ */
+@Composable
+private fun PlayerSideSheet(
+    title: String,
+    subtitle: String? = null,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClose: () -> Unit,
+    closeFocusRequester: FocusRequester = remember { FocusRequester() },
+    scrollable: Boolean = true,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x55000000))
+    ) {
+        Column(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(460.dp)
+                .fillMaxHeight()
+                .background(colors.dialogSurface.copy(alpha = 0.96f))
+                .border(1.dp, colors.badgeBorder)
+                .padding(horizontal = 24.dp, vertical = 22.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = colors.accent,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Column {
+                        Text(
+                            text = title,
+                            color = colors.white,
+                            fontSize = 19.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (!subtitle.isNullOrBlank()) {
+                            Text(
+                                text = subtitle,
+                                color = colors.textSecondary,
+                                fontSize = 12.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                PlayerControlIcon(
+                    icon = Icons.Filled.Close,
+                    label = strings.commonClose,
+                    onClick = onClose,
+                    modifier = Modifier.focusRequester(closeFocusRequester)
+                )
+            }
+
+            Spacer(Modifier.height(14.dp))
+            HorizontalDivider(color = colors.badgeBorder.copy(alpha = 0.6f))
+            Spacer(Modifier.height(14.dp))
+
+            if (scrollable) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+            } else {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun PlayerSettingsDialog(
+private fun SheetSectionHeader(title: String, showTopSpacer: Boolean = true) {
+    val colors = SeerflixTokens.colors
+    if (showTopSpacer) {
+        Spacer(Modifier.height(6.dp))
+        HorizontalDivider(color = colors.badgeBorder.copy(alpha = 0.35f))
+        Spacer(Modifier.height(4.dp))
+    }
+    Text(
+        text = title,
+        color = colors.textSecondary,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 0.5.sp
+    )
+}
+
+@Composable
+private fun CaptionsSideSheet(
     player: ExoPlayer,
+    tracksRevision: Int,
     session: PlaybackSessionData?,
     isTrailer: Boolean,
-    selectedSpeed: Float,
-    selectedQuality: QualityPreset,
-    selectedMediaSourceId: String?,
     subtitleFontScale: Float,
     subtitleBackgroundAlpha: Float,
+    subtitleTextColor: SubtitleTextColor,
+    subtitleEdgeStyle: SubtitleEdgeStyle,
+    subtitlePosition: SubtitlePosition,
     subtitleOffsetMs: Long,
-    autoSkipIntro: Boolean,
-    autoSkipRecap: Boolean,
-    frameRateMatchMode: FrameRateMatchMode,
-    audioPassthroughEnabled: Boolean,
-    stereoDownmixEnabled: Boolean,
     assSubtitleMode: AssSubtitleMode,
     activeAssSubtitleIndex: Int?,
     remoteSubtitles: List<RemoteSubtitleOption>,
@@ -1962,39 +2181,23 @@ private fun PlayerSettingsDialog(
     remoteSubtitleLanguage: String,
     downloadingSubtitleId: String?,
     subtitleSearchMessage: String?,
-    showStreamInfo: Boolean,
-    onSelectSpeed: (Float) -> Unit,
-    onSelectQuality: (QualityPreset) -> Unit,
-    onSwitchMediaSource: (String) -> Unit,
-    onJumpToChapter: (ChapterMarker) -> Unit,
     onSetSubtitleAppearance: (Float, Float) -> Unit,
+    onSetSubtitleStyle: (SubtitleTextColor?, SubtitleEdgeStyle?, SubtitlePosition?) -> Unit,
     onAdjustSubtitleOffset: (Long) -> Unit,
     onResetSubtitleOffset: () -> Unit,
-    onToggleAutoSkipIntro: () -> Unit,
-    onToggleAutoSkipRecap: () -> Unit,
-    onSelectFrameRateMatchMode: (FrameRateMatchMode) -> Unit,
-    onToggleAudioPassthrough: () -> Unit,
-    onToggleStereoDownmix: () -> Unit,
     onSelectAssMode: (AssSubtitleMode) -> Unit,
     onSelectExternalAssTrack: (ExternalSubtitleFile?) -> Unit,
-    onOpenExternalPlayer: () -> Unit,
     onSearchRemoteSubtitles: (String) -> Unit,
     onDownloadRemoteSubtitle: (String) -> Unit,
-    onToggleStreamInfo: () -> Unit,
-    onDismiss: () -> Unit
+    onClose: () -> Unit
 ) {
     val colors = SeerflixTokens.colors
-    val spec = SeerflixTokens.spec
     val strings = AppStrings.current
-    val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
-    val closeDialogFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        delay(60L)
-        runCatching { closeDialogFocusRequester.requestFocus() }
+    val firstFocusRequester = remember { FocusRequester() }
+
+    val textGroups = remember(tracksRevision, player) {
+        player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
     }
-    val groups = player.currentTracks.groups
-    val audioGroups = groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-    val textGroups = groups.filter { it.type == C.TRACK_TYPE_TEXT }
     val selectedTextMime = textGroups
         .firstOrNull { it.isSelected }
         ?.let { group ->
@@ -2012,306 +2215,517 @@ private fun PlayerSettingsDialog(
             it.url.contains(".ssa", ignoreCase = true)
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .width(580.dp)
-                .clip(dialogCorner)
-                .background(colors.dialogSurface)
-                .border(1.dp, colors.badgeBorder, dialogCorner)
-                .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(strings.playerPlaybackSettings, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                PlayerControlIcon(
-                    icon = Icons.Filled.Close,
-                    label = strings.commonClose,
-                    onClick = onDismiss,
-                    modifier = Modifier.focusRequester(closeDialogFocusRequester)
-                )
+    val activeCaptionLabel = remember(tracksRevision, activeAssSubtitleIndex, assExternalTracks) {
+        when {
+            activeAssSubtitleIndex != null -> {
+                val ext = assExternalTracks.firstOrNull { it.index == activeAssSubtitleIndex }
+                listOfNotNull(ext?.language?.uppercase(), ext?.title?.takeIf { it.isNotBlank() })
+                    .joinToString(" • ").ifBlank { strings.assStyled }
             }
+            else -> textGroups.firstOrNull { it.isSelected }?.let { group ->
+                val fmt = group.getTrackFormat(0)
+                listOfNotNull(fmt.language?.uppercase(), fmt.label).joinToString(" • ").ifBlank { strings.settingsSubtitlesSection }
+            } ?: strings.optionOff
+        }
+    }
 
-            // Versions & Editions (Multiple MediaSources)
-            val sources = session?.mediaSources.orEmpty()
-            if (!isTrailer && sources.size > 1) {
-                Text(strings.labelVersions, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                sources.forEach { src ->
-                    TrackChoiceRow(
-                        label = src.displayLabel,
-                        selected = src.id == (selectedMediaSourceId ?: session?.mediaSourceId),
-                        onClick = { onSwitchMediaSource(src.id) }
-                    )
-                }
-            }
+    LaunchedEffect(Unit) {
+        delay(60L)
+        runCatching { firstFocusRequester.requestFocus() }
+    }
 
-            // Chapter Jump List
-            val chapters = session?.chapters.orEmpty()
-            if (!isTrailer && chapters.isNotEmpty()) {
-                Text(strings.playerChaptersCount.format(chapters.size), color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                chapters.take(12).forEach { chapter ->
-                    TrackChoiceRow(
-                        label = "${formatMs(chapter.startPositionMs)} • ${chapter.name}",
-                        selected = false,
-                        onClick = { onJumpToChapter(chapter) }
-                    )
-                }
-            }
+    PlayerSideSheet(
+        title = strings.playerCaptions,
+        subtitle = activeCaptionLabel,
+        icon = Icons.Filled.Subtitles,
+        onClose = onClose,
+        closeFocusRequester = if (isTrailer && textGroups.isEmpty() && assExternalTracks.isEmpty()) {
+            firstFocusRequester
+        } else {
+            remember { FocusRequester() }
+        }
+    ) {
+        SheetSectionHeader(strings.settingsSubtitlesSection, showTopSpacer = false)
 
-            if (audioGroups.isNotEmpty()) {
-                Text(strings.playerAudioTracks, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                audioGroups.forEachIndexed { idx, group ->
-                    val format = group.getTrackFormat(0)
-                    val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { strings.playerAudioTrackN.format(idx + 1) }
-                    TrackChoiceRow(
-                        label = label,
-                        selected = group.isSelected,
-                        onClick = {
-                            player.trackSelectionParameters = player.trackSelectionParameters
-                                .buildUpon()
-                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
-                                .build()
-                            onDismiss()
-                        }
-                    )
-                }
-            }
-
-            if (textGroups.isNotEmpty()) {
-                Text(strings.settingsSubtitlesSection, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        if (textGroups.isEmpty() && assExternalTracks.isEmpty()) {
+            Text(
+                text = strings.playerNoSubtitles,
+                color = colors.textSecondary,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        } else {
+            TrackChoiceRow(
+                label = strings.optionOff,
+                selected = textGroups.none { it.isSelected } && activeAssSubtitleIndex == null,
+                onClick = {
+                    player.trackSelectionParameters = player.trackSelectionParameters
+                        .buildUpon()
+                        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                        .build()
+                    onSelectExternalAssTrack(null)
+                },
+                modifier = Modifier.focusRequester(firstFocusRequester)
+            )
+            textGroups.forEachIndexed { idx, group ->
+                val format = group.getTrackFormat(0)
+                val label = listOfNotNull(format.language?.uppercase(), format.label)
+                    .joinToString(" • ")
+                    .ifBlank { strings.playerSubtitleTrackN.format(idx + 1) }
                 TrackChoiceRow(
-                    label = strings.optionOff,
-                    selected = textGroups.none { it.isSelected } && activeAssSubtitleIndex == null,
+                    label = label,
+                    selected = group.isSelected && activeAssSubtitleIndex == null,
                     onClick = {
                         player.trackSelectionParameters = player.trackSelectionParameters
                             .buildUpon()
-                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
                             .build()
-                        onSelectExternalAssTrack(null)
+                        // The styled ASS overlay hides ExoPlayer's SubtitleView; drop it so the
+                        // chosen track is actually visible.
+                        if (activeAssSubtitleIndex != null) onSelectExternalAssTrack(null)
                     }
                 )
-                textGroups.forEachIndexed { idx, group ->
-                    val format = group.getTrackFormat(0)
-                    val label = listOfNotNull(format.language?.uppercase(), format.label).joinToString(" • ").ifBlank { strings.playerSubtitleTrackN.format(idx + 1) }
-                    TrackChoiceRow(
-                        label = label,
-                        selected = group.isSelected,
-                        onClick = {
-                            player.trackSelectionParameters = player.trackSelectionParameters
-                                .buildUpon()
-                                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
-                                .build()
-                            // The styled ASS overlay hides ExoPlayer's SubtitleView; drop it so the
-                            // chosen track is actually visible.
-                            if (activeAssSubtitleIndex != null) onSelectExternalAssTrack(null)
-                            onDismiss()
-                        }
+            }
+        }
+
+        // ASS / SSA Anime & Styled Subtitle Engine
+        if (!isTrailer && assExternalTracks.isNotEmpty()) {
+            SheetSectionHeader(strings.playerAssEngine)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssSubtitleMode.entries.forEach { mode ->
+                    SettingChip(
+                        label = mode.localized(strings),
+                        selected = assSubtitleMode == mode,
+                        onClick = { onSelectAssMode(mode) },
+                        modifier = Modifier.weight(1f)
                     )
                 }
             }
-
-            // ASS / SSA Anime & Styled Subtitle Engine
-            if (!isTrailer && assExternalTracks.isNotEmpty()) {
-                Text(strings.playerAssEngine, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssSubtitleMode.entries.forEach { mode ->
-                        SettingChip(
-                            label = mode.localized(strings),
-                            selected = assSubtitleMode == mode,
-                            onClick = { onSelectAssMode(mode) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-                assExternalTracks.forEach { ext ->
-                    val label = listOfNotNull(
-                        ext.language?.uppercase(),
-                        ext.title.ifBlank { strings.playerAssTrackN.format(ext.index) },
-                        ext.codec?.uppercase()
-                    ).distinct().joinToString(" • ")
-                    TrackChoiceRow(
-                        label = label,
-                        selected = activeAssSubtitleIndex == ext.index,
-                        onClick = { onSelectExternalAssTrack(ext) }
-                    )
-                }
+            assExternalTracks.forEach { ext ->
+                val label = listOfNotNull(
+                    ext.language?.uppercase(),
+                    ext.title.ifBlank { strings.playerAssTrackN.format(ext.index) },
+                    ext.codec?.uppercase()
+                ).distinct().joinToString(" • ")
+                TrackChoiceRow(
+                    label = label,
+                    selected = activeAssSubtitleIndex == ext.index,
+                    onClick = { onSelectExternalAssTrack(ext) }
+                )
             }
+        }
 
-            // Subtitle Timing Sync (±ms)
-            if (!isTrailer) {
-                val offsetSec = subtitleOffsetMs / 1000.0
-                val offsetLabel = String.format(Locale.US, "%+.2fs", offsetSec)
+        // Subtitle Timing Sync (±ms)
+        if (!isTrailer) {
+            val offsetSec = subtitleOffsetMs / 1000.0
+            val offsetLabel = String.format(Locale.US, "%+.2fs", offsetSec)
+            SheetSectionHeader(strings.playerSubtitleSync.format(offsetLabel))
+            if (isBitmapSubtitle) {
                 Text(
-                    text = strings.playerSubtitleSync.format(offsetLabel),
-                    color = colors.textSecondary,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                if (isBitmapSubtitle) {
-                    Text(
-                        text = strings.playerSubtitleSyncBitmap,
-                        color = Color(0xFFFFB74D),
-                        fontSize = 11.sp
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SettingChip(label = "-0.5s", selected = false, onClick = { onAdjustSubtitleOffset(-500L) }, modifier = Modifier.weight(1f))
-                    SettingChip(label = "-0.25s", selected = false, onClick = { onAdjustSubtitleOffset(-250L) }, modifier = Modifier.weight(1f))
-                    SettingChip(label = "0.0s", selected = subtitleOffsetMs == 0L, onClick = onResetSubtitleOffset, modifier = Modifier.weight(1f))
-                    SettingChip(label = "+0.25s", selected = false, onClick = { onAdjustSubtitleOffset(250L) }, modifier = Modifier.weight(1f))
-                    SettingChip(label = "+0.5s", selected = false, onClick = { onAdjustSubtitleOffset(500L) }, modifier = Modifier.weight(1f))
-                }
-
-                // On-Demand Jellyfin Remote Subtitle Search / Download
-                Text(strings.playerSearchSubtitles, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("eng" to "EN", "spa" to "ES", "fra" to "FR", "jpn" to "JP").forEach { (code, label) ->
-                        SettingChip(
-                            label = label,
-                            selected = remoteSubtitleLanguage == code,
-                            onClick = { onSearchRemoteSubtitles(code) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    SettingChip(
-                        label = if (remoteSubtitlesLoading) strings.playerSearching else strings.navSearch,
-                        selected = false,
-                        onClick = { onSearchRemoteSubtitles(remoteSubtitleLanguage) },
-                        modifier = Modifier.weight(1.3f)
-                    )
-                }
-                subtitleSearchMessage?.let { msg ->
-                    Text(msg, color = colors.textSecondary, fontSize = 12.sp)
-                }
-                if (remoteSubtitles.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        remoteSubtitles.take(5).forEach { sub ->
-                            val details = listOfNotNull(
-                                sub.format?.uppercase(),
-                                sub.downloadCount?.let { "$it dl" },
-                                if (sub.communityRating != null) String.format(Locale.US, "★%.1f", sub.communityRating) else null
-                            ).joinToString(" • ")
-                            val label = if (details.isBlank()) sub.name else "${sub.name} ($details)"
-                            TrackChoiceRow(
-                                label = label,
-                                selected = downloadingSubtitleId == sub.id,
-                                onClick = { onDownloadRemoteSubtitle(sub.id) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Playback Speed
-            Text(strings.playerSpeed, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEach { spd ->
-                    SettingChip(
-                        label = "${spd}x",
-                        selected = selectedSpeed == spd,
-                        onClick = { onSelectSpeed(spd) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // Quality / Bitrate Cap
-            if (!isTrailer) {
-                Text(strings.playerVideoQuality, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                QualityPreset.entries.forEach { preset ->
-                    TrackChoiceRow(
-                        label = preset.localized(strings),
-                        selected = selectedQuality == preset,
-                        onClick = { onSelectQuality(preset) }
-                    )
-                }
-            }
-
-            // Audio Routing & Home Theater
-            if (!isTrailer) {
-                Text(strings.playerAudioRouting, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                TrackChoiceRow(
-                    label = strings.playerPassthrough,
-                    selected = audioPassthroughEnabled,
-                    onClick = onToggleAudioPassthrough
-                )
-                TrackChoiceRow(
-                    label = strings.playerDownmix,
-                    selected = stereoDownmixEnabled,
-                    onClick = onToggleStereoDownmix
+                    text = strings.playerSubtitleSyncBitmap,
+                    color = Color(0xFFFFB74D),
+                    fontSize = 11.sp
                 )
             }
-
-            // Auto-Skip & 24fps Frame-Rate Matching
-            if (!isTrailer) {
-                Text(strings.playerAutomation, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                TrackChoiceRow(
-                    label = strings.settingsAutoSkipIntroTitle,
-                    selected = autoSkipIntro,
-                    onClick = onToggleAutoSkipIntro
-                )
-                TrackChoiceRow(
-                    label = strings.settingsAutoSkipRecapTitle,
-                    selected = autoSkipRecap,
-                    onClick = onToggleAutoSkipRecap
-                )
-                Text(strings.settingsFrameRateTitle, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FrameRateMatchMode.entries.forEach { mode ->
-                        SettingChip(
-                            label = mode.localized(strings),
-                            selected = frameRateMatchMode == mode,
-                            onClick = { onSelectFrameRateMatchMode(mode) },
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val syncModifier = if (textGroups.isEmpty() && assExternalTracks.isEmpty()) {
+                    Modifier.weight(1f).focusRequester(firstFocusRequester)
+                } else Modifier.weight(1f)
+                SettingChip(label = "-0.5s", selected = false, onClick = { onAdjustSubtitleOffset(-500L) }, modifier = syncModifier)
+                SettingChip(label = "-0.25s", selected = false, onClick = { onAdjustSubtitleOffset(-250L) }, modifier = Modifier.weight(1f))
+                SettingChip(label = "0.0s", selected = subtitleOffsetMs == 0L, onClick = onResetSubtitleOffset, modifier = Modifier.weight(1f))
+                SettingChip(label = "+0.25s", selected = false, onClick = { onAdjustSubtitleOffset(250L) }, modifier = Modifier.weight(1f))
+                SettingChip(label = "+0.5s", selected = false, onClick = { onAdjustSubtitleOffset(500L) }, modifier = Modifier.weight(1f))
             }
+        }
 
-            // Subtitle Size & Background
-            Text(strings.playerSubtitleSize, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(strings.sizeSmall to 0.8f, strings.sizeMedium to 1.0f, strings.sizeLarge to 1.3f).forEach { (label, scale) ->
+        // Live Caption Style Controls
+        SheetSectionHeader(strings.playerCaptionStyle)
+
+        Text(strings.playerSubtitleSize, color = colors.textSecondary, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(strings.sizeSmall to 0.8f, strings.sizeMedium to 1.0f, strings.sizeLarge to 1.3f).forEach { (label, scale) ->
+                SettingChip(
+                    label = label,
+                    selected = kotlin.math.abs(subtitleFontScale - scale) < 0.05f,
+                    onClick = { onSetSubtitleAppearance(scale, subtitleBackgroundAlpha) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        Text(strings.playerSubtitleBackground, color = colors.textSecondary, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(strings.backgroundNone to 0f, "50%" to 0.5f, "80%" to 0.8f).forEach { (label, alpha) ->
+                SettingChip(
+                    label = label,
+                    selected = kotlin.math.abs(subtitleBackgroundAlpha - alpha) < 0.05f,
+                    onClick = { onSetSubtitleAppearance(subtitleFontScale, alpha) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        Text(strings.settingsSubtitleColor, color = colors.textSecondary, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SubtitleTextColor.entries.forEach { colorOption ->
+                SettingChip(
+                    label = colorOption.localized(strings),
+                    selected = subtitleTextColor == colorOption,
+                    onClick = { onSetSubtitleStyle(colorOption, null, null) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        Text(strings.settingsSubtitleEdge, color = colors.textSecondary, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SubtitleEdgeStyle.entries.forEach { edgeOption ->
+                SettingChip(
+                    label = edgeOption.localized(strings),
+                    selected = subtitleEdgeStyle == edgeOption,
+                    onClick = { onSetSubtitleStyle(null, edgeOption, null) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        Text(strings.settingsSubtitlePosition, color = colors.textSecondary, fontSize = 12.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SubtitlePosition.entries.forEach { posOption ->
+                SettingChip(
+                    label = posOption.localized(strings),
+                    selected = subtitlePosition == posOption,
+                    onClick = { onSetSubtitleStyle(null, null, posOption) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        // On-Demand Jellyfin Remote Subtitle Search / Download
+        if (!isTrailer) {
+            SheetSectionHeader(strings.playerSearchSubtitles)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("eng" to "EN", "spa" to "ES", "fra" to "FR", "jpn" to "JP").forEach { (code, label) ->
                     SettingChip(
                         label = label,
-                        selected = kotlin.math.abs(subtitleFontScale - scale) < 0.05f,
-                        onClick = { onSetSubtitleAppearance(scale, subtitleBackgroundAlpha) },
+                        selected = remoteSubtitleLanguage == code,
+                        onClick = { onSearchRemoteSubtitles(code) },
                         modifier = Modifier.weight(1f)
                     )
                 }
-            }
-
-            Text(strings.playerSubtitleBackground, color = colors.textSecondary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(strings.backgroundNone to 0f, "50%" to 0.5f, "80%" to 0.8f).forEach { (label, alpha) ->
-                    SettingChip(
-                        label = label,
-                        selected = kotlin.math.abs(subtitleBackgroundAlpha - alpha) < 0.05f,
-                        onClick = { onSetSubtitleAppearance(subtitleFontScale, alpha) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // Stream Info Overlay toggle & External Player launch
-            TrackChoiceRow(
-                label = strings.playerStreamInfo,
-                selected = showStreamInfo,
-                onClick = onToggleStreamInfo
-            )
-            if (!isTrailer) {
-                TrackChoiceRow(
-                    label = strings.actionExternalPlayer,
+                SettingChip(
+                    label = if (remoteSubtitlesLoading) strings.playerSearching else strings.navSearch,
                     selected = false,
-                    onClick = onOpenExternalPlayer
+                    onClick = { onSearchRemoteSubtitles(remoteSubtitleLanguage) },
+                    modifier = Modifier.weight(1.4f)
                 )
             }
+            subtitleSearchMessage?.let { msg ->
+                Text(msg, color = colors.textSecondary, fontSize = 12.sp)
+            }
+            if (remoteSubtitles.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    remoteSubtitles.take(5).forEach { sub ->
+                        val details = listOfNotNull(
+                            sub.format?.uppercase(),
+                            sub.downloadCount?.let { "$it dl" },
+                            if (sub.communityRating != null) String.format(Locale.US, "★%.1f", sub.communityRating) else null
+                        ).joinToString(" • ")
+                        val label = if (details.isBlank()) sub.name else "${sub.name} ($details)"
+                        TrackChoiceRow(
+                            label = label,
+                            selected = downloadingSubtitleId == sub.id,
+                            onClick = { onDownloadRemoteSubtitle(sub.id) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AudioSideSheet(
+    player: ExoPlayer,
+    tracksRevision: Int,
+    isTrailer: Boolean,
+    audioPassthroughEnabled: Boolean,
+    stereoDownmixEnabled: Boolean,
+    onToggleAudioPassthrough: () -> Unit,
+    onToggleStereoDownmix: () -> Unit,
+    onClose: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
+    val firstFocusRequester = remember { FocusRequester() }
+
+    val audioGroups = remember(tracksRevision, player) {
+        player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+    }
+    val activeAudioLabel = remember(tracksRevision, audioGroups) {
+        audioGroups.firstOrNull { it.isSelected }?.let { group ->
+            formatAudioTrackLabel(group.getTrackFormat(0), 0, strings)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        delay(60L)
+        runCatching { firstFocusRequester.requestFocus() }
+    }
+
+    PlayerSideSheet(
+        title = strings.playerAudio,
+        subtitle = activeAudioLabel,
+        icon = Icons.AutoMirrored.Filled.VolumeUp,
+        onClose = onClose,
+        closeFocusRequester = if (audioGroups.isEmpty() && isTrailer) firstFocusRequester else remember { FocusRequester() }
+    ) {
+        SheetSectionHeader(strings.playerAudioTracks, showTopSpacer = false)
+        if (audioGroups.isEmpty()) {
+            Text(
+                text = strings.playerNoAudioTracks,
+                color = colors.textSecondary,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        } else {
+            audioGroups.forEachIndexed { idx, group ->
+                val label = formatAudioTrackLabel(group.getTrackFormat(0), idx, strings)
+                TrackChoiceRow(
+                    label = label,
+                    selected = group.isSelected,
+                    onClick = {
+                        player.trackSelectionParameters = player.trackSelectionParameters
+                            .buildUpon()
+                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                            .build()
+                    },
+                    modifier = if (idx == 0) Modifier.focusRequester(firstFocusRequester) else Modifier
+                )
+            }
+        }
+
+        if (!isTrailer) {
+            SheetSectionHeader(strings.playerAudioRouting)
+            TrackChoiceRow(
+                label = strings.playerPassthrough,
+                selected = audioPassthroughEnabled,
+                onClick = onToggleAudioPassthrough,
+                modifier = if (audioGroups.isEmpty()) Modifier.focusRequester(firstFocusRequester) else Modifier
+            )
+            TrackChoiceRow(
+                label = strings.playerDownmix,
+                selected = stereoDownmixEnabled,
+                onClick = onToggleStereoDownmix
+            )
+        }
+    }
+}
+
+private fun formatAudioTrackLabel(
+    format: androidx.media3.common.Format,
+    index: Int,
+    strings: UiStrings
+): String {
+    val channels = when (format.channelCount) {
+        8 -> "7.1"
+        6 -> "5.1"
+        2 -> "2.0"
+        1 -> "1.0"
+        else -> null
+    }
+    val codec = when (format.sampleMimeType) {
+        MimeTypes.AUDIO_E_AC3_JOC -> "Atmos"
+        MimeTypes.AUDIO_E_AC3 -> "EAC3"
+        MimeTypes.AUDIO_AC3 -> "AC3"
+        MimeTypes.AUDIO_TRUEHD -> "TrueHD"
+        MimeTypes.AUDIO_DTS, MimeTypes.AUDIO_DTS_HD, MimeTypes.AUDIO_DTS_X -> "DTS"
+        MimeTypes.AUDIO_AAC -> "AAC"
+        MimeTypes.AUDIO_OPUS -> "Opus"
+        MimeTypes.AUDIO_FLAC -> "FLAC"
+        else -> null
+    }
+    return listOfNotNull(
+        format.language?.uppercase()?.takeIf { it != "UND" },
+        format.label?.takeIf { it.isNotBlank() },
+        channels,
+        codec
+    ).distinct().joinToString(" • ").ifBlank { strings.playerAudioTrackN.format(index + 1) }
+}
+
+@Composable
+private fun ChaptersSideSheet(
+    chapters: List<ChapterMarker>,
+    currentPosMs: Long,
+    onJumpToChapter: (ChapterMarker) -> Unit,
+    onClose: () -> Unit
+) {
+    val strings = AppStrings.current
+    val activeIdx = remember(chapters, currentPosMs) {
+        chapters.indexOfLast { it.startPositionMs <= currentPosMs }.coerceAtLeast(0)
+    }
+    val activeChapterFocusRequester = remember { FocusRequester() }
+    val closeFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(chapters.size, activeIdx) {
+        delay(60L)
+        if (chapters.isNotEmpty()) {
+            runCatching { activeChapterFocusRequester.requestFocus() }
+        } else {
+            runCatching { closeFocusRequester.requestFocus() }
+        }
+    }
+
+    PlayerSideSheet(
+        title = strings.playerChaptersCount.format(chapters.size),
+        subtitle = chapters.getOrNull(activeIdx)?.name,
+        icon = Icons.Filled.Bookmarks,
+        onClose = onClose,
+        closeFocusRequester = closeFocusRequester,
+        scrollable = false
+    ) {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(bottom = 16.dp)
+        ) {
+            items(chapters.size, key = { idx -> "${chapters[idx].startPositionMs}_$idx" }) { idx ->
+                val chapter = chapters[idx]
+                val isCurrent = idx == activeIdx
+                TrackChoiceRow(
+                    label = "${formatMs(chapter.startPositionMs)}  •  ${chapter.name}",
+                    selected = isCurrent,
+                    onClick = { onJumpToChapter(chapter) },
+                    modifier = if (isCurrent) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaybackSettingsSideSheet(
+    session: PlaybackSessionData?,
+    isTrailer: Boolean,
+    selectedSpeed: Float,
+    selectedQuality: QualityPreset,
+    selectedMediaSourceId: String?,
+    autoSkipIntro: Boolean,
+    autoSkipRecap: Boolean,
+    frameRateMatchMode: FrameRateMatchMode,
+    showStreamInfo: Boolean,
+    onSelectSpeed: (Float) -> Unit,
+    onSelectQuality: (QualityPreset) -> Unit,
+    onSwitchMediaSource: (String) -> Unit,
+    onToggleAutoSkipIntro: () -> Unit,
+    onToggleAutoSkipRecap: () -> Unit,
+    onSelectFrameRateMatchMode: (FrameRateMatchMode) -> Unit,
+    onToggleStreamInfo: () -> Unit,
+    onOpenExternalPlayer: () -> Unit,
+    onClose: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
+    val firstFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        delay(60L)
+        runCatching { firstFocusRequester.requestFocus() }
+    }
+
+    val summary = listOfNotNull(
+        session?.resolutionLabel,
+        selectedQuality.localized(strings),
+        "${selectedSpeed}x"
+    ).joinToString(" • ")
+
+    PlayerSideSheet(
+        title = strings.playerPlaybackSettings,
+        subtitle = summary,
+        icon = Icons.Filled.Settings,
+        onClose = onClose
+    ) {
+        // Streaming Quality / Bitrate Cap
+        if (!isTrailer) {
+            SheetSectionHeader(strings.playerVideoQuality, showTopSpacer = false)
+            QualityPreset.entries.forEachIndexed { idx, preset ->
+                TrackChoiceRow(
+                    label = preset.localized(strings),
+                    selected = selectedQuality == preset,
+                    onClick = { onSelectQuality(preset) },
+                    modifier = if (idx == 0) Modifier.focusRequester(firstFocusRequester) else Modifier
+                )
+            }
+        }
+
+        // Versions & Editions (Multiple MediaSources)
+        val sources = session?.mediaSources.orEmpty()
+        if (!isTrailer && sources.size > 1) {
+            SheetSectionHeader(strings.labelVersions)
+            sources.forEach { src ->
+                TrackChoiceRow(
+                    label = src.displayLabel,
+                    selected = src.id == (selectedMediaSourceId ?: session?.mediaSourceId),
+                    onClick = { onSwitchMediaSource(src.id) }
+                )
+            }
+        }
+
+        // Playback Speed
+        SheetSectionHeader(strings.playerSpeed, showTopSpacer = !isTrailer)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEachIndexed { idx, spd ->
+                SettingChip(
+                    label = "${spd}x",
+                    selected = selectedSpeed == spd,
+                    onClick = { onSelectSpeed(spd) },
+                    modifier = if (isTrailer && idx == 0) {
+                        Modifier.weight(1f).focusRequester(firstFocusRequester)
+                    } else Modifier.weight(1f)
+                )
+            }
+        }
+
+        // Display & Automation (Frame-Rate Matching & Auto-Skip)
+        if (!isTrailer) {
+            SheetSectionHeader(strings.playerAutomation)
+            Text(strings.settingsFrameRateTitle, color = colors.textSecondary, fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FrameRateMatchMode.entries.forEach { mode ->
+                    SettingChip(
+                        label = mode.localized(strings),
+                        selected = frameRateMatchMode == mode,
+                        onClick = { onSelectFrameRateMatchMode(mode) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            TrackChoiceRow(
+                label = strings.settingsAutoSkipIntroTitle,
+                selected = autoSkipIntro,
+                onClick = onToggleAutoSkipIntro
+            )
+            TrackChoiceRow(
+                label = strings.settingsAutoSkipRecapTitle,
+                selected = autoSkipRecap,
+                onClick = onToggleAutoSkipRecap
+            )
+        }
+
+        // Diagnostics & External Player
+        SheetSectionHeader(strings.playerStreamInfo)
+        TrackChoiceRow(
+            label = strings.playerStreamInfo,
+            selected = showStreamInfo,
+            onClick = onToggleStreamInfo
+        )
+        if (!isTrailer) {
+            TrackChoiceRow(
+                label = strings.actionExternalPlayer,
+                selected = false,
+                onClick = onOpenExternalPlayer
+            )
         }
     }
 }
@@ -2343,14 +2757,16 @@ private fun SettingChip(
             )
             .onFocusChanged { focused = it.isFocused }
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(horizontal = 6.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
             color = if (selected) colors.deepBlack else colors.white,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -2359,14 +2775,15 @@ private fun SettingChip(
 private fun TrackChoiceRow(
     label: String,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val corner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     var focused by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(corner)
             .background(
@@ -2376,15 +2793,28 @@ private fun TrackChoiceRow(
                     else -> colors.surface
                 }
             )
-            .then(if (focused) Modifier.border(2.dp, colors.focusBorder, corner) else Modifier)
+            .then(
+                if (focused) Modifier.border(2.dp, colors.focusBorder, corner)
+                else if (selected) Modifier.border(1.dp, colors.accent.copy(alpha = 0.6f), corner)
+                else Modifier
+            )
             .onFocusChanged { focused = it.isFocused }
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = colors.white, fontSize = 14.sp)
+        Text(
+            text = label,
+            color = colors.white,
+            fontSize = 13.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
         if (selected) {
-            Text(AppStrings.current.commonActive, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(10.dp))
+            Text(AppStrings.current.commonActive, color = colors.accent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

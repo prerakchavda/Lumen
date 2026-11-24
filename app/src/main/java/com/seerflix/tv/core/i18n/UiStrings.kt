@@ -450,6 +450,18 @@ data class UiStrings(
         internal set
     var playerAudioSubtitles: String = "Audio & Subtitles"
         internal set
+    var playerCaptions: String = "Captions"
+        internal set
+    var playerAudio: String = "Audio"
+        internal set
+    var playerChapters: String = "Chapters"
+        internal set
+    var playerCaptionStyle: String = "Caption Style"
+        internal set
+    var playerNoSubtitles: String = "No subtitle tracks in this stream"
+        internal set
+    var playerNoAudioTracks: String = "Default audio track"
+        internal set
     var playerPlaybackSettings: String = "Playback Settings"
         internal set
     var playerVideoStream: String = "Video Stream"
@@ -1160,6 +1172,12 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerForward10 = "Avanzar 10 s"
         playerEpisodes = "Episodios"
         playerAudioSubtitles = "Audio y subtítulos"
+        playerCaptions = "Subtítulos"
+        playerAudio = "Audio"
+        playerChapters = "Capítulos"
+        playerCaptionStyle = "Estilo de subtítulos"
+        playerNoSubtitles = "No hay pistas de subtítulos en esta reproducción"
+        playerNoAudioTracks = "Pista de audio predeterminada"
         playerPlaybackSettings = "Ajustes de reproducción"
         playerVideoStream = "Vídeo"
         playerQualityInfo = "Calidad: %1\$s • %2\$s"
@@ -1618,6 +1636,12 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerForward10 = "Avancer de 10 s"
         playerEpisodes = "Épisodes"
         playerAudioSubtitles = "Audio et sous-titres"
+        playerCaptions = "Sous-titres"
+        playerAudio = "Audio"
+        playerChapters = "Chapitres"
+        playerCaptionStyle = "Style des sous-titres"
+        playerNoSubtitles = "Aucune piste de sous-titres dans ce flux"
+        playerNoAudioTracks = "Piste audio par défaut"
         playerPlaybackSettings = "Paramètres de lecture"
         playerVideoStream = "Flux vidéo"
         playerAudioInfo = "Audio : %s"
@@ -2077,6 +2101,12 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerForward10 = "10 s vor"
         playerEpisodes = "Folgen"
         playerAudioSubtitles = "Audio & Untertitel"
+        playerCaptions = "Untertitel"
+        playerAudio = "Audio"
+        playerChapters = "Kapitel"
+        playerCaptionStyle = "Untertitelstil"
+        playerNoSubtitles = "Keine Untertitelspuren in diesem Stream"
+        playerNoAudioTracks = "Standard-Audiospur"
         playerPlaybackSettings = "Wiedergabe"
         playerVideoStream = "Videostream"
         playerQualityInfo = "Qualität: %1\$s • %2\$s"
@@ -2534,6 +2564,12 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerForward10 = "10秒進む"
         playerEpisodes = "エピソード"
         playerAudioSubtitles = "音声と字幕"
+        playerCaptions = "字幕"
+        playerAudio = "音声"
+        playerChapters = "チャプター"
+        playerCaptionStyle = "字幕スタイル"
+        playerNoSubtitles = "字幕トラックがありません"
+        playerNoAudioTracks = "デフォルト音声トラック"
         playerPlaybackSettings = "再生設定"
         playerVideoStream = "映像ストリーム"
         playerAudioInfo = "音声: %s"

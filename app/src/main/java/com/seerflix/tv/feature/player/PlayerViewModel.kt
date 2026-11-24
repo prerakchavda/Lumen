@@ -801,6 +801,23 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
+    fun setSubtitleStyle(
+        textColor: com.seerflix.tv.core.model.SubtitleTextColor? = null,
+        edgeStyle: com.seerflix.tv.core.model.SubtitleEdgeStyle? = null,
+        position: com.seerflix.tv.core.model.SubtitlePosition? = null
+    ) {
+        _uiState.update {
+            it.copy(
+                subtitleTextColor = textColor ?: it.subtitleTextColor,
+                subtitleEdgeStyle = edgeStyle ?: it.subtitleEdgeStyle,
+                subtitlePosition = position ?: it.subtitlePosition
+            )
+        }
+        viewModelScope.launch {
+            authRepository.updateSubtitleStyle(textColor, edgeStyle, position)
+        }
+    }
+
     fun toggleStreamInfo() {
         _uiState.update { it.copy(showStreamInfo = !it.showStreamInfo) }
     }

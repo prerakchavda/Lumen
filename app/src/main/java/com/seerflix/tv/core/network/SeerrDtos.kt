@@ -66,6 +66,7 @@ data class SeerrMediaResultDto(
     val knownForDepartment: String? = null,
     val knownFor: List<SeerrMediaResultDto> = emptyList(),
     val voteAverage: Double? = null,
+    val popularity: Double? = null,
     val genreIds: List<Int> = emptyList(),
     val adult: Boolean = false,
     val mediaInfo: SeerrMediaInfoDto? = null
@@ -263,7 +264,10 @@ data class SeerrReleaseCountryDto(
 
 @Serializable
 data class SeerrReleaseDateDto(
-    val certification: String? = null
+    val certification: String? = null,
+    @SerialName("release_date") val releaseDate: String? = null,
+    /** TMDB release type: 1=Premiere, 2=Theatrical(limited), 3=Theatrical, 4=Digital, 5=Physical, 6=TV. */
+    val type: Int? = null
 )
 
 @Serializable
