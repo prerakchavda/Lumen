@@ -71,9 +71,9 @@ class AppUpdateChecker @Inject constructor(
 
     companion object {
         private const val LATEST_RELEASE_URL =
-            "https://api.github.com/repos/prerakchavda/seerflix-tv/releases/latest"
+            "https://api.github.com/repos/prerakchavda/Lumen/releases/latest"
         private const val FALLBACK_RELEASES_URL =
-            "https://github.com/prerakchavda/seerflix-tv/releases"
+            "https://github.com/prerakchavda/Lumen/releases"
 
         fun isNewerVersion(current: String, latest: String): Boolean {
             val curParts = parseVersionParts(current)

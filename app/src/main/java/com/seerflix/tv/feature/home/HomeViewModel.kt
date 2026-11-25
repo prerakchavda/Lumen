@@ -4,6 +4,8 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AppUpdateChecker
+import com.seerflix.tv.core.data.AppUpdateInstallState
+import com.seerflix.tv.core.data.AppUpdateInstaller
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.HomeContentCache
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
@@ -52,7 +54,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import java.io.File
 import javax.inject.Inject
 
 enum class HomeTab(val label: String, val filter: MediaType?) {
@@ -110,6 +114,7 @@ data class HomeUiState(
     val syncPlayGroups: List<SyncPlayGroup> = emptyList(),
     val activeSyncPlayGroup: SyncPlayGroup? = null,
     val updateInfo: AppUpdateInfo? = null,
+    val updateInstallState: AppUpdateInstallState = AppUpdateInstallState.Idle,
     val activeCollectionDetails: CollectionSummary? = null,
     val collectionDetailsLoading: Boolean = false,
     val featuredItem: UnifiedMediaItem? = null,
@@ -138,6 +143,7 @@ class HomeViewModel @Inject constructor(
     private val tvChannelSyncManager: TvChannelSyncManager,
     private val syncPlayManager: SyncPlayManager,
     private val appUpdateChecker: AppUpdateChecker,
+    private val appUpdateInstaller: AppUpdateInstaller,
     private val prefs: SessionPreferences,
     /** Honours the self-signed-certificate toggle; used by the hero trailer preview player. */
     @MediaClient val previewHttpClient: OkHttpClient,
@@ -154,6 +160,7 @@ class HomeViewModel @Inject constructor(
     private var catalogJob: Job? = null
     private var collectionJob: Job? = null
     private var auxiliaryJob: Job? = null
+    private var appUpdateJob: Job? = null
 
     /**
      * Cache key of the row content currently in [HomeUiState.rows] plus the rows as they were
@@ -245,6 +252,9 @@ class HomeViewModel @Inject constructor(
             val upd = runCatching { appUpdateChecker.checkForUpdate() }.getOrNull()
             if (upd != null) {
                 _uiState.update { it.copy(updateInfo = upd) }
+            } else {
+                // Up to date (e.g. right after installing an update): reclaim cached APK space.
+                runCatching { appUpdateInstaller.cleanupCachedApks() }
             }
         }
     }
@@ -356,7 +366,104 @@ class HomeViewModel @Inject constructor(
     }
 
     fun dismissUpdateDialog() {
-        _uiState.update { it.copy(showUpdateDialog = false) }
+        val currentState = _uiState.value.updateInstallState
+        if (currentState is AppUpdateInstallState.Downloading) {
+            appUpdateJob?.cancel()
+            appUpdateJob = null
+        }
+        _uiState.update {
+            it.copy(
+                showUpdateDialog = false,
+                updateInstallState = when (currentState) {
+                    is AppUpdateInstallState.Downloading,
+                    is AppUpdateInstallState.Failed -> AppUpdateInstallState.Idle
+                    else -> currentState
+                }
+            )
+        }
+    }
+
+    fun startAppUpdate() {
+        val currentState = _uiState.value.updateInstallState
+        if (currentState is AppUpdateInstallState.Downloading) return
+
+        val existingPath = when (currentState) {
+            is AppUpdateInstallState.ReadyToInstall -> currentState.apkPath
+            is AppUpdateInstallState.NeedsInstallPermission -> currentState.apkPath
+            else -> null
+        }
+        if (existingPath != null && File(existingPath).isFile) {
+            triggerInstallOrPermission(existingPath)
+            return
+        }
+
+        val info = _uiState.value.updateInfo ?: return
+        appUpdateJob?.cancel()
+        _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.Downloading(0L, -1L)) }
+        appUpdateJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val apkFile = appUpdateInstaller.downloadApk(info) { bytesRead, totalBytes ->
+                    _uiState.update {
+                        it.copy(
+                            updateInstallState = AppUpdateInstallState.Downloading(
+                                bytesRead = bytesRead,
+                                totalBytes = totalBytes
+                            )
+                        )
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    triggerInstallOrPermission(apkFile.absolutePath)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        updateInstallState = AppUpdateInstallState.Failed(
+                            e.message?.takeIf { msg -> msg.isNotBlank() } ?: "Download failed"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun cancelAppUpdate() {
+        appUpdateJob?.cancel()
+        appUpdateJob = null
+        _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.Idle) }
+    }
+
+    fun onResumeAppUpdateDialog() {
+        val state = _uiState.value.updateInstallState
+        if (state is AppUpdateInstallState.NeedsInstallPermission &&
+            appUpdateInstaller.canRequestPackageInstalls()
+        ) {
+            triggerInstallOrPermission(state.apkPath)
+        }
+    }
+
+    private fun triggerInstallOrPermission(apkPath: String) {
+        if (appUpdateInstaller.canRequestPackageInstalls()) {
+            if (appUpdateInstaller.launchInstaller(apkPath)) {
+                _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.ReadyToInstall(apkPath)) }
+            } else {
+                _uiState.update {
+                    it.copy(updateInstallState = AppUpdateInstallState.Failed("Could not open Android package installer."))
+                }
+            }
+            return
+        }
+        if (appUpdateInstaller.openUnknownAppSourcesSettings()) {
+            _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.NeedsInstallPermission(apkPath)) }
+        } else if (appUpdateInstaller.launchInstaller(apkPath)) {
+            // Some Android TV / Fire TV boxes omit ACTION_MANAGE_UNKNOWN_APP_SOURCES and prompt
+            // for unknown-sources permission inline when the package installer launches.
+            _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.ReadyToInstall(apkPath)) }
+        } else {
+            _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.NeedsInstallPermission(apkPath)) }
+        }
     }
 
     fun dismissReadyAlert(requestId: Int) {
