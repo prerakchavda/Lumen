@@ -426,6 +426,24 @@ data class UiStrings(
         internal set
     var updateReleaseLink: String = "GitHub Release: %s"
         internal set
+    var updateDownloadAndInstall: String = "Download & Install"
+        internal set
+    var updateInstallNow: String = "Install Update"
+        internal set
+    var updateAllowPermission: String = "Allow & Install"
+        internal set
+    var updateRetry: String = "Retry Download"
+        internal set
+    var updateDownloading: String = "Downloading update…"
+        internal set
+    var updateDownloadingPercent: String = "Downloading update… %1\$d%% (%2\$s / %3\$s)"
+        internal set
+    var updatePermissionHint: String = "Enable \"Install unknown apps\" for Lumen in TV settings, then return here to install."
+        internal set
+    var updateReadyHint: String = "Update downloaded. Press Install Update if the Android installer didn't open."
+        internal set
+    var updateFailedPrefix: String = "Update failed: %s"
+        internal set
 
     // ---- Player (0.7) ----
     var playerSubtitleSyncHud: String = "Subtitle Sync: %s"
@@ -1159,6 +1177,15 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         // App update dialog (0.8)
         updateAvailable = "Lumen %s disponible"
         updateReleaseLink = "Versión en GitHub: %s"
+        updateDownloadAndInstall = "Descargar e instalar"
+        updateInstallNow = "Instalar actualización"
+        updateAllowPermission = "Permitir e instalar"
+        updateRetry = "Reintentar descarga"
+        updateDownloading = "Descargando actualización…"
+        updateDownloadingPercent = "Descargando actualización… %1\$d%% (%2\$s / %3\$s)"
+        updatePermissionHint = "Activa \"Instalar apps desconocidas\" para Lumen en los ajustes del TV y vuelve aquí para instalar."
+        updateReadyHint = "Actualización descargada. Pulsa Instalar actualización si no se abrió el instalador."
+        updateFailedPrefix = "Error al actualizar: %s"
 
         // Player (0.8)
         playerSubtitleSyncHud = "Sincronía de subtítulos: %s"
@@ -1623,6 +1650,15 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         // App update dialog (0.8)
         updateAvailable = "Lumen %s disponible"
         updateReleaseLink = "Version GitHub : %s"
+        updateDownloadAndInstall = "Télécharger et installer"
+        updateInstallNow = "Installer la mise à jour"
+        updateAllowPermission = "Autoriser et installer"
+        updateRetry = "Réessayer le téléchargement"
+        updateDownloading = "Téléchargement de la mise à jour…"
+        updateDownloadingPercent = "Téléchargement… %1\$d%% (%2\$s / %3\$s)"
+        updatePermissionHint = "Activez « Installer des applis inconnues » pour Lumen dans les paramètres TV, puis revenez ici."
+        updateReadyHint = "Mise à jour téléchargée. Appuyez sur Installer si l'installeur ne s'est pas ouvert."
+        updateFailedPrefix = "Échec de la mise à jour : %s"
 
         // Player (0.8)
         playerSubtitleSyncHud = "Synchro des sous-titres : %s"
@@ -2088,6 +2124,15 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         // App update dialog (0.8)
         updateAvailable = "Lumen %s verfügbar"
         updateReleaseLink = "GitHub-Release: %s"
+        updateDownloadAndInstall = "Herunterladen & installieren"
+        updateInstallNow = "Update installieren"
+        updateAllowPermission = "Erlauben & installieren"
+        updateRetry = "Erneut herunterladen"
+        updateDownloading = "Update wird heruntergeladen…"
+        updateDownloadingPercent = "Wird heruntergeladen… %1\$d%% (%2\$s / %3\$s)"
+        updatePermissionHint = "Aktiviere „Unbekannte Apps installieren“ für Lumen in den TV-Einstellungen und kehre dann hierher zurück."
+        updateReadyHint = "Update heruntergeladen. Wähle Update installieren, falls der Installer nicht automatisch geöffnet wurde."
+        updateFailedPrefix = "Update fehlgeschlagen: %s"
 
         // Player (0.8)
         playerSubtitleSyncHud = "Untertitel-Sync: %s"
@@ -2551,6 +2596,15 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         // App update dialog (0.8)
         updateAvailable = "Lumen %s が利用可能です"
         updateReleaseLink = "GitHubリリース: %s"
+        updateDownloadAndInstall = "ダウンロードしてインストール"
+        updateInstallNow = "アップデートをインストール"
+        updateAllowPermission = "許可してインストール"
+        updateRetry = "再ダウンロード"
+        updateDownloading = "アップデートをダウンロード中…"
+        updateDownloadingPercent = "ダウンロード中… %1\$d%% (%2\$s / %3\$s)"
+        updatePermissionHint = "テレビの設定でLumenの「不明なアプリのインストール」を許可してから、この画面に戻ってください。"
+        updateReadyHint = "ダウンロード完了。インストーラーが開かない場合は「アップデートをインストール」を押してください。"
+        updateFailedPrefix = "アップデートに失敗しました: %s"
 
         // Player (0.8)
         playerSubtitleSyncHud = "字幕のタイミング: %s"

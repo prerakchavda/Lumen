@@ -12,7 +12,7 @@
 # Run from the repo root:  powershell -ExecutionPolicy Bypass -File scripts\setup-release-signing.ps1
 
 $ErrorActionPreference = 'Stop'
-$repo = 'prerakchavda/seerflix-tv'
+$repo = 'prerakchavda/Lumen'
 $alias = 'lumen'
 $root = Split-Path -Parent $PSScriptRoot
 $keyDir = Join-Path $env:USERPROFILE '.lumen'

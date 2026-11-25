@@ -1,16 +1,29 @@
 package com.seerflix.tv.core.network
 
 import com.seerflix.tv.core.data.AppUpdateChecker
+import com.seerflix.tv.core.data.AppUpdateInstaller
+import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.io.IOException
 
 class OnboardingNetworkingAndUpdatesTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -87,11 +100,11 @@ class OnboardingNetworkingAndUpdatesTest {
             {
               "tag_name": "v1.4.0",
               "body": "Added ASS subtitles and Live TV EPG",
-              "html_url": "https://github.com/prerakchavda/seerflix-tv/releases/tag/v1.4.0",
+              "html_url": "https://github.com/prerakchavda/Lumen/releases/tag/v1.4.0",
               "prerelease": false,
               "draft": false,
               "assets": [
-                {"name": "seerflix-tv-release.apk", "browser_download_url": "https://github.com/prerakchavda/seerflix-tv/releases/download/v1.4.0/seerflix-tv-release.apk"}
+                {"name": "lumen-tv-v1.4.0.apk", "browser_download_url": "https://github.com/prerakchavda/Lumen/releases/download/v1.4.0/lumen-tv-v1.4.0.apk"}
               ]
             }
         """.trimIndent()
@@ -101,5 +114,114 @@ class OnboardingNetworkingAndUpdatesTest {
         assertEquals("v1.4.0", update!!.latestVersion)
         assertTrue(update.downloadUrl!!.endsWith(".apk"))
         assertNull(checker.parseRelease(releaseJson, "1.4.0"))
+    }
+
+    @Test
+    fun `AppUpdateInstaller validates release URLs, filenames, and APK magic header`() {
+        assertTrue(AppUpdateInstaller.isTrustedReleaseUrl("https://github.com/prerakchavda/Lumen/releases/download/v0.10.0/lumen-tv-v0.10.0.apk"))
+        assertTrue(AppUpdateInstaller.isTrustedReleaseUrl("https://objects.githubusercontent.com/github-production-release-asset-123/lumen.apk"))
+        assertFalse(AppUpdateInstaller.isTrustedReleaseUrl("http://github.com/prerakchavda/Lumen/releases/download/v0.10.0/lumen.apk"))
+        assertFalse(AppUpdateInstaller.isTrustedReleaseUrl("https://evil-github.com/lumen.apk"))
+        assertFalse(AppUpdateInstaller.isTrustedReleaseUrl("https://example.com/lumen.apk"))
+
+        assertEquals("lumen-update-v0.10.0.apk", AppUpdateInstaller.apkFileNameForVersion("v0.10.0"))
+        assertEquals("lumen-update-v0.10.0.apk", AppUpdateInstaller.apkFileNameForVersion("../../v0.10.0"))
+        assertEquals("lumen-update-latest.apk", AppUpdateInstaller.apkFileNameForVersion("   "))
+
+        val validApk = File(tempFolder.root, "valid.apk").apply {
+            writeBytes(byteArrayOf(0x50, 0x4B, 0x03, 0x04, 0x14, 0x00))
+        }
+        val htmlPage = File(tempFolder.root, "error.apk").apply {
+            writeText("<html>502 Bad Gateway</html>")
+        }
+        assertTrue(AppUpdateInstaller.hasZipApkMagic(validApk))
+        assertFalse(AppUpdateInstaller.hasZipApkMagic(htmlPage))
+    }
+
+    @Test
+    fun `AppUpdateInstaller downloads, verifies, caches, and cleans up stale APKs`() = runTest {
+        val updatesDir = tempFolder.newFolder("updates")
+        val staleFile = File(updatesDir, "lumen-update-v0.7.0.apk").apply { writeText("old") }
+        val payload = ByteArray(100_000) { i ->
+            when (i) {
+                0 -> 0x50
+                1 -> 0x4B
+                2 -> 0x03
+                3 -> 0x04
+                else -> (i % 251).toByte()
+            }
+        }
+
+        var networkCalls = 0
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                networkCalls++
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body(payload.toResponseBody("application/vnd.android.package-archive".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val progressEvents = mutableListOf<Pair<Long, Long>>()
+        val url = "https://github.com/prerakchavda/Lumen/releases/download/v0.10.0/lumen-tv-v0.10.0.apk"
+
+        val downloaded = AppUpdateInstaller.downloadApkToFile(
+            client = client,
+            rawUrl = url,
+            targetDir = updatesDir,
+            version = "v0.10.0"
+        ) { read, total -> progressEvents += read to total }
+
+        assertEquals(1, networkCalls)
+        assertFalse(staleFile.exists())
+        assertTrue(downloaded.isFile)
+        assertEquals(payload.size.toLong(), downloaded.length())
+        assertTrue(progressEvents.last() == payload.size.toLong() to payload.size.toLong())
+        assertFalse(File(updatesDir, "${downloaded.name}.part").exists())
+
+        // Re-running for the same version reuses the verified cached APK without re-downloading.
+        val cached = AppUpdateInstaller.downloadApkToFile(
+            client = client,
+            rawUrl = url,
+            targetDir = updatesDir,
+            version = "v0.10.0"
+        )
+        assertEquals(1, networkCalls)
+        assertEquals(downloaded.absolutePath, cached.absolutePath)
+    }
+
+    @Test
+    fun `AppUpdateInstaller rejects non-APK response bodies and removes partial files`() = runTest {
+        val updatesDir = tempFolder.newFolder("updates_invalid")
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(200)
+                    .message("OK")
+                    .body("<html>Not an APK</html>".toResponseBody("text/html".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        var thrown: IOException? = null
+        try {
+            AppUpdateInstaller.downloadApkToFile(
+                client = client,
+                rawUrl = "https://github.com/prerakchavda/Lumen/releases/download/v0.10.0/lumen.apk",
+                targetDir = updatesDir,
+                version = "v0.10.0"
+            )
+        } catch (e: IOException) {
+            thrown = e
+        }
+
+        assertNotNull(thrown)
+        assertTrue(updatesDir.listFiles().orEmpty().isEmpty())
     }
 }

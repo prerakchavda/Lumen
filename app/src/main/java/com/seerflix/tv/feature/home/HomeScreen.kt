@@ -67,6 +67,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -116,6 +117,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.seerflix.tv.core.data.AppUpdateInstallState
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.AppUpdateInfo
@@ -264,12 +266,15 @@ fun HomeScreen(
             onDismissLiveTvMenu = viewModel::dismissLiveTvMenu,
             onRecordProgram = viewModel::recordProgram,
             onCancelRecording = viewModel::cancelRecording,
-            onCancelSeriesRecording = viewModel::cancelSeriesRecording
+            onCancelSeriesRecording = viewModel::cancelSeriesRecording,
+            onStartAppUpdate = viewModel::startAppUpdate,
+            onCancelAppUpdate = viewModel::cancelAppUpdate,
+            onResumeAppUpdateDialog = viewModel::onResumeAppUpdateDialog
         )
     )
 }
 
-/** Library grid + DVR callbacks, bundled so they don't have to be threaded one by one. */
+/** Library grid, DVR, and in-app updater callbacks, bundled so they don't have to be threaded one by one. */
 @androidx.compose.runtime.Immutable
 data class HomeExtraActions(
     val onBrowseAll: (MediaType) -> Unit = {},
@@ -277,7 +282,10 @@ data class HomeExtraActions(
     val onDismissLiveTvMenu: () -> Unit = {},
     val onRecordProgram: (programId: String, series: Boolean) -> Unit = { _, _ -> },
     val onCancelRecording: (timerId: String) -> Unit = {},
-    val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {}
+    val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {},
+    val onStartAppUpdate: () -> Unit = {},
+    val onCancelAppUpdate: () -> Unit = {},
+    val onResumeAppUpdateDialog: () -> Unit = {}
 )
 
 @Composable
@@ -618,6 +626,10 @@ fun HomeContent(
     if (state.showUpdateDialog && state.updateInfo != null) {
         AppUpdateDialog(
             updateInfo = state.updateInfo,
+            installState = state.updateInstallState,
+            onStartUpdate = extraActions.onStartAppUpdate,
+            onCancelUpdate = extraActions.onCancelAppUpdate,
+            onResume = extraActions.onResumeAppUpdateDialog,
             onDismiss = onDismissUpdateDialog
         )
     }
@@ -3431,21 +3443,36 @@ private fun SyncPlayDialog(
 @Composable
 private fun AppUpdateDialog(
     updateInfo: AppUpdateInfo,
+    installState: AppUpdateInstallState,
+    onStartUpdate: () -> Unit,
+    onCancelUpdate: () -> Unit,
+    onResume: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val strings = AppStrings.current
-    val closeFocusRequester = remember { FocusRequester() }
+    val primaryFocusRequester = remember { FocusRequester() }
+    val secondaryFocusRequester = remember { FocusRequester() }
+    val hasDownloadUrl = !updateInfo.downloadUrl.isNullOrBlank()
+    val isDownloading = installState is AppUpdateInstallState.Downloading
+
+    // When returning from TV's "Install unknown apps" settings screen, automatically resume install.
+    LifecycleResumeEffect(Unit) {
+        onResume()
+        onPauseOrDispose { }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
-        LaunchedEffect(Unit) {
+        LaunchedEffect(isDownloading, hasDownloadUrl) {
             withFrameNanos { }
-            runCatching { closeFocusRequester.requestFocus() }
+            val target = if (!isDownloading && hasDownloadUrl) primaryFocusRequester else secondaryFocusRequester
+            runCatching { target.requestFocus() }
         }
         Column(
             modifier = Modifier
-                .width(500.dp)
+                .width(520.dp)
                 .clip(dialogShape)
                 .background(colors.dialogSurface)
                 .border(1.dp, colors.badgeBorder, dialogShape)
@@ -3471,19 +3498,118 @@ private fun AppUpdateDialog(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+
+            when (installState) {
+                is AppUpdateInstallState.Downloading -> {
+                    val progress = installState.progress
+                    val statusText = if (progress != null && installState.totalBytes > 0L) {
+                        val pct = (progress * 100f).toInt().coerceIn(0, 100)
+                        strings.updateDownloadingPercent.format(
+                            pct,
+                            formatUpdateMegabytes(installState.bytesRead),
+                            formatUpdateMegabytes(installState.totalBytes)
+                        )
+                    } else {
+                        strings.updateDownloading
+                    }
+                    Text(
+                        text = statusText,
+                        color = colors.downloadingBlue,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (progress != null) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = colors.downloadingBlue,
+                            trackColor = colors.surface
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = colors.downloadingBlue,
+                            trackColor = colors.surface
+                        )
+                    }
+                }
+                is AppUpdateInstallState.NeedsInstallPermission -> {
+                    Text(
+                        text = strings.updatePermissionHint,
+                        color = colors.pendingAmber,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+                is AppUpdateInstallState.ReadyToInstall -> {
+                    Text(
+                        text = strings.updateReadyHint,
+                        color = colors.matchGreen,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+                is AppUpdateInstallState.Failed -> {
+                    Text(
+                        text = strings.updateFailedPrefix.format(installState.message),
+                        color = colors.accent,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                }
+                AppUpdateInstallState.Idle -> Unit
+            }
+
             Text(
                 text = strings.updateReleaseLink.format(updateInfo.htmlUrl),
-                color = colors.matchGreen,
-                fontSize = 12.sp
+                color = colors.textMuted,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-            SmallTextButton(
-                text = strings.commonClose,
-                isPrimary = true,
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth().focusRequester(closeFocusRequester)
-            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (!isDownloading && hasDownloadUrl) {
+                    val primaryLabel = when (installState) {
+                        is AppUpdateInstallState.NeedsInstallPermission -> strings.updateAllowPermission
+                        is AppUpdateInstallState.ReadyToInstall -> strings.updateInstallNow
+                        is AppUpdateInstallState.Failed -> strings.updateRetry
+                        else -> strings.updateDownloadAndInstall
+                    }
+                    SmallTextButton(
+                        text = primaryLabel,
+                        isPrimary = true,
+                        onClick = onStartUpdate,
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(primaryFocusRequester)
+                    )
+                }
+                SmallTextButton(
+                    text = if (isDownloading) strings.actionCancel else strings.commonClose,
+                    isPrimary = !hasDownloadUrl || isDownloading,
+                    onClick = if (isDownloading) onCancelUpdate else onDismiss,
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(secondaryFocusRequester)
+                )
+            }
         }
     }
+}
+
+private fun formatUpdateMegabytes(bytes: Long): String {
+    val mb = bytes.coerceAtLeast(0L) / (1024f * 1024f)
+    return java.util.Locale.US.let { String.format(it, "%.1f MB", mb) }
 }
 
 @Composable
