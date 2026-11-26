@@ -1088,6 +1088,72 @@ data class UiStrings(
         internal set
     var deleteSuccessFeedback: String = "Deleted from server"
         internal set
+
+    // Phase 3 (0.9.3): Live TV EPG Grid, DVR options, Channel Switcher, OLED Screensaver, Cinema Intros & Theme Songs
+    var liveViewList: String = "List"
+        internal set
+    var liveViewGrid: String = "EPG Grid"
+        internal set
+    var liveFilterAll: String = "All"
+        internal set
+    var liveFilterFavorites: String = "Favorites"
+        internal set
+    var liveFilterMovies: String = "Movies"
+        internal set
+    var liveFilterSports: String = "Sports"
+        internal set
+    var liveFilterNews: String = "News"
+        internal set
+    var liveFilterKids: String = "Kids"
+        internal set
+    var liveFilterEmpty: String = "No channels match this filter"
+        internal set
+    var liveFavoriteAdd: String = "Favorite Channel"
+        internal set
+    var liveFavoriteRemove: String = "Remove Favorite"
+        internal set
+    var liveGridEarlier: String = "Earlier"
+        internal set
+    var liveGridNow: String = "Now"
+        internal set
+    var liveGridLater: String = "Later"
+        internal set
+    var liveNoProgramData: String = "No guide data"
+        internal set
+    var dvrPrePadding: String = "Start early"
+        internal set
+    var dvrPostPadding: String = "End late"
+        internal set
+    var dvrPaddingMinutes: String = "%dm"
+        internal set
+    var dvrRecordNewOnly: String = "New episodes only"
+        internal set
+    var dvrRecordAnyChannel: String = "Record on any channel"
+        internal set
+    var playerChannels: String = "Channels"
+        internal set
+    var playerChannelsTitle: String = "Live Channels"
+        internal set
+    var playerCinemaIntroBadge: String = "Cinema Intro"
+        internal set
+    var playerSkipCinemaIntro: String = "Skip Intro"
+        internal set
+    var settingsLivingRoomSection: String = "Living Room"
+        internal set
+    var settingsScreensaverTitle: String = "OLED Screensaver"
+        internal set
+    var settingsScreensaverMinutes: String = "%dm"
+        internal set
+    var settingsCinemaIntrosTitle: String = "Cinema Intros"
+        internal set
+    var settingsCinemaIntrosDesc: String = "Play Jellyfin pre-roll intros before starting a movie from the beginning."
+        internal set
+    var settingsThemeSongsTitle: String = "Theme Songs"
+        internal set
+    var settingsThemeSongsDesc: String = "Softly play ambient theme music on movie and TV show details pages."
+        internal set
+    var screensaverWakeHint: String = "Press any key to wake"
+        internal set
 }
 
 val SupportedLanguages = listOf(
@@ -1655,6 +1721,38 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         deleteConfirmStep1 = "Sí, quiero eliminar esto"
         deleteConfirmStep2 = "Confirmar eliminación permanente"
         deleteSuccessFeedback = "Eliminado del servidor"
+        liveViewList = "Lista"
+        liveViewGrid = "Guía EPG"
+        liveFilterAll = "Todos"
+        liveFilterFavorites = "Favoritos"
+        liveFilterMovies = "Películas"
+        liveFilterSports = "Deportes"
+        liveFilterNews = "Noticias"
+        liveFilterKids = "Infantil"
+        liveFilterEmpty = "Ningún canal coincide con este filtro"
+        liveFavoriteAdd = "Marcar canal favorito"
+        liveFavoriteRemove = "Quitar de favoritos"
+        liveGridEarlier = "Antes"
+        liveGridNow = "Ahora"
+        liveGridLater = "Más tarde"
+        liveNoProgramData = "Sin datos de guía"
+        dvrPrePadding = "Empezar antes"
+        dvrPostPadding = "Terminar después"
+        dvrPaddingMinutes = "%d min"
+        dvrRecordNewOnly = "Solo episodios nuevos"
+        dvrRecordAnyChannel = "Grabar en cualquier canal"
+        playerChannels = "Canales"
+        playerChannelsTitle = "Canales en vivo"
+        playerCinemaIntroBadge = "Intro de cine"
+        playerSkipCinemaIntro = "Saltar intro"
+        settingsLivingRoomSection = "Sala de estar"
+        settingsScreensaverTitle = "Salvapantallas OLED"
+        settingsScreensaverMinutes = "%d min"
+        settingsCinemaIntrosTitle = "Intros de cine"
+        settingsCinemaIntrosDesc = "Reproduce avances de Jellyfin antes de iniciar una película desde el principio."
+        settingsThemeSongsTitle = "Temas musicales"
+        settingsThemeSongsDesc = "Reproduce música ambiental suavemente en las páginas de detalles."
+        screensaverWakeHint = "Pulsa cualquier tecla para despertar"
     }
     "fr" -> UiStrings(
         languageCode = "fr",
@@ -2215,6 +2313,38 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         deleteConfirmStep1 = "Oui, je veux supprimer ceci"
         deleteConfirmStep2 = "Confirmer la suppression définitive"
         deleteSuccessFeedback = "Supprimé du serveur"
+        liveViewList = "Liste"
+        liveViewGrid = "Grille EPG"
+        liveFilterAll = "Tous"
+        liveFilterFavorites = "Favoris"
+        liveFilterMovies = "Films"
+        liveFilterSports = "Sports"
+        liveFilterNews = "Actualités"
+        liveFilterKids = "Enfants"
+        liveFilterEmpty = "Aucune chaîne ne correspond à ce filtre"
+        liveFavoriteAdd = "Ajouter aux favoris"
+        liveFavoriteRemove = "Retirer des favoris"
+        liveGridEarlier = "Plus tôt"
+        liveGridNow = "Maintenant"
+        liveGridLater = "Plus tard"
+        liveNoProgramData = "Aucune donnée de guide"
+        dvrPrePadding = "Commencer plus tôt"
+        dvrPostPadding = "Terminer plus tard"
+        dvrPaddingMinutes = "%d min"
+        dvrRecordNewOnly = "Nouveaux épisodes uniquement"
+        dvrRecordAnyChannel = "Enregistrer sur n'importe quelle chaîne"
+        playerChannels = "Chaînes"
+        playerChannelsTitle = "Chaînes en direct"
+        playerCinemaIntroBadge = "Intro cinéma"
+        playerSkipCinemaIntro = "Passer l'intro"
+        settingsLivingRoomSection = "Salon"
+        settingsScreensaverTitle = "Écran de veille OLED"
+        settingsScreensaverMinutes = "%d min"
+        settingsCinemaIntrosTitle = "Intros cinéma"
+        settingsCinemaIntrosDesc = "Lit les intros Jellyfin avant de démarrer un film depuis le début."
+        settingsThemeSongsTitle = "Thèmes musicaux"
+        settingsThemeSongsDesc = "Joue doucement la musique du thème sur les pages de détails."
+        screensaverWakeHint = "Appuyez sur une touche pour réveiller"
     }
     "de" -> UiStrings(
         languageCode = "de",
@@ -2772,6 +2902,38 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         deleteConfirmStep1 = "Ja, ich möchte dies löschen"
         deleteConfirmStep2 = "Dauerhaftes Löschen bestätigen"
         deleteSuccessFeedback = "Vom Server gelöscht"
+        liveViewList = "Liste"
+        liveViewGrid = "EPG-Raster"
+        liveFilterAll = "Alle"
+        liveFilterFavorites = "Favoriten"
+        liveFilterMovies = "Filme"
+        liveFilterSports = "Sport"
+        liveFilterNews = "Nachrichten"
+        liveFilterKids = "Kinder"
+        liveFilterEmpty = "Keine Sender für diesen Filter"
+        liveFavoriteAdd = "Als Favorit markieren"
+        liveFavoriteRemove = "Aus Favoriten entfernen"
+        liveGridEarlier = "Früher"
+        liveGridNow = "Jetzt"
+        liveGridLater = "Später"
+        liveNoProgramData = "Keine Programmdaten"
+        dvrPrePadding = "Vorlaufzeit"
+        dvrPostPadding = "Nachlaufzeit"
+        dvrPaddingMinutes = "%d Min."
+        dvrRecordNewOnly = "Nur neue Folgen"
+        dvrRecordAnyChannel = "Auf jedem Sender aufnehmen"
+        playerChannels = "Sender"
+        playerChannelsTitle = "Live-Sender"
+        playerCinemaIntroBadge = "Kino-Intro"
+        playerSkipCinemaIntro = "Intro überspringen"
+        settingsLivingRoomSection = "Wohnzimmer"
+        settingsScreensaverTitle = "OLED-Bildschirmschoner"
+        settingsScreensaverMinutes = "%d Min."
+        settingsCinemaIntrosTitle = "Kino-Intros"
+        settingsCinemaIntrosDesc = "Jellyfin-Intros vor dem Start eines Films von Anfang an abspielen."
+        settingsThemeSongsTitle = "Titelmusik"
+        settingsThemeSongsDesc = "Titelmusik auf Film- und Seriendetailseiten leise im Hintergrund abspielen."
+        screensaverWakeHint = "Beliebige Taste drücken zum Aufwecken"
     }
     "ja" -> UiStrings(
         languageCode = "ja",
@@ -3334,6 +3496,38 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         deleteConfirmStep1 = "はい、削除を続行します"
         deleteConfirmStep2 = "完全削除を確定"
         deleteSuccessFeedback = "サーバーから削除しました"
+        liveViewList = "リスト"
+        liveViewGrid = "EPG番組表"
+        liveFilterAll = "すべて"
+        liveFilterFavorites = "お気に入り"
+        liveFilterMovies = "映画"
+        liveFilterSports = "スポーツ"
+        liveFilterNews = "ニュース"
+        liveFilterKids = "キッズ"
+        liveFilterEmpty = "このフィルターに一致するチャンネルがありません"
+        liveFavoriteAdd = "お気に入りチャンネルに追加"
+        liveFavoriteRemove = "お気に入りから削除"
+        liveGridEarlier = "前へ"
+        liveGridNow = "現在"
+        liveGridLater = "次へ"
+        liveNoProgramData = "番組情報なし"
+        dvrPrePadding = "開始前マージン"
+        dvrPostPadding = "終了後マージン"
+        dvrPaddingMinutes = "%d分"
+        dvrRecordNewOnly = "新着エピソードのみ"
+        dvrRecordAnyChannel = "どのチャンネルでも録画"
+        playerChannels = "チャンネル"
+        playerChannelsTitle = "ライブチャンネル"
+        playerCinemaIntroBadge = "シネマイントロ"
+        playerSkipCinemaIntro = "イントロをスキップ"
+        settingsLivingRoomSection = "リビングルーム"
+        settingsScreensaverTitle = "OLEDスクリーンセーバー"
+        settingsScreensaverMinutes = "%d分"
+        settingsCinemaIntrosTitle = "シネマイントロ"
+        settingsCinemaIntrosDesc = "映画を最初から再生する前にJellyfinのプレロール映像を再生します。"
+        settingsThemeSongsTitle = "テーマ曲"
+        settingsThemeSongsDesc = "映画や番組の詳細ページでテーマ曲を静かに再生します。"
+        screensaverWakeHint = "いずれかのキーを押して復帰"
     }
     else -> UiStrings()
 }

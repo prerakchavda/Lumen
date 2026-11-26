@@ -9,6 +9,7 @@ import com.seerflix.tv.core.model.CatalogRow
 import com.seerflix.tv.core.model.CollectionSummary
 import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.model.ContentRatingLimit
+import com.seerflix.tv.core.model.DvrTimerOptions
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExtrasItem
 import com.seerflix.tv.core.model.GenreFilterOption
@@ -20,6 +21,7 @@ import com.seerflix.tv.core.model.LiveTvChannel
 import com.seerflix.tv.core.model.LiveTvProgram
 import com.seerflix.tv.core.model.LibraryPage
 import com.seerflix.tv.core.model.ScheduledRecording
+import com.seerflix.tv.core.model.ScreensaverSlide
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.model.MediaStreamSpec
 import com.seerflix.tv.core.model.MediaType
@@ -32,6 +34,8 @@ import com.seerflix.tv.core.model.SeerrIssueType
 import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import com.seerflix.tv.core.network.CrossServerLinks
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinCreatePlaylistRequest
@@ -3509,16 +3513,31 @@ class UnifiedCatalogRepository @Inject constructor(
     }.recoverCatching { throw IllegalStateException(formatHttpError(it, "Failed to load requests"), it) }
 
     suspend fun loadLiveTvChannelsAndPrograms(userId: String): List<LiveTvChannel> = coroutineScope {
+        val nowInstant = Instant.now()
+        val minEndIso = DateTimeFormatter.ISO_INSTANT.format(nowInstant)
+        val maxStartIso = DateTimeFormatter.ISO_INSTANT.format(nowInstant.plusSeconds(36L * 3600L))
         val channelsDeferred = async {
-            runCatchingCancellable { jellyfinApi.getLiveTvChannels(userId).items }.getOrDefault(emptyList())
+            runCatchingCancellable {
+                jellyfinApi.getLiveTvChannels(userId = userId, enableFavoriteSorting = true).items
+            }.getOrDefault(emptyList())
         }
         val programsDeferred = async {
-            runCatchingCancellable { jellyfinApi.getLiveTvPrograms(userId).items }.getOrDefault(emptyList())
+            runCatchingCancellable {
+                jellyfinApi.getLiveTvPrograms(
+                    userId = userId,
+                    hasAired = false,
+                    limit = 800,
+                    minEndDate = minEndIso,
+                    maxStartDate = maxStartIso,
+                    sortBy = "StartDate",
+                    enableTotalRecordCount = false
+                ).items
+            }.getOrDefault(emptyList())
         }
         val channels = channelsDeferred.await()
         val programsByChannel = programsDeferred.await().groupBy { it.channelId }
         val base = jfBaseUrl
-        val nowMs = System.currentTimeMillis()
+        val nowMs = nowInstant.toEpochMilli()
         val timeFmt = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
 
         channels.map { ch ->
@@ -3537,7 +3556,11 @@ class UnifiedCatalogRepository @Inject constructor(
                     timeRangeLabel = range,
                     isSeries = p.isSeries,
                     timerId = p.timerId,
-                    seriesTimerId = p.seriesTimerId
+                    seriesTimerId = p.seriesTimerId,
+                    isMovie = p.isMovie,
+                    isSports = p.isSports,
+                    isNews = p.isNews,
+                    isKids = p.isKids
                 )
             }.sortedBy { it.startMs }
 
@@ -3556,13 +3579,21 @@ class UnifiedCatalogRepository @Inject constructor(
                     timeRangeLabel = range,
                     isSeries = cp.isSeries,
                     timerId = cp.timerId,
-                    seriesTimerId = cp.seriesTimerId
+                    seriesTimerId = cp.seriesTimerId,
+                    isMovie = cp.isMovie,
+                    isSports = cp.isSports,
+                    isNews = cp.isNews,
+                    isKids = cp.isKids
                 )
             }
             val current = embeddedCurrent
                 ?: progList.firstOrNull { nowMs in it.startMs..it.endMs }
                 ?: progList.firstOrNull()
             val next = progList.firstOrNull { it.startMs > (current?.startMs ?: nowMs) }
+            val mergedPrograms = buildList {
+                if (current != null && progList.none { it.id == current.id }) add(current)
+                addAll(progList)
+            }.sortedBy { it.startMs }
 
             LiveTvChannel(
                 id = ch.id,
@@ -3570,10 +3601,19 @@ class UnifiedCatalogRepository @Inject constructor(
                 name = ch.name,
                 logoUrl = primaryImage(base, ch.id, 300),
                 currentProgram = current,
-                nextProgram = next
+                nextProgram = next,
+                programs = mergedPrograms,
+                isFavorite = ch.userData?.isFavorite == true
             )
         }
     }
+
+    suspend fun toggleLiveTvChannelFavorite(userId: String, channelId: String, favorite: Boolean): Result<Unit> =
+        runCatchingCancellable {
+            val rawId = ServerScopedId.rawOf(channelId)
+            if (favorite) jellyfinApi.addFavorite(userId, rawId)
+            else jellyfinApi.removeFavorite(userId, rawId)
+        }
 
     /** Upcoming one-off recordings plus series rules, soonest first (series rules last). */
     suspend fun loadScheduledRecordings(): List<ScheduledRecording> = coroutineScope {
@@ -3610,16 +3650,72 @@ class UnifiedCatalogRepository @Inject constructor(
 
     /**
      * Schedules [programId] (or, with [series], every airing of its series) using the server's
-     * default padding / options, the same way Jellyfin's own clients do.
+     * defaults patched with the user's [DvrTimerOptions] (padding, new-only, any-channel).
      */
-    suspend fun scheduleRecording(programId: String, series: Boolean) {
+    suspend fun scheduleRecording(
+        programId: String,
+        series: Boolean,
+        options: DvrTimerOptions = DvrTimerOptions()
+    ) {
         val defaults = jellyfinApi.getLiveTvTimerDefaults(programId)
-        if (series) jellyfinApi.createLiveTvSeriesTimer(defaults) else jellyfinApi.createLiveTvTimer(defaults)
+        val payload = patchTimerDefaults(defaults, series, options)
+        if (series) jellyfinApi.createLiveTvSeriesTimer(payload) else jellyfinApi.createLiveTvTimer(payload)
     }
 
     suspend fun cancelRecording(timerId: String) = jellyfinApi.cancelLiveTvTimer(timerId)
 
     suspend fun cancelSeriesRecording(seriesTimerId: String) = jellyfinApi.cancelLiveTvSeriesTimer(seriesTimerId)
+
+    /**
+     * Resolves an ambient theme song audio URL for [itemId] (via Jellyfin's `/Items/{id}/ThemeSongs`),
+     * returning `null` if the item has no theme song or the server doesn't expose one.
+     */
+    suspend fun loadThemeSongUrl(userId: String, itemId: String): String? {
+        val session = sessionFor(itemId, userId) ?: return null
+        val resp = runCatchingCancellable {
+            session.api.getThemeSongs(itemId = session.raw(itemId), userId = session.userId)
+        }.getOrNull() ?: return null
+        val song = resp.items.firstOrNull { it.id.isNotBlank() } ?: return null
+        val base = (if (session.isHome) jfBaseUrl else servers?.baseUrlForItem(itemId).orEmpty()).trimEnd('/')
+        if (base.isBlank()) return null
+        val token = if (session.isHome) prefs.cachedToken.orEmpty() else servers?.token(session.id).orEmpty()
+        return "$base/Audio/${song.id}/universal?UserId=${session.userId}&api_key=$token&Container=mp3,aac,opus,flac&AudioCodec=aac"
+    }
+
+    /**
+     * Returns high-res backdrop slides from the user's Jellyfin library for the OLED screensaver,
+     * filtered by [ContentRatingHelper] so restricted / Kids profiles only ever see age-appropriate fanart.
+     */
+    suspend fun loadScreensaverBackdrops(userId: String, activeProfile: UserProfile?): List<ScreensaverSlide> {
+        val limit = activeProfile?.effectiveRatingLimit ?: ContentRatingLimit.ALL
+        val items = runCatchingCancellable {
+            jellyfinApi.getLibraryItems(
+                userId = userId,
+                limit = 60,
+                sortBy = "Random",
+                maxOfficialRating = limit.jellyfinMaxOfficialRating
+            ).items
+        }.getOrDefault(emptyList())
+        val base = jfBaseUrl
+        return items.asSequence()
+            .filter { dto ->
+                limit == ContentRatingLimit.ALL || ContentRatingHelper.ratingRank(dto.officialRating) <= limit.maxRank
+            }
+            .filter { dto -> dto.backdropImageTags.isNotEmpty() || dto.imageTags.containsKey("Backdrop") }
+            .mapNotNull { dto ->
+                val url = backdropImage(base, dto.id) ?: return@mapNotNull null
+                val year = dto.productionYear?.toString()
+                ScreensaverSlide(
+                    title = dto.name,
+                    subtitle = year,
+                    backdropUrl = url
+                )
+            }
+            .distinctBy { it.backdropUrl }
+            .take(30)
+            .toList()
+            .shuffled()
+    }
 
     /** One page of a library for the A-Z grid; rating-limited like every other row. */
     suspend fun browseLibrary(
@@ -4531,6 +4627,21 @@ class UnifiedCatalogRepository @Inject constructor(
                 "homevideos", "musicvideos" -> if (folderMode) "Video,Movie,MusicVideo,Folder" else "Video,Movie,MusicVideo"
                 else -> if (folderMode) "Video,Movie,Series,MusicVideo,Folder" else "Video,Movie,Series,MusicVideo"
             }
+        }
+
+        fun patchTimerDefaults(
+            defaults: JsonObject,
+            series: Boolean,
+            options: DvrTimerOptions
+        ): JsonObject {
+            val map = defaults.toMutableMap()
+            map["PrePaddingSeconds"] = JsonPrimitive(options.prePaddingSeconds.coerceAtLeast(0))
+            map["PostPaddingSeconds"] = JsonPrimitive(options.postPaddingSeconds.coerceAtLeast(0))
+            if (series) {
+                map["RecordNewOnly"] = JsonPrimitive(options.recordNewOnly)
+                map["RecordAnyChannel"] = JsonPrimitive(options.recordAnyChannel)
+            }
+            return JsonObject(map)
         }
 
         fun formatHttpError(err: Throwable, fallback: String = "Operation failed"): String {

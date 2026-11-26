@@ -242,16 +242,21 @@ interface JellyfinApi {
     @GET("LiveTv/Channels")
     suspend fun getLiveTvChannels(
         @Query("UserId") userId: String,
-        @Query("Fields") fields: String = "PrimaryImageAspectRatio,ChannelInfo",
-        @Query("AddCurrentProgram") addCurrentProgram: Boolean = true
+        @Query("Fields") fields: String = "PrimaryImageAspectRatio,ChannelInfo,UserData",
+        @Query("AddCurrentProgram") addCurrentProgram: Boolean = true,
+        @Query("EnableFavoriteSorting") enableFavoriteSorting: Boolean? = true
     ): JellyfinItemsResponse
 
     @GET("LiveTv/Programs")
     suspend fun getLiveTvPrograms(
         @Query("UserId") userId: String,
         @Query("HasAired") hasAired: Boolean = false,
-        @Query("Limit") limit: Int = 100,
-        @Query("Fields") fields: String = "Overview,ChannelInfo"
+        @Query("Limit") limit: Int = 500,
+        @Query("Fields") fields: String = "Overview,ChannelInfo",
+        @Query("MinEndDate") minEndDate: String? = null,
+        @Query("MaxStartDate") maxStartDate: String? = null,
+        @Query("SortBy") sortBy: String? = "StartDate",
+        @Query("EnableTotalRecordCount") enableTotalRecordCount: Boolean? = false
     ): JellyfinItemsResponse
 
     @GET("LiveTv/Recordings")
@@ -514,4 +519,19 @@ interface JellyfinApi {
     suspend fun deleteItem(
         @Path("itemId") itemId: String
     )
+
+    // ---- Phase 3: Cinema Intros & Theme Songs (0.9.3) ----
+
+    @GET("Users/{userId}/Items/{itemId}/Intros")
+    suspend fun getIntros(
+        @Path("userId") userId: String,
+        @Path("itemId") itemId: String
+    ): JellyfinItemsResponse
+
+    @GET("Items/{itemId}/ThemeSongs")
+    suspend fun getThemeSongs(
+        @Path("itemId") itemId: String,
+        @Query("UserId") userId: String,
+        @Query("InheritFromParent") inheritFromParent: Boolean = true
+    ): JellyfinItemsResponse
 }

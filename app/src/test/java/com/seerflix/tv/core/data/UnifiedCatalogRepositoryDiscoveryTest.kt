@@ -997,8 +997,17 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             JellyfinItemsResponse(upcomingEpisodes, upcomingEpisodes.size)
         override suspend fun searchRemoteSubtitles(itemId: String, language: String) = remoteSubtitles
         override suspend fun downloadRemoteSubtitle(itemId: String, subtitleId: String) = Unit
-        override suspend fun getLiveTvChannels(userId: String, fields: String, addCurrentProgram: Boolean) = JellyfinItemsResponse()
-        override suspend fun getLiveTvPrograms(userId: String, hasAired: Boolean, limit: Int, fields: String) = JellyfinItemsResponse()
+        override suspend fun getLiveTvChannels(userId: String, fields: String, addCurrentProgram: Boolean, enableFavoriteSorting: Boolean?) = JellyfinItemsResponse()
+        override suspend fun getLiveTvPrograms(
+            userId: String,
+            hasAired: Boolean,
+            limit: Int,
+            fields: String,
+            minEndDate: String?,
+            maxStartDate: String?,
+            sortBy: String?,
+            enableTotalRecordCount: Boolean?
+        ) = JellyfinItemsResponse()
         override suspend fun getLiveTvRecordings(userId: String, limit: Int, fields: String) = JellyfinItemsResponse()
         override suspend fun getSyncPlayGroups(): List<com.seerflix.tv.core.network.JellyfinSyncPlayGroupDto> = emptyList()
         override suspend fun createSyncPlayGroup(body: com.seerflix.tv.core.network.JellyfinCreateSyncPlayRequest) = Unit
@@ -1047,6 +1056,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun getPersons(searchTerm: String, limit: Int, fields: String) = JellyfinItemsResponse()
         override suspend fun getItemsByPerson(userId: String, personIds: String, recursive: Boolean, includeItemTypes: String, fields: String, sortBy: String, sortOrder: String, limit: Int) = JellyfinItemsResponse()
         override suspend fun deleteItem(itemId: String) = Unit
+        override suspend fun getIntros(userId: String, itemId: String) = JellyfinItemsResponse()
+        override suspend fun getThemeSongs(itemId: String, userId: String, inheritFromParent: Boolean) = JellyfinItemsResponse()
     }
 
     private class FakeSeerrApi : SeerrApi {

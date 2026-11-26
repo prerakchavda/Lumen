@@ -64,10 +64,12 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
@@ -285,6 +287,7 @@ fun HomeScreen(
             onPlayQueue = onPlayQueue,
             onOpenLiveTvMenu = viewModel::openLiveTvMenu,
             onDismissLiveTvMenu = viewModel::dismissLiveTvMenu,
+            onToggleLiveTvFavorite = viewModel::toggleLiveTvChannelFavorite,
             onRecordProgram = viewModel::recordProgram,
             onCancelRecording = viewModel::cancelRecording,
             onCancelSeriesRecording = viewModel::cancelSeriesRecording,
@@ -306,9 +309,10 @@ data class HomeExtraActions(
     val onDismissPlaylist: () -> Unit = {},
     val onRemovePlaylistItem: (playlistId: String, entryId: String) -> Unit = { _, _ -> },
     val onPlayQueue: (entries: List<com.seerflix.tv.core.player.QueueEntry>, shuffle: Boolean) -> Unit = { _, _ -> },
-    val onOpenLiveTvMenu: (LiveTvChannel) -> Unit = {},
+    val onOpenLiveTvMenu: (LiveTvChannel, com.seerflix.tv.core.model.LiveTvProgram?) -> Unit = { _, _ -> },
     val onDismissLiveTvMenu: () -> Unit = {},
-    val onRecordProgram: (programId: String, series: Boolean) -> Unit = { _, _ -> },
+    val onToggleLiveTvFavorite: (LiveTvChannel) -> Unit = {},
+    val onRecordProgram: (programId: String, series: Boolean, options: com.seerflix.tv.core.model.DvrTimerOptions) -> Unit = { _, _, _ -> },
     val onCancelRecording: (timerId: String) -> Unit = {},
     val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {},
     val onStartAppUpdate: () -> Unit = {},
@@ -650,10 +654,12 @@ fun HomeContent(
     state.liveTvMenuChannel?.let { channel ->
         LiveTvProgramDialog(
             channel = channel,
+            selectedProgram = state.liveTvMenuProgram,
             onWatch = {
                 extraActions.onDismissLiveTvMenu()
                 onPlayDirect(channel.id)
             },
+            onToggleFavorite = { extraActions.onToggleLiveTvFavorite(channel) },
             onRecord = extraActions.onRecordProgram,
             onCancel = extraActions.onCancelRecording,
             onCancelSeries = extraActions.onCancelSeriesRecording,
@@ -935,6 +941,7 @@ private fun HomeMainCanvas(
                     onTuneChannel = onPlayDirect,
                     onOpenRecording = onOpenDetails,
                     onOpenChannelMenu = extraActions.onOpenLiveTvMenu,
+                    onToggleChannelFavorite = extraActions.onToggleLiveTvFavorite,
                     onCancelScheduled = { rec ->
                         if (rec.isSeriesRule) extraActions.onCancelSeriesRecording(rec.id)
                         else extraActions.onCancelRecording(rec.id)
@@ -3319,7 +3326,8 @@ private fun LiveTvGuideContent(
     onOpenRecording: (UnifiedMediaItem) -> Unit,
     scheduled: List<ScheduledRecording> = emptyList(),
     dvrFeedback: String? = null,
-    onOpenChannelMenu: (LiveTvChannel) -> Unit = {},
+    onOpenChannelMenu: (LiveTvChannel, com.seerflix.tv.core.model.LiveTvProgram?) -> Unit = { _, _ -> },
+    onToggleChannelFavorite: (LiveTvChannel) -> Unit = {},
     onCancelScheduled: (ScheduledRecording) -> Unit = {}
 ) {
     val strings = AppStrings.current
@@ -3350,167 +3358,439 @@ private fun LiveTvGuideContent(
         return
     }
 
+    var isGridMode by rememberSaveable { mutableStateOf(false) }
+    var selectedFilter by rememberSaveable { mutableStateOf(com.seerflix.tv.core.model.LiveTvFilter.ALL) }
+    val baseWindowStartMs = remember { com.seerflix.tv.core.data.LiveTvEpgHelper.floorToHalfHour(System.currentTimeMillis()) }
+    var windowOffsetHours by rememberSaveable { mutableStateOf(0) }
+    val windowStartMs = baseWindowStartMs + windowOffsetHours * 3_600_000L
+    val timeSlots = remember(windowStartMs) { com.seerflix.tv.core.data.LiveTvEpgHelper.timeSlots(windowStartMs) }
+    val slotTimeFmt = remember {
+        java.time.format.DateTimeFormatter.ofPattern("HH:mm").withZone(java.time.ZoneId.systemDefault())
+    }
+    val dayFmt = remember {
+        java.time.format.DateTimeFormatter.ofPattern("EEE d MMM").withZone(java.time.ZoneId.systemDefault())
+    }
+    val filteredChannels = remember(channels, selectedFilter) {
+        channels.filter { selectedFilter.matches(it) }
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 36.dp, end = 36.dp, top = topPadding, bottom = 36.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item(key = "live_tv_header") {
-            Column {
-                Text(
-                    text = strings.liveGuideTitle,
-                    color = colors.white,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Black
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = strings.liveChannelCount.format(channels.size),
-                    color = colors.textSecondary,
-                    fontSize = 13.sp
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(
+                            text = strings.liveGuideTitle,
+                            color = colors.white,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = strings.liveChannelCount.format(filteredChannels.size),
+                            color = colors.textSecondary,
+                            fontSize = 13.sp
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LiveTvChipButton(
+                            label = strings.liveViewList,
+                            icon = Icons.Filled.ViewList,
+                            selected = !isGridMode,
+                            onClick = { isGridMode = false }
+                        )
+                        LiveTvChipButton(
+                            label = strings.liveViewGrid,
+                            icon = Icons.Filled.GridView,
+                            selected = isGridMode,
+                            onClick = { isGridMode = true }
+                        )
+                    }
+                }
+                // Category & Favorites filter chips
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(com.seerflix.tv.core.model.LiveTvFilter.entries, key = { it.name }) { filter ->
+                        val label = when (filter) {
+                            com.seerflix.tv.core.model.LiveTvFilter.ALL -> strings.liveFilterAll
+                            com.seerflix.tv.core.model.LiveTvFilter.FAVORITES -> strings.liveFilterFavorites
+                            com.seerflix.tv.core.model.LiveTvFilter.MOVIES -> strings.liveFilterMovies
+                            com.seerflix.tv.core.model.LiveTvFilter.SPORTS -> strings.liveFilterSports
+                            com.seerflix.tv.core.model.LiveTvFilter.NEWS -> strings.liveFilterNews
+                            com.seerflix.tv.core.model.LiveTvFilter.KIDS -> strings.liveFilterKids
+                        }
+                        LiveTvChipButton(
+                            label = label,
+                            icon = if (filter == com.seerflix.tv.core.model.LiveTvFilter.FAVORITES) Icons.Filled.Star else null,
+                            selected = selectedFilter == filter,
+                            onClick = { selectedFilter = filter }
+                        )
+                    }
+                }
             }
         }
 
-        items(channels, key = { it.id }, contentType = { "channel" }) { ch ->
-            var focused by remember { mutableStateOf(false) }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(cardCorner)
-                    .background(if (focused) colors.surfaceElevated else colors.surface)
-                    .border(
-                        if (focused) 2.dp else 1.dp,
-                        if (focused) colors.focusBorder else colors.badgeBorder,
-                        cardCorner
-                    )
-                    .onFocusChanged { focused = it.isFocused || it.hasFocus }
-                    // OK tunes in; holding OK opens record / cancel options for the programmes.
-                    .combinedClickable(
-                        onClick = { onTuneChannel(ch.id) },
-                        onLongClick = { onOpenChannelMenu(ch) }
-                    )
-                    .padding(14.dp)
-            ) {
-                // Channel number + logo
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.width(180.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(colors.accent.copy(alpha = 0.2f))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+        if (filteredChannels.isEmpty()) {
+            item(key = "live_tv_filtered_empty") {
+                Text(
+                    text = strings.liveFilterEmpty,
+                    color = colors.textSecondary,
+                    fontSize = 15.sp,
+                    modifier = Modifier.padding(vertical = 24.dp)
+                )
+            }
+        } else if (isGridMode) {
+            // ---- 2D TIME-GRID EPG ----
+            item(key = "epg_time_header") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = ch.number?.ifBlank { "CH" } ?: "CH",
-                            color = colors.accent,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Black
+                            text = dayFmt.format(java.time.Instant.ofEpochMilli(windowStartMs)),
+                            color = colors.white,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(185.dp)
+                        )
+                        LiveTvChipButton(
+                            label = strings.liveGridEarlier,
+                            selected = false,
+                            onClick = { windowOffsetHours = (windowOffsetHours - 2).coerceAtLeast(0) }
+                        )
+                        LiveTvChipButton(
+                            label = strings.liveGridNow,
+                            selected = windowOffsetHours == 0,
+                            onClick = { windowOffsetHours = 0 }
+                        )
+                        LiveTvChipButton(
+                            label = strings.liveGridLater,
+                            selected = false,
+                            onClick = { windowOffsetHours = (windowOffsetHours + 2).coerceAtMost(32) }
                         )
                     }
-                    Spacer(Modifier.width(10.dp))
-                    SizedAsyncImage(
-                        url = ch.logoUrl,
-                        contentDescription = ch.name,
-                        width = 38.dp,
-                        height = 38.dp,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.size(38.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = ch.name,
-                        color = colors.white,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(colors.surfaceElevated.copy(alpha = 0.7f))
+                            .padding(vertical = 6.dp, horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Spacer(Modifier.width(185.dp))
+                        timeSlots.forEach { slotMs ->
+                            Text(
+                                text = slotTimeFmt.format(java.time.Instant.ofEpochMilli(slotMs)),
+                                color = colors.textSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
+            }
 
-                Spacer(Modifier.width(18.dp))
-
-                // Now Playing & Progress
-                Column(modifier = Modifier.weight(1.2f)) {
-                    val cur = ch.currentProgram
-                    if (cur?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
-                    Text(
-                        text = cur?.title ?: strings.liveStream,
-                        color = colors.white,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (cur != null && cur.timeRangeLabel.isNotBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = strings.liveOnNow.format(cur.timeRangeLabel),
-                            color = colors.matchGreen,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
+            items(filteredChannels, key = { "grid_${it.id}" }, contentType = { "epg_row" }) { ch ->
+                val cells = remember(ch, windowStartMs) {
+                    com.seerflix.tv.core.data.LiveTvEpgHelper.cellsForWindow(ch, windowStartMs)
+                }
+                var chFocused by remember { mutableStateOf(false) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Sticky-style Channel header cell (OK = watch live, Long-OK = options/favorite)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .width(185.dp)
+                            .height(64.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (chFocused) colors.surfaceElevated else colors.surface)
+                            .border(
+                                if (chFocused) 2.dp else 1.dp,
+                                if (chFocused) colors.focusBorder else colors.badgeBorder,
+                                RoundedCornerShape(8.dp)
+                            )
+                            .onFocusChanged { chFocused = it.isFocused || it.hasFocus }
+                            .combinedClickable(
+                                onClick = { onTuneChannel(ch.id) },
+                                onLongClick = { onOpenChannelMenu(ch, ch.currentProgram) }
+                            )
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        SizedAsyncImage(
+                            url = ch.logoUrl,
+                            contentDescription = ch.name,
+                            width = 28.dp,
+                            height = 28.dp,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(28.dp)
                         )
-                        val progress = cur.progressFraction()
-                        if (progress > 0f) {
-                            Spacer(Modifier.height(6.dp))
-                            Box(
+                        Spacer(Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (!ch.number.isNullOrBlank()) {
+                                    Text(
+                                        text = ch.number,
+                                        color = colors.accent,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                    Spacer(Modifier.width(4.dp))
+                                }
+                                if (ch.isFavorite) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Star,
+                                        contentDescription = null,
+                                        tint = Color(0xFFFFD54F),
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = ch.name,
+                                color = colors.white,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    // Proportional horizontal program cells for the 3-hour window
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        cells.forEach { cell ->
+                            var cellFocused by remember { mutableStateOf(false) }
+                            val prog = cell.program
+                            val bg = when {
+                                cellFocused -> colors.white
+                                cell.isCurrent -> colors.accent.copy(alpha = 0.24f)
+                                prog != null -> colors.surface
+                                else -> colors.surface.copy(alpha = 0.45f)
+                            }
+                            val fg = if (cellFocused) colors.deepBlack else colors.white
+                            val subFg = if (cellFocused) colors.deepBlack.copy(alpha = 0.72f) else colors.textSecondary
+                            Column(
+                                verticalArrangement = Arrangement.Center,
                                 modifier = Modifier
-                                    .fillMaxWidth(0.7f)
-                                    .height(4.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(colors.badgeBorder)
+                                    .weight(cell.weightFraction)
+                                    .height(64.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(bg)
+                                    .border(
+                                        if (cellFocused) 2.dp else 1.dp,
+                                        when {
+                                            cellFocused -> colors.accent
+                                            cell.isCurrent -> colors.accent.copy(alpha = 0.65f)
+                                            else -> colors.badgeBorder
+                                        },
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .onFocusChanged { cellFocused = it.isFocused || it.hasFocus }
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (prog != null) onOpenChannelMenu(ch, prog)
+                                            else onTuneChannel(ch.id)
+                                        },
+                                        onLongClick = { onTuneChannel(ch.id) }
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(progress)
-                                        .fillMaxHeight()
-                                        .background(colors.accent)
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    if (prog?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
+                                    Text(
+                                        text = prog?.title ?: strings.liveNoProgramData,
+                                        color = if (prog != null) fg else colors.textMuted,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (cell.isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                if (prog != null && prog.timeRangeLabel.isNotBlank()) {
+                                    Text(
+                                        text = prog.timeRangeLabel,
+                                        color = subFg,
+                                        fontSize = 10.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }
                 }
-
-                Spacer(Modifier.width(18.dp))
-
-                // Up Next
-                Column(modifier = Modifier.weight(0.9f)) {
-                    ch.nextProgram?.let { nxt ->
-                        if (nxt.isRecording) RecBadge(strings.dvrRecordingBadge)
-                        Text(
-                            text = strings.liveUpNext,
-                            color = colors.textMuted,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
+            }
+        } else {
+            // ---- LIST VIEW ----
+            items(filteredChannels, key = { it.id }, contentType = { "channel" }) { ch ->
+                var focused by remember { mutableStateOf(false) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(cardCorner)
+                        .background(if (focused) colors.surfaceElevated else colors.surface)
+                        .border(
+                            if (focused) 2.dp else 1.dp,
+                            if (focused) colors.focusBorder else colors.badgeBorder,
+                            cardCorner
                         )
+                        .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                        // OK tunes in; holding OK opens record / cancel / favorite options.
+                        .combinedClickable(
+                            onClick = { onTuneChannel(ch.id) },
+                            onLongClick = { onOpenChannelMenu(ch, null) }
+                        )
+                        .padding(14.dp)
+                ) {
+                    // Channel number + logo + favorite indicator
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.width(196.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(colors.accent.copy(alpha = 0.2f))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = ch.number?.ifBlank { "CH" } ?: "CH",
+                                color = colors.accent,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        SizedAsyncImage(
+                            url = ch.logoUrl,
+                            contentDescription = ch.name,
+                            width = 38.dp,
+                            height = 38.dp,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(38.dp)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                if (ch.isFavorite) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Star,
+                                        contentDescription = null,
+                                        tint = Color(0xFFFFD54F),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                Text(
+                                    text = ch.name,
+                                    color = colors.white,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.width(18.dp))
+
+                    // Now Playing & Progress
+                    Column(modifier = Modifier.weight(1.2f)) {
+                        val cur = ch.currentProgram
+                        if (cur?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
                         Text(
-                            text = nxt.title,
-                            color = colors.textSecondary,
-                            fontSize = 13.sp,
+                            text = cur?.title ?: strings.liveStream,
+                            color = colors.white,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (nxt.timeRangeLabel.isNotBlank()) {
-                            Text(nxt.timeRangeLabel, color = colors.textMuted, fontSize = 11.sp)
+                        if (cur != null && cur.timeRangeLabel.isNotBlank()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = strings.liveOnNow.format(cur.timeRangeLabel),
+                                color = colors.matchGreen,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            val progress = cur.progressFraction()
+                            if (progress > 0f) {
+                                Spacer(Modifier.height(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(0.7f)
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(colors.badgeBorder)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(progress)
+                                            .fillMaxHeight()
+                                            .background(colors.accent)
+                                    )
+                                }
+                            }
                         }
                     }
-                }
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (focused) colors.primaryButtonBg else colors.secondaryButtonBg)
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = strings.liveTuneIn,
-                        color = if (focused) colors.primaryButtonFg else colors.white,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Spacer(Modifier.width(18.dp))
+
+                    // Up Next
+                    Column(modifier = Modifier.weight(0.9f)) {
+                        ch.nextProgram?.let { nxt ->
+                            if (nxt.isRecording) RecBadge(strings.dvrRecordingBadge)
+                            Text(
+                                text = strings.liveUpNext,
+                                color = colors.textMuted,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = nxt.title,
+                                color = colors.textSecondary,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (nxt.timeRangeLabel.isNotBlank()) {
+                                Text(nxt.timeRangeLabel, color = colors.textMuted, fontSize = 11.sp)
+                            }
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (focused) colors.primaryButtonBg else colors.secondaryButtonBg)
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = strings.liveTuneIn,
+                            color = if (focused) colors.primaryButtonFg else colors.white,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -4198,12 +4478,65 @@ private fun RecBadge(label: String) {
     }
 }
 
-/** Hold-OK menu on a Live TV channel: watch, record this / next programme, record or cancel the series. */
+@Composable
+private fun LiveTvChipButton(
+    label: String,
+    selected: Boolean,
+    icon: ImageVector? = null,
+    onClick: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val shape = RoundedCornerShape(50)
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        modifier = Modifier
+            .clip(shape)
+            .background(
+                when {
+                    focused -> colors.white
+                    selected -> colors.accent
+                    else -> colors.surface
+                }
+            )
+            .border(
+                if (focused) 2.dp else 1.dp,
+                if (focused) colors.accent else colors.badgeBorder,
+                shape
+            )
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (focused) colors.deepBlack else colors.white,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+        Text(
+            text = label,
+            color = if (focused) colors.deepBlack else colors.white,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+private val DVR_PRE_PADDING_MINUTES = listOf(0, 2, 5, 10)
+private val DVR_POST_PADDING_MINUTES = listOf(0, 5, 10, 15, 30)
+
+/** Hold-OK / EPG program menu: watch live, favorite channel, and configure/schedule/cancel DVR timers. */
 @Composable
 private fun LiveTvProgramDialog(
     channel: LiveTvChannel,
+    selectedProgram: com.seerflix.tv.core.model.LiveTvProgram? = null,
     onWatch: () -> Unit,
-    onRecord: (programId: String, series: Boolean) -> Unit,
+    onToggleFavorite: () -> Unit = {},
+    onRecord: (programId: String, series: Boolean, options: com.seerflix.tv.core.model.DvrTimerOptions) -> Unit,
     onCancel: (timerId: String) -> Unit,
     onCancelSeries: (seriesTimerId: String) -> Unit,
     onDismiss: () -> Unit
@@ -4212,6 +4545,25 @@ private fun LiveTvProgramDialog(
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
     val firstFocus = remember { FocusRequester() }
+    var prePaddingMin by remember { mutableStateOf(0) }
+    var postPaddingMin by remember { mutableStateOf(0) }
+    var recordNewOnly by remember { mutableStateOf(false) }
+    var recordAnyChannel by remember { mutableStateOf(false) }
+
+    val programs = remember(channel, selectedProgram) {
+        if (selectedProgram != null) listOf(selectedProgram)
+        else listOfNotNull(channel.currentProgram, channel.nextProgram)
+    }
+    val hasSeriesOption = remember(programs) { programs.any { it.isSeries && it.seriesTimerId.isNullOrBlank() } }
+    val hasRecordableProgram = remember(programs) { programs.any { it.timerId.isNullOrBlank() || (it.isSeries && it.seriesTimerId.isNullOrBlank()) } }
+
+    fun currentOptions() = com.seerflix.tv.core.model.DvrTimerOptions(
+        prePaddingSeconds = prePaddingMin * 60,
+        postPaddingSeconds = postPaddingMin * 60,
+        recordNewOnly = recordNewOnly,
+        recordAnyChannel = recordAnyChannel
+    )
+
     LaunchedEffect(Unit) {
         delay(80L)
         runCatching { firstFocus.requestFocus() }
@@ -4219,34 +4571,97 @@ private fun LiveTvProgramDialog(
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
-                .width(560.dp)
+                .width(600.dp)
                 .clip(RoundedCornerShape(spec.dialogCornerRadiusDp.dp))
                 .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, RoundedCornerShape(spec.dialogCornerRadiusDp.dp))
+                .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(channel.name, color = colors.white, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(channel.name, color = colors.white, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                if (channel.isFavorite) {
+                    Icon(Icons.Filled.Star, contentDescription = null, tint = Color(0xFFFFD54F), modifier = Modifier.size(18.dp))
+                }
+            }
             Text(strings.dvrProgramOptions, color = colors.textSecondary, fontSize = 13.sp)
-            DvrMenuButton(strings.dvrWatchLive, onWatch, Modifier.focusRequester(firstFocus))
-            listOfNotNull(channel.currentProgram, channel.nextProgram).forEach { program ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                DvrMenuButton(strings.dvrWatchLive, onWatch, Modifier.weight(1f).focusRequester(firstFocus))
+                DvrMenuButton(
+                    label = if (channel.isFavorite) strings.liveFavoriteRemove else strings.liveFavoriteAdd,
+                    onClick = onToggleFavorite,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (hasRecordableProgram) {
+                // Pre-padding selector
+                Text(strings.dvrPrePadding, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DVR_PRE_PADDING_MINUTES.forEach { mins ->
+                        LiveTvChipButton(
+                            label = strings.dvrPaddingMinutes.format(mins),
+                            selected = prePaddingMin == mins,
+                            onClick = { prePaddingMin = mins }
+                        )
+                    }
+                }
+                // Post-padding selector
+                Text(strings.dvrPostPadding, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    DVR_POST_PADDING_MINUTES.forEach { mins ->
+                        LiveTvChipButton(
+                            label = strings.dvrPaddingMinutes.format(mins),
+                            selected = postPaddingMin == mins,
+                            onClick = { postPaddingMin = mins }
+                        )
+                    }
+                }
+                if (hasSeriesOption) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        LiveTvChipButton(
+                            label = "${strings.dvrRecordNewOnly}: ${if (recordNewOnly) strings.optionOn else strings.optionOff}",
+                            selected = recordNewOnly,
+                            onClick = { recordNewOnly = !recordNewOnly }
+                        )
+                        LiveTvChipButton(
+                            label = "${strings.dvrRecordAnyChannel}: ${if (recordAnyChannel) strings.optionOn else strings.optionOff}",
+                            selected = recordAnyChannel,
+                            onClick = { recordAnyChannel = !recordAnyChannel }
+                        )
+                    }
+                }
+            }
+
+            programs.forEach { program ->
                 Text(
                     "${program.title}${if (program.timeRangeLabel.isNotBlank()) "  •  ${program.timeRangeLabel}" else ""}",
                     color = colors.white,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(top = 8.dp)
+                    modifier = Modifier.padding(top = 6.dp)
                 )
+                if (!program.overview.isNullOrBlank()) {
+                    Text(
+                        text = program.overview,
+                        color = colors.textSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 val timerId = program.timerId
                 if (!timerId.isNullOrBlank()) {
                     DvrMenuButton(strings.dvrCancelRecording, { onCancel(timerId) })
                 } else {
-                    DvrMenuButton(strings.dvrRecord, { onRecord(program.id, false) })
+                    DvrMenuButton(strings.dvrRecord, { onRecord(program.id, false, currentOptions()) })
                 }
                 val seriesTimerId = program.seriesTimerId
                 if (!seriesTimerId.isNullOrBlank()) {
                     DvrMenuButton(strings.dvrCancelSeries, { onCancelSeries(seriesTimerId) })
                 } else if (program.isSeries) {
-                    DvrMenuButton(strings.dvrRecordSeries, { onRecord(program.id, true) })
+                    DvrMenuButton(strings.dvrRecordSeries, { onRecord(program.id, true, currentOptions()) })
                 }
             }
         }

@@ -290,10 +290,18 @@ class UnifiedCatalogRepositoryFeaturesTest {
         override suspend fun getUpcomingEpisodes(userId: String, limit: Int, fields: String) = JellyfinItemsResponse()
         override suspend fun searchRemoteSubtitles(itemId: String, language: String) = emptyList<JellyfinRemoteSubtitleDto>()
         override suspend fun downloadRemoteSubtitle(itemId: String, subtitleId: String) = Unit
-        override suspend fun getLiveTvChannels(userId: String, fields: String, addCurrentProgram: Boolean) =
+        override suspend fun getLiveTvChannels(userId: String, fields: String, addCurrentProgram: Boolean, enableFavoriteSorting: Boolean?) =
             JellyfinItemsResponse(liveTvChannels, liveTvChannels.size)
-        override suspend fun getLiveTvPrograms(userId: String, hasAired: Boolean, limit: Int, fields: String) =
-            JellyfinItemsResponse(liveTvPrograms, liveTvPrograms.size)
+        override suspend fun getLiveTvPrograms(
+            userId: String,
+            hasAired: Boolean,
+            limit: Int,
+            fields: String,
+            minEndDate: String?,
+            maxStartDate: String?,
+            sortBy: String?,
+            enableTotalRecordCount: Boolean?
+        ) = JellyfinItemsResponse(liveTvPrograms, liveTvPrograms.size)
         override suspend fun getLiveTvRecordings(userId: String, limit: Int, fields: String) = JellyfinItemsResponse()
         override suspend fun getSyncPlayGroups(): List<JellyfinSyncPlayGroupDto> = emptyList()
         override suspend fun createSyncPlayGroup(body: JellyfinCreateSyncPlayRequest) = Unit
@@ -342,6 +350,8 @@ class UnifiedCatalogRepositoryFeaturesTest {
         override suspend fun getPersons(searchTerm: String, limit: Int, fields: String) = JellyfinItemsResponse()
         override suspend fun getItemsByPerson(userId: String, personIds: String, recursive: Boolean, includeItemTypes: String, fields: String, sortBy: String, sortOrder: String, limit: Int) = JellyfinItemsResponse()
         override suspend fun deleteItem(itemId: String) = Unit
+        override suspend fun getIntros(userId: String, itemId: String) = JellyfinItemsResponse()
+        override suspend fun getThemeSongs(itemId: String, userId: String, inheritFromParent: Boolean) = JellyfinItemsResponse()
     }
 
     private class FakeSeerrApi : SeerrApi {

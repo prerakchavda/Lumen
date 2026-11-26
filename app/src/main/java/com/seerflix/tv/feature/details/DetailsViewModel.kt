@@ -75,7 +75,8 @@ data class DetailsUiState(
     val showTrackPickerDialog: Boolean = false,
     val showDeleteConfirmDialog: Boolean = false,
     val episodeMenuTarget: EpisodeSummary? = null,
-    val itemDeleted: Boolean = false
+    val itemDeleted: Boolean = false,
+    val themeSongUrl: String? = null
 )
 
 @HiltViewModel
@@ -85,7 +86,8 @@ class DetailsViewModel @Inject constructor(
     private val catalogRepository: UnifiedCatalogRepository,
     private val trailerResolver: YouTubeTrailerResolver,
     private val playbackManager: JellyfinPlaybackManager,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    @com.seerflix.tv.core.network.MediaClient val mediaHttpClient: okhttp3.OkHttpClient
 ) : ViewModel() {
 
     private val tmdbIdArg: Int? = savedStateHandle.get<String>("tmdbId")?.toIntOrNull()?.takeIf { it > 0 }
@@ -264,6 +266,14 @@ class DetailsViewModel @Inject constructor(
                             youtubeKey = item.youtubeTrailerKey
                         )
                         _uiState.update { it.copy(previewStream = preview) }
+                    }
+                }
+                if (profile.themeSongsEnabled && !item.jellyfinId.isNullOrBlank()) {
+                    launch(Dispatchers.IO) {
+                        val themeUrl = catalogRepository.loadThemeSongUrl(activeUserId, item.jellyfinId)
+                        if (!themeUrl.isNullOrBlank()) {
+                            _uiState.update { it.copy(themeSongUrl = themeUrl) }
+                        }
                     }
                 }
                 if (item.mediaType == MediaType.SERIES && item.seasons.isNotEmpty()) {

@@ -107,6 +107,8 @@ data class HomeUiState(
     val liveTvScheduled: List<com.seerflix.tv.core.model.ScheduledRecording> = emptyList(),
     /** Channel whose programme options (record / cancel) are open. */
     val liveTvMenuChannel: LiveTvChannel? = null,
+    /** Specific EPG programme selected in the 2D time-grid (null = show current + next). */
+    val liveTvMenuProgram: com.seerflix.tv.core.model.LiveTvProgram? = null,
     /** "single" / "series" / "cancelled" / "error:<msg>" after a DVR change, shown briefly. */
     val dvrFeedback: String? = null,
     val libraryViews: List<JellyfinLibraryView> = emptyList(),
@@ -580,18 +582,39 @@ class HomeViewModel @Inject constructor(
 
     // ---- DVR ----
 
-    fun openLiveTvMenu(channel: LiveTvChannel) {
-        _uiState.update { it.copy(liveTvMenuChannel = channel) }
+    fun openLiveTvMenu(channel: LiveTvChannel, program: com.seerflix.tv.core.model.LiveTvProgram? = null) {
+        _uiState.update { it.copy(liveTvMenuChannel = channel, liveTvMenuProgram = program) }
     }
 
     fun dismissLiveTvMenu() {
-        _uiState.update { it.copy(liveTvMenuChannel = null) }
+        _uiState.update { it.copy(liveTvMenuChannel = null, liveTvMenuProgram = null) }
     }
 
-    /** Record one programme, or with [series] every airing of it. */
-    fun recordProgram(programId: String, series: Boolean) = changeRecording(
+    fun toggleLiveTvChannelFavorite(channel: LiveTvChannel) {
+        val userId = _uiState.value.profile?.jellyfinUserId?.takeIf { it.isNotBlank() } ?: return
+        val newFav = !channel.isFavorite
+        _uiState.update { state ->
+            val updatedChannels = state.liveTvChannels.map {
+                if (it.id == channel.id) it.copy(isFavorite = newFav) else it
+            }.sortedByDescending { it.isFavorite }
+            val updatedMenu = state.liveTvMenuChannel?.let {
+                if (it.id == channel.id) it.copy(isFavorite = newFav) else it
+            }
+            state.copy(liveTvChannels = updatedChannels, liveTvMenuChannel = updatedMenu)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.toggleLiveTvChannelFavorite(userId, channel.id, newFav)
+        }
+    }
+
+    /** Record one programme, or with [series] every airing of it, applying [options]. */
+    fun recordProgram(
+        programId: String,
+        series: Boolean,
+        options: com.seerflix.tv.core.model.DvrTimerOptions = com.seerflix.tv.core.model.DvrTimerOptions()
+    ) = changeRecording(
         successMessage = if (series) "series" else "single"
-    ) { catalogRepository.scheduleRecording(programId, series) }
+    ) { catalogRepository.scheduleRecording(programId, series, options) }
 
     fun cancelRecording(timerId: String) = changeRecording("cancelled") { catalogRepository.cancelRecording(timerId) }
 
@@ -599,7 +622,7 @@ class HomeViewModel @Inject constructor(
         changeRecording("cancelled") { catalogRepository.cancelSeriesRecording(seriesTimerId) }
 
     private fun changeRecording(successMessage: String, action: suspend () -> Unit) {
-        _uiState.update { it.copy(liveTvMenuChannel = null) }
+        _uiState.update { it.copy(liveTvMenuChannel = null, liveTvMenuProgram = null) }
         viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching { action() }
             _uiState.update { it.copy(dvrFeedback = if (result.isSuccess) successMessage else "error:${result.exceptionOrNull()?.message.orEmpty()}") }

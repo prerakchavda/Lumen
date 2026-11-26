@@ -80,9 +80,25 @@ class MainActivity : ComponentActivity() {
     lateinit var playbackQueueManager: PlaybackQueueManager
 
     @Inject
+    lateinit var catalogRepository: UnifiedCatalogRepository
+
+    @Inject
     lateinit var diagnostics: DiagnosticsRepository
 
     private var latestIntentState by mutableStateOf<Intent?>(null)
+    private val lastUserInputTick = androidx.compose.runtime.mutableLongStateOf(0L)
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+            lastUserInputTick.longValue += 1
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        lastUserInputTick.longValue += 1
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -110,7 +126,11 @@ class MainActivity : ComponentActivity() {
                     socketClient = socketClient,
                     syncPlayManager = syncPlayManager,
                     playbackQueueManager = playbackQueueManager,
+                    catalogRepository = catalogRepository,
                     diagnostics = diagnostics,
+                    activeProfile = activeProfile,
+                    lastUserInputTick = { lastUserInputTick.longValue },
+                    onBumpUserInput = { lastUserInputTick.longValue += 1 },
                     incomingIntent = latestIntentState,
                     onIntentHandled = { latestIntentState = null }
                 )
@@ -245,7 +265,11 @@ private fun SeerflixNavGraph(
     socketClient: JellyfinSocketClient,
     syncPlayManager: SyncPlayManager,
     playbackQueueManager: PlaybackQueueManager,
+    catalogRepository: UnifiedCatalogRepository,
     diagnostics: DiagnosticsRepository,
+    activeProfile: com.seerflix.tv.core.model.UserProfile?,
+    lastUserInputTick: () -> Long,
+    onBumpUserInput: () -> Unit,
     incomingIntent: Intent?,
     onIntentHandled: () -> Unit
 ) {
@@ -651,6 +675,50 @@ private fun SeerflixNavGraph(
             text = text,
             onTimeout = { serverMessage = null },
             modifier = Modifier.align(Alignment.TopCenter)
+        )
+    }
+
+    // OLED Backdrop / Clock Screensaver on browse & details screens (PlayerScreen handles paused playback itself).
+    var showScreensaver by remember { mutableStateOf(false) }
+    var screensaverSlides by remember(activeProfile?.id) {
+        mutableStateOf<List<com.seerflix.tv.core.model.ScreensaverSlide>>(emptyList())
+    }
+    val screensaverEligible = currentRoute != null &&
+        currentRoute != Routes.SETUP &&
+        currentRoute != Routes.PROFILES &&
+        currentRoute != Routes.PLAYER &&
+        currentRoute != Routes.TRAILER
+    val screensaverTimeoutMin = activeProfile?.screensaverTimeoutMinutes ?: 0
+    LaunchedEffect(screensaverEligible, screensaverTimeoutMin, activeProfile?.id, showScreensaver) {
+        if (!screensaverEligible || screensaverTimeoutMin <= 0 || activeProfile == null) {
+            showScreensaver = false
+            return@LaunchedEffect
+        }
+        if (showScreensaver) return@LaunchedEffect
+        val timeoutMs = screensaverTimeoutMin * 60_000L
+        var observedTick = lastUserInputTick()
+        while (true) {
+            kotlinx.coroutines.delay(timeoutMs)
+            val nowTick = lastUserInputTick()
+            if (nowTick == observedTick) {
+                if (screensaverSlides.isEmpty()) {
+                    screensaverSlides = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        catalogRepository.loadScreensaverBackdrops(activeProfile.jellyfinUserId, activeProfile)
+                    }
+                }
+                showScreensaver = true
+                return@LaunchedEffect
+            }
+            observedTick = nowTick
+        }
+    }
+    if (showScreensaver && screensaverEligible) {
+        com.seerflix.tv.ui.components.ScreensaverOverlay(
+            slides = screensaverSlides,
+            onDismiss = {
+                onBumpUserInput()
+                showScreensaver = false
+            }
         )
     }
     }

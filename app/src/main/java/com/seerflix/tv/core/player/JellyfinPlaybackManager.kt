@@ -764,6 +764,19 @@ class JellyfinPlaybackManager @Inject constructor(
         session.copy(isLiveTv = true)
     }
 
+    /**
+     * Queries Jellyfin's `/Users/{userId}/Items/{itemId}/Intros` for cinema pre-roll clips
+     * (trailers/intros configured on the server) and returns scoped item IDs ready to play.
+     */
+    suspend fun loadCinemaIntros(userId: String, itemId: String): List<String> {
+        val server = sessionFor(itemId, userId) ?: return emptyList()
+        return runCatchingCancellable {
+            server.api.getIntros(userId = server.userId, itemId = server.raw(itemId))
+                .items
+                .mapNotNull { dto -> dto.id.takeIf { it.isNotBlank() }?.let(server::scope) }
+        }.getOrDefault(emptyList())
+    }
+
     suspend fun searchRemoteSubtitles(
         itemId: String,
         language: String = "eng"
@@ -808,6 +821,7 @@ class JellyfinPlaybackManager @Inject constructor(
         reportState: PlaybackReportState? = null,
         send: suspend (JellyfinApi, JellyfinPlaybackProgressRequest) -> Unit
     ) {
+        if (session.isTrailer || session.isCinemaIntro) return
         val server = sessionFor(session.itemId, prefs.cachedHomeUserId) ?: return
         runCatchingCancellable {
             send(

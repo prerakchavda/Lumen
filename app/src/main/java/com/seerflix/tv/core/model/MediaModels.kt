@@ -569,6 +569,38 @@ data class ScheduledRecording(
     val isSeriesRule: Boolean
 )
 
+enum class LiveTvFilter {
+    ALL, FAVORITES, MOVIES, SPORTS, NEWS, KIDS;
+
+    fun matches(channel: LiveTvChannel): Boolean {
+        val current = channel.currentProgram
+        val allProgs = if (channel.programs.isNotEmpty()) channel.programs else listOfNotNull(current, channel.nextProgram)
+        return when (this) {
+            ALL -> true
+            FAVORITES -> channel.isFavorite
+            MOVIES -> current?.isMovie == true || allProgs.any { it.isMovie }
+            SPORTS -> current?.isSports == true || allProgs.any { it.isSports }
+            NEWS -> current?.isNews == true || allProgs.any { it.isNews }
+            KIDS -> current?.isKids == true || allProgs.any { it.isKids }
+        }
+    }
+}
+
+@Immutable
+data class DvrTimerOptions(
+    val prePaddingSeconds: Int = 0,
+    val postPaddingSeconds: Int = 0,
+    val recordNewOnly: Boolean = false,
+    val recordAnyChannel: Boolean = false
+)
+
+@Immutable
+data class ScreensaverSlide(
+    val title: String,
+    val subtitle: String? = null,
+    val backdropUrl: String
+)
+
 /** One page of a library grid. */
 data class LibraryPage(
     val items: List<UnifiedMediaItem>,

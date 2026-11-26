@@ -219,6 +219,37 @@ fun SettingsScreen(
                     onSelect = { viewModel.setSubtitlePosition(SubtitlePosition.entries[it]) }
                 )
             }
+
+            // ---- Living Room ----
+            item { SectionHeader(strings.settingsLivingRoomSection) }
+            item {
+                ChoiceRow(
+                    title = strings.settingsScreensaverTitle,
+                    options = SCREENSAVER_TIMEOUT_CHOICES.map { mins ->
+                        if (mins == 0) strings.optionOff else strings.settingsScreensaverMinutes.format(mins)
+                    },
+                    selectedIndex = SCREENSAVER_TIMEOUT_CHOICES.indexOf(profile.screensaverTimeoutMinutes).coerceAtLeast(0),
+                    onSelect = { viewModel.setScreensaverTimeoutMinutes(SCREENSAVER_TIMEOUT_CHOICES[it]) }
+                )
+            }
+            item {
+                ToggleRow(
+                    title = strings.settingsCinemaIntrosTitle,
+                    description = strings.settingsCinemaIntrosDesc,
+                    checked = profile.cinemaIntrosEnabled,
+                    onToggle = { viewModel.setCinemaIntrosEnabled(!profile.cinemaIntrosEnabled) },
+                    strings = strings
+                )
+            }
+            item {
+                ToggleRow(
+                    title = strings.settingsThemeSongsTitle,
+                    description = strings.settingsThemeSongsDesc,
+                    checked = profile.themeSongsEnabled,
+                    onToggle = { viewModel.setThemeSongsEnabled(!profile.themeSongsEnabled) },
+                    strings = strings
+                )
+            }
         }
 
         // ---- Remote control ----
@@ -328,6 +359,7 @@ fun SettingsScreen(
 private val SUBTITLE_SIZES = listOf(0.8f, 1.0f, 1.25f, 1.5f)
 private val SUBTITLE_BACKGROUNDS = listOf(0f, 0.3f, 0.6f, 0.9f)
 private val BINGE_LIMIT_CHOICES = listOf(0, 3, 5, 8)
+private val SCREENSAVER_TIMEOUT_CHOICES = listOf(0, 3, 5, 10)
 
 fun com.seerflix.tv.core.model.SubtitleSelectionMode.localized(s: UiStrings) = when (this) {
     com.seerflix.tv.core.model.SubtitleSelectionMode.DEFAULT -> s.subtitleModeDefault

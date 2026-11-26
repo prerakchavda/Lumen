@@ -122,6 +122,11 @@ data class PlayerUiState(
     val hasQueuePrevious: Boolean = false,
     val queuePositionLabel: String? = null,
     val queueNextTitle: String? = null,
+    val liveTvChannels: List<com.seerflix.tv.core.model.LiveTvChannel> = emptyList(),
+    val screensaverTimeoutMinutes: Int = 0,
+    val screensaverSlides: List<com.seerflix.tv.core.model.ScreensaverSlide> = emptyList(),
+    val cinemaIntroIndex: Int = 0,
+    val cinemaIntroTotal: Int = 0,
     val feedbackMessage: String? = null,
     /** Source frame rate from Jellyfin metadata, so the display mode can be switched before the first frame. */
     val videoFrameRateHint: Float? = null,
@@ -185,6 +190,7 @@ class PlayerViewModel @Inject constructor(
     /** Episodes-drawer data is not needed to start playback; it loads a few seconds later or on open. */
     private var drawerJob: Job? = null
     private var pendingDrawerRequest: Pair<String, String?>? = null
+    private val cinemaIntroQueue = com.seerflix.tv.core.player.CinemaIntroQueue()
 
     init {
         viewModelScope.launch {
@@ -281,11 +287,16 @@ class PlayerViewModel @Inject constructor(
         fromSyncPlay: Boolean = false,
         /** True when triggered automatically by Up Next countdown / end-of-episode autoplay. */
         isAutoplayAdvance: Boolean = false,
-        nextTitleForPrompt: String? = null
+        nextTitleForPrompt: String? = null,
+        skipCinemaIntros: Boolean = false,
+        isCinemaIntroClip: Boolean = false
     ) {
         if (itemId.isBlank()) {
             _uiState.update { it.copy(isLoading = false, errorMessage = "Invalid media item ID") }
             return
+        }
+        if (!isCinemaIntroClip && !skipCinemaIntros && _uiState.value.session?.itemId != itemId) {
+            cinemaIntroQueue.clear()
         }
         val isSameItem = _uiState.value.session?.itemId == itemId
         if (!isSameItem) {
@@ -309,7 +320,7 @@ class PlayerViewModel @Inject constructor(
         requestedItemId = itemId
         if (!isSameItem) {
             assLoadJob?.cancel()
-            playbackQueueManager.syncToItem(itemId)
+            if (!isCinemaIntroClip) playbackQueueManager.syncToItem(itemId)
         }
         // A quality forced by a playback error applies to that item only.
         val quality = if (!isSameItem && qualityPinnedByError && qualityOverride == _uiState.value.selectedQuality) {
@@ -322,7 +333,7 @@ class PlayerViewModel @Inject constructor(
                 it.copy(
                     isLoading = true,
                     errorMessage = null,
-                    feedbackMessage = null,
+                    feedbackMessage = if (isSameItem) it.feedbackMessage else null,
                     autoplayCancelled = false,
                     showStillWatchingPrompt = false,
                     pendingStillWatchingNextId = null,
@@ -332,7 +343,9 @@ class PlayerViewModel @Inject constructor(
                     remoteSubtitles = if (isSameItem) it.remoteSubtitles else emptyList(),
                     subtitleSearchMessage = if (isSameItem) it.subtitleSearchMessage else null,
                     activeAssCues = if (isSameItem) it.activeAssCues else emptyList(),
-                    activeAssSubtitleIndex = if (isSameItem) it.activeAssSubtitleIndex else null
+                    activeAssSubtitleIndex = if (isSameItem) it.activeAssSubtitleIndex else null,
+                    cinemaIntroIndex = if (isCinemaIntroClip) it.cinemaIntroIndex else 0,
+                    cinemaIntroTotal = if (isCinemaIntroClip) it.cinemaIntroTotal else 0
                 )
             }
             val profile = authRepository.activeProfileFlow.first()
@@ -342,7 +355,7 @@ class PlayerViewModel @Inject constructor(
             }
             activeUserId = profile.jellyfinUserId
             // Restricted profiles: check the rating before anything plays, whatever opened the player.
-            if (!catalogRepository.isPlayableForProfile(itemId, profile)) {
+            if (!isCinemaIntroClip && !catalogRepository.isPlayableForProfile(itemId, profile)) {
                 _uiState.update {
                     it.copy(isLoading = false, errorMessage = BLOCKED_FOR_PROFILE_MESSAGE)
                 }
@@ -382,8 +395,15 @@ class PlayerViewModel @Inject constructor(
                     stereoDownmixEnabled = profile.stereoDownmixEnabled,
                     assSubtitleMode = profile.assSubtitleMode,
                     preferredAudioLang = profile.preferredAudioLang,
-                    preferredSubtitleLang = profile.preferredSubtitleLang
+                    preferredSubtitleLang = profile.preferredSubtitleLang,
+                    screensaverTimeoutMinutes = profile.screensaverTimeoutMinutes
                 )
+            }
+            if (profile.screensaverTimeoutMinutes > 0 && _uiState.value.screensaverSlides.isEmpty()) {
+                launch(Dispatchers.IO) {
+                    val slides = catalogRepository.loadScreensaverBackdrops(activeUserId, profile)
+                    if (slides.isNotEmpty()) _uiState.update { it.copy(screensaverSlides = slides) }
+                }
             }
 
             // Returns as soon as PlaybackInfo is known; segments (skip intro/recap, credits) and the
@@ -409,6 +429,57 @@ class PlayerViewModel @Inject constructor(
                     var adjustedSession = if (resumeOverrideMs != null) {
                         prepared.session.copy(resumeTicks = resumeOverrideMs * 10_000L)
                     } else prepared.session
+                    if (isCinemaIntroClip) {
+                        adjustedSession = adjustedSession.copy(
+                            isCinemaIntro = true,
+                            resumeTicks = 0L
+                        )
+                    }
+
+                    // Optional Jellyfin Cinema Intros: when starting a movie from the beginning,
+                    // query /Users/{userId}/Items/{itemId}/Intros and play pre-rolls first.
+                    if (!isSameItem && cinemaIntroQueue.shouldQueryIntros(
+                            cinemaIntrosEnabled = profile.cinemaIntrosEnabled,
+                            session = adjustedSession,
+                            resumeOverrideMs = resumeOverrideMs,
+                            fromSyncPlay = fromSyncPlay,
+                            skipCinemaIntros = skipCinemaIntros,
+                            isCinemaIntroClip = isCinemaIntroClip
+                        )
+                    ) {
+                        val introIds = playbackManager.loadCinemaIntros(activeUserId, itemId)
+                        if (introIds.isNotEmpty()) {
+                            val step = cinemaIntroQueue.arm(
+                                introIds = introIds,
+                                main = com.seerflix.tv.core.player.CinemaIntroQueue.PendingMainItem(
+                                    itemId = itemId,
+                                    mediaSourceId = resolvedSourceId,
+                                    audioStreamIndex = resolvedAudioIndex,
+                                    subtitleStreamIndex = resolvedInitialSubIndex,
+                                    fromSyncPlay = fromSyncPlay
+                                )
+                            )
+                            if (step is com.seerflix.tv.core.player.CinemaIntroQueue.NextStep.PlayIntro) {
+                                _uiState.update {
+                                    it.copy(
+                                        cinemaIntroIndex = step.index,
+                                        cinemaIntroTotal = step.total
+                                    )
+                                }
+                                loadItem(
+                                    itemId = step.introItemId,
+                                    mediaSourceIdOverride = null,
+                                    burnInSubtitleOverride = null,
+                                    audioStreamIndexOverride = null,
+                                    resumeOverrideMs = 0L,
+                                    skipCinemaIntros = true,
+                                    isCinemaIntroClip = true
+                                )
+                                return@onSuccess
+                            }
+                        }
+                    }
+
                     // Reloading the same item (quality / version / audio switch): keep the markers we
                     // already had until the fresh lookups complete.
                     if (previousSession != null && !previousSession.isTrailer && previousSession.itemId == adjustedSession.itemId) {
@@ -428,6 +499,14 @@ class PlayerViewModel @Inject constructor(
                             videoFrameRateHint = prepared.videoFrameRate,
                             isLoading = false
                         )
+                    }
+                    if (adjustedSession.isLiveTv && _uiState.value.liveTvChannels.isEmpty()) {
+                        launch(Dispatchers.IO) {
+                            val channels = catalogRepository.loadLiveTvChannelsAndPrograms(activeUserId)
+                            if (channels.isNotEmpty()) {
+                                _uiState.update { it.copy(liveTvChannels = channels) }
+                            }
+                        }
                     }
                     val playSessionId = adjustedSession.playSessionId
                     syncPlayManager.localPlayingItemId = SyncPlayManager.normalizeId(adjustedSession.itemId)
@@ -1101,6 +1180,84 @@ class PlayerViewModel @Inject constructor(
         return true
     }
 
+    /** Advances from a finished Cinema Intro clip to the next intro or the main movie. */
+    fun advanceCinemaIntro(): Boolean {
+        if (_uiState.value.session?.isCinemaIntro != true && !cinemaIntroQueue.hasPendingMain) return false
+        return executeCinemaIntroStep(cinemaIntroQueue.advance())
+    }
+
+    /** Skips all remaining Cinema Intro clips and starts the main movie immediately. */
+    fun skipCinemaIntros(): Boolean {
+        if (_uiState.value.session?.isCinemaIntro != true && !cinemaIntroQueue.hasPendingMain) return false
+        return executeCinemaIntroStep(cinemaIntroQueue.skipToMain())
+    }
+
+    private fun executeCinemaIntroStep(step: com.seerflix.tv.core.player.CinemaIntroQueue.NextStep): Boolean {
+        return when (step) {
+            is com.seerflix.tv.core.player.CinemaIntroQueue.NextStep.PlayIntro -> {
+                _uiState.update { it.copy(cinemaIntroIndex = step.index, cinemaIntroTotal = step.total) }
+                loadItem(
+                    itemId = step.introItemId,
+                    mediaSourceIdOverride = null,
+                    burnInSubtitleOverride = null,
+                    audioStreamIndexOverride = null,
+                    resumeOverrideMs = 0L,
+                    skipCinemaIntros = true,
+                    isCinemaIntroClip = true
+                )
+                true
+            }
+            is com.seerflix.tv.core.player.CinemaIntroQueue.NextStep.PlayMain -> {
+                _uiState.update {
+                    it.copy(
+                        cinemaIntroIndex = 0,
+                        cinemaIntroTotal = 0,
+                        preselectedSubtitleStreamIndex = step.main.subtitleStreamIndex
+                    )
+                }
+                loadItem(
+                    itemId = step.main.itemId,
+                    mediaSourceIdOverride = step.main.mediaSourceId,
+                    burnInSubtitleOverride = null,
+                    audioStreamIndexOverride = step.main.audioStreamIndex,
+                    resumeOverrideMs = 0L,
+                    fromSyncPlay = step.main.fromSyncPlay,
+                    skipCinemaIntros = true,
+                    isCinemaIntroClip = false
+                )
+                true
+            }
+            com.seerflix.tv.core.player.CinemaIntroQueue.NextStep.None -> false
+        }
+    }
+
+    /** Surfs to the next (+1) or previous (-1) Live TV channel in-place. */
+    fun surfChannel(delta: Int): Boolean {
+        val state = _uiState.value
+        val session = state.session ?: return false
+        if (!session.isLiveTv) return false
+        val next = com.seerflix.tv.core.data.LiveTvEpgHelper.nextChannelId(
+            channels = state.liveTvChannels,
+            currentChannelId = session.itemId,
+            delta = delta
+        ) ?: return false
+        tuneChannel(next)
+        return true
+    }
+
+    fun tuneChannel(channel: com.seerflix.tv.core.model.LiveTvChannel) {
+        val label = if (!channel.number.isNullOrBlank()) "CH ${channel.number} · ${channel.name}" else channel.name
+        _uiState.update { it.copy(feedbackMessage = label) }
+        loadItem(
+            itemId = channel.id,
+            mediaSourceIdOverride = null,
+            burnInSubtitleOverride = null,
+            audioStreamIndexOverride = null,
+            resumeOverrideMs = 0L,
+            skipCinemaIntros = true
+        )
+    }
+
     private fun buildDefaultReportState(override: PlaybackReportState?): PlaybackReportState {
         val state = _uiState.value
         val session = state.session
@@ -1116,7 +1273,7 @@ class PlayerViewModel @Inject constructor(
 
     fun reportStart(positionMs: Long, reportState: PlaybackReportState? = null) {
         val session = _uiState.value.session ?: return
-        if (session.isTrailer) return
+        if (session.isTrailer || session.isCinemaIntro) return
         val full = buildDefaultReportState(reportState)
         viewModelScope.launch {
             playbackManager.reportStart(session, positionMs * 10_000L, full)
@@ -1128,7 +1285,7 @@ class PlayerViewModel @Inject constructor(
         val session = state.session ?: return
         // While a new item/version is loading the old session has already been reported as stopped;
         // a late progress report would resurrect it on the server.
-        if (session.isTrailer || state.isLoading || state.errorMessage != null) return
+        if (session.isTrailer || session.isCinemaIntro || state.isLoading || state.errorMessage != null) return
         val full = buildDefaultReportState(reportState)
         viewModelScope.launch {
             playbackManager.reportProgress(session, positionMs * 10_000L, isPaused, full)
@@ -1137,7 +1294,7 @@ class PlayerViewModel @Inject constructor(
 
     fun reportStopped(positionMs: Long, reportState: PlaybackReportState? = null) {
         val session = _uiState.value.session ?: return
-        if (session.isTrailer) return
+        if (session.isTrailer || session.isCinemaIntro) return
         val full = buildDefaultReportState(reportState)
         // Not viewModelScope: this is called from the screen's onDispose right before the
         // ViewModel is cleared, which would cancel the request before it is sent.

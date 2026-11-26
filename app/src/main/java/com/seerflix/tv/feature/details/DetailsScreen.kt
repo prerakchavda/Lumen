@@ -168,6 +168,12 @@ fun DetailsScreen(
         }
     }
 
+    ThemeSongPlayerEffect(
+        themeSongUrl = state.themeSongUrl,
+        mediaHttpClient = viewModel.mediaHttpClient,
+        lifecycleOwner = lifecycleOwner
+    )
+
     DetailsContent(
         state = state,
         onBack = onBack,
@@ -2701,3 +2707,50 @@ private fun EpisodeActionDialog(
         onDismiss = onDismiss
     )
 }
+
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@Composable
+private fun ThemeSongPlayerEffect(
+    themeSongUrl: String?,
+    mediaHttpClient: okhttp3.OkHttpClient,
+    lifecycleOwner: androidx.lifecycle.LifecycleOwner
+) {
+    val context = LocalContext.current
+    androidx.compose.runtime.DisposableEffect(themeSongUrl, lifecycleOwner) {
+        if (themeSongUrl.isNullOrBlank()) {
+            onDispose { }
+        } else {
+            val dataSourceFactory = androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(mediaHttpClient)
+            val mediaSourceFactory = androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSourceFactory)
+            val player = androidx.media3.exoplayer.ExoPlayer.Builder(context)
+                .setMediaSourceFactory(mediaSourceFactory)
+                .build()
+                .apply {
+                    volume = 0.25f
+                    repeatMode = androidx.media3.common.Player.REPEAT_MODE_ONE
+                    setMediaItem(androidx.media3.common.MediaItem.fromUri(themeSongUrl))
+                    playWhenReady = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+                    prepare()
+                }
+            val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_RESUME -> runCatching { player.playWhenReady = true }
+                    Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> runCatching {
+                        player.playWhenReady = false
+                        player.pause()
+                    }
+                    else -> Unit
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+                runCatching {
+                    player.stop()
+                    player.release()
+                }
+            }
+        }
+    }
+}
+

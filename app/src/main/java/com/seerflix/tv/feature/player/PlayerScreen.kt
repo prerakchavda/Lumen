@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -219,6 +221,7 @@ fun PlayerScreen(
     var osdVisible by remember { mutableStateOf(true) }
     var activeSheet by remember { mutableStateOf<PlayerSheet?>(null) }
     var showEpisodesDrawer by remember { mutableStateOf(false) }
+    var showPausedScreensaver by remember { mutableStateOf(false) }
     var focusedOsdActionLabel by remember { mutableStateOf<String?>(null) }
     var tracksRevision by remember { mutableIntStateOf(0) }
     var scrubPreviewMs by remember { mutableStateOf<Long?>(null) }
@@ -963,6 +966,10 @@ fun PlayerScreen(
     LaunchedEffect(playbackEnded, state.isLoading) {
         if (!playbackEnded || state.isLoading) return@LaunchedEffect
         val s = state.session ?: return@LaunchedEffect
+        if (s.isCinemaIntro) {
+            viewModel.advanceCinemaIntro()
+            return@LaunchedEffect
+        }
         if (state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO) {
             player.pause()
             osdVisible = true
@@ -994,6 +1001,25 @@ fun PlayerScreen(
                 delay(1500L)
                 if (playbackEnded) exitPlayer()
             }
+        }
+    }
+
+    // OLED screensaver while paused: after screensaverTimeoutMinutes of inactivity, dim to rotating fanart.
+    LaunchedEffect(isPlaying, state.isLoading, state.screensaverTimeoutMinutes, showPausedScreensaver) {
+        if (isPlaying || state.isLoading || state.screensaverTimeoutMinutes <= 0) {
+            showPausedScreensaver = false
+            return@LaunchedEffect
+        }
+        if (showPausedScreensaver) return@LaunchedEffect
+        val timeoutMs = state.screensaverTimeoutMinutes * 60_000L
+        var lastTick = lastInteractionTick.longValue
+        while (true) {
+            delay(timeoutMs)
+            if (lastInteractionTick.longValue == lastTick) {
+                showPausedScreensaver = true
+                return@LaunchedEffect
+            }
+            lastTick = lastInteractionTick.longValue
         }
     }
 
@@ -1156,10 +1182,29 @@ fun PlayerScreen(
                                 true
                             } else false
                         }
+                        KeyEvent.KEYCODE_CHANNEL_UP -> {
+                            if (session?.isLiveTv == true && activeSheet == null) {
+                                viewModel.surfChannel(+1)
+                                osdVisible = true
+                                true
+                            } else false
+                        }
+                        KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+                            if (session?.isLiveTv == true && activeSheet == null) {
+                                viewModel.surfChannel(-1)
+                                osdVisible = true
+                                true
+                            } else false
+                        }
                         KeyEvent.KEYCODE_DPAD_UP,
                         KeyEvent.KEYCODE_DPAD_DOWN -> {
                             if (activeSheet != null || showEpisodesDrawer) false
-                            else if (!osdVisible) {
+                            else if (!osdVisible && session?.isLiveTv == true && state.liveTvChannels.size > 1) {
+                                val delta = if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) +1 else -1
+                                viewModel.surfChannel(delta)
+                                osdVisible = true
+                                true
+                            } else if (!osdVisible) {
                                 osdVisible = true
                                 true
                             } else false
@@ -1366,6 +1411,30 @@ fun PlayerScreen(
                                 viewModel.notifySyncPlaySeek(target)
                             }
                         )
+                    }
+                    if (session?.isCinemaIntro == true) {
+                        val badgeLabel = if (state.cinemaIntroTotal > 1) {
+                            "${strings.playerCinemaIntroBadge} ${state.cinemaIntroIndex}/${state.cinemaIntroTotal}"
+                        } else strings.playerCinemaIntroBadge
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(Color.Black.copy(alpha = 0.72f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(badgeLabel, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            HeroPillButton(
+                                text = strings.playerSkipCinemaIntro,
+                                icon = Icons.Filled.SkipNext,
+                                isPrimary = true,
+                                onClick = { viewModel.skipCinemaIntros() }
+                            )
+                        }
                     }
                     if (showSkipIntro && session?.introEndTicks != null) {
                         HeroPillButton(
@@ -1603,6 +1672,17 @@ fun PlayerScreen(
                                 }
 
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    if (session?.isLiveTv == true && state.liveTvChannels.isNotEmpty()) {
+                                        PlayerControlIcon(
+                                            icon = Icons.Filled.LiveTv,
+                                            label = strings.playerChannels,
+                                            onClick = { activeSheet = PlayerSheet.CHANNELS },
+                                            onFocusChange = { focused ->
+                                                if (focused) focusedOsdActionLabel = strings.playerChannels
+                                                else if (focusedOsdActionLabel == strings.playerChannels) focusedOsdActionLabel = null
+                                            }
+                                        )
+                                    }
                                     if (state.drawerSeasons.isNotEmpty() || !session?.seriesId.isNullOrBlank()) {
                                         PlayerControlIcon(
                                             icon = Icons.AutoMirrored.Filled.List,
@@ -1823,7 +1903,26 @@ fun PlayerScreen(
                         },
                         onClose = { activeSheet = null }
                     )
+                    PlayerSheet.CHANNELS -> ChannelsSideSheet(
+                        channels = state.liveTvChannels,
+                        currentChannelId = session?.itemId,
+                        onSelectChannel = { channel ->
+                            activeSheet = null
+                            viewModel.tuneChannel(channel)
+                        },
+                        onClose = { activeSheet = null }
+                    )
                     null -> {}
+                }
+
+                if (showPausedScreensaver) {
+                    com.seerflix.tv.ui.components.ScreensaverOverlay(
+                        slides = state.screensaverSlides,
+                        onDismiss = {
+                            lastInteractionTick.longValue += 1
+                            showPausedScreensaver = false
+                        }
+                    )
                 }
             }
         }
@@ -2458,7 +2557,71 @@ private enum class PlayerSheet {
     CAPTIONS,
     AUDIO,
     CHAPTERS,
-    PLAYBACK
+    PLAYBACK,
+    CHANNELS
+}
+
+@Composable
+private fun ChannelsSideSheet(
+    channels: List<com.seerflix.tv.core.model.LiveTvChannel>,
+    currentChannelId: String?,
+    onSelectChannel: (com.seerflix.tv.core.model.LiveTvChannel) -> Unit,
+    onClose: () -> Unit
+) {
+    val strings = AppStrings.current
+    val colors = SeerflixTokens.colors
+    val activeIdx = remember(channels, currentChannelId) {
+        channels.indexOfFirst { it.id == currentChannelId }.coerceAtLeast(0)
+    }
+    val activeFocusRequester = remember { FocusRequester() }
+    val closeFocusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(channels.size, activeIdx) {
+        delay(60L)
+        if (channels.isNotEmpty()) {
+            runCatching { activeFocusRequester.requestFocus() }
+        } else {
+            runCatching { closeFocusRequester.requestFocus() }
+        }
+    }
+
+    PlayerSideSheet(
+        title = strings.playerChannelsTitle,
+        subtitle = channels.getOrNull(activeIdx)?.currentProgram?.title,
+        icon = Icons.Filled.LiveTv,
+        onClose = onClose,
+        closeFocusRequester = closeFocusRequester,
+        scrollable = false
+    ) {
+        if (channels.isEmpty()) {
+            Text(strings.liveNoChannels, color = colors.textSecondary, fontSize = 14.sp)
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 16.dp)
+            ) {
+                items(channels.size, key = { idx -> channels[idx].id }) { idx ->
+                    val ch = channels[idx]
+                    val isCurrent = ch.id == currentChannelId
+                    val title = buildString {
+                        if (ch.isFavorite) append("★ ")
+                        if (!ch.number.isNullOrBlank()) append("${ch.number} · ")
+                        append(ch.name)
+                        ch.currentProgram?.title?.takeIf { it.isNotBlank() }?.let { prog ->
+                            append("  •  ")
+                            append(prog)
+                        }
+                    }
+                    TrackChoiceRow(
+                        label = title,
+                        selected = isCurrent,
+                        onClick = { onSelectChannel(ch) },
+                        modifier = if (idx == activeIdx) Modifier.focusRequester(activeFocusRequester) else Modifier
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
