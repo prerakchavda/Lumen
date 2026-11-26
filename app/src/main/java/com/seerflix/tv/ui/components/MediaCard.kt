@@ -25,7 +25,11 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -385,19 +389,24 @@ fun NetflixPosterCard(
             height = cardWidth * 1.5f
         )
 
-        val hasBottomBadge = !item.upcomingBadgeLabel.isNullOrBlank()
+        val hasUpcomingBadge = !item.upcomingBadgeLabel.isNullOrBlank()
+        val hasNetflixBadge = !hasUpcomingBadge &&
+            !item.netflixBadgeLabel.isNullOrBlank() &&
+            spec.preset == UiPreset.NETFLIX &&
+            item.boxSetId == null
+        val hasBottomBadge = hasUpcomingBadge || hasNetflixBadge
         if (hasBottomBadge) {
             // Legibility gradient, only when something is drawn over the bottom of the poster.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(60.dp)
+                    .height(54.dp)
                     .align(Alignment.BottomCenter)
-                    .background(rememberBottomScrim(colors.deepBlack, 0.82f))
+                    .background(rememberBottomScrim(colors.deepBlack, 0.78f))
             )
         }
 
-        // Top-left availability or collection badge
+        // Top-left Netflix TOP 10 corner ribbon or Collection badge
         if (item.boxSetId != null) {
             Box(
                 modifier = Modifier
@@ -416,17 +425,23 @@ fun NetflixPosterCard(
                 )
             }
         } else {
+            if (item.isTop10 && spec.preset == UiPreset.NETFLIX) {
+                Top10CornerRibbon(
+                    modifier = Modifier.align(Alignment.TopStart)
+                )
+            }
+            // Placed at TopEnd so it never collides with Netflix's TopStart TOP 10 ribbon
             AvailabilityBadge(
                 item = item,
                 compact = true,
                 modifier = Modifier
-                    .align(Alignment.TopStart)
+                    .align(if (spec.preset == UiPreset.NETFLIX) Alignment.TopEnd else Alignment.TopStart)
                     .padding(6.dp)
             )
         }
 
-        // Upcoming countdown / completion pill
-        if (hasBottomBadge) {
+        // Upcoming countdown / completion pill OR Netflix centered bottom status ribbon
+        if (hasUpcomingBadge) {
             val isHighlight = item.upcomingBadgeLabel.equals("Now in Library", ignoreCase = true) ||
                 item.upcomingBadgeLabel?.contains("Tonight", ignoreCase = true) == true ||
                 item.upcomingBadgeLabel?.equals("Today", ignoreCase = true) == true
@@ -456,6 +471,13 @@ fun NetflixPosterCard(
                     style = TabularNumbers
                 )
             }
+        } else if (hasNetflixBadge) {
+            NetflixBottomRibbon(
+                label = item.netflixBadgeLabel!!,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = if (item.watchProgressFraction > 0f) 4.dp else 0.dp)
+            )
         }
 
         if (item.watchProgressFraction > 0f) {
@@ -475,16 +497,74 @@ fun NetflixPosterCard(
             }
         }
     }
-    // Title under every poster, so a row can be scanned by name; brighter on the focused card.
-    Spacer(Modifier.height(5.dp))
-    Text(
-        text = item.title,
-        color = if (focused) colors.white else colors.textSecondary,
-        fontSize = 12.sp,
-        fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis
-    )
+    if (spec.showPosterTitleBelow) {
+        // Title under poster for presets that show labels (Apple TV+ / Disney+); Netflix keeps full-bleed posters.
+        Spacer(Modifier.height(5.dp))
+        Text(
+            text = item.title,
+            color = if (focused) colors.white else colors.textSecondary,
+            fontSize = 12.sp,
+            fontWeight = if (focused) FontWeight.Bold else FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+    }
+}
+
+/** Netflix's signature red top-left "TOP 10" corner ribbon shown on Top 10 titles across regular rows. */
+@Composable
+fun Top10CornerRibbon(modifier: Modifier = Modifier) {
+    val colors = SeerflixTokens.colors
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .clip(RoundedCornerShape(bottomEnd = 4.dp))
+            .background(colors.accent)
+            .padding(horizontal = 5.dp, vertical = 3.dp)
+    ) {
+        Text(
+            text = "TOP",
+            color = colors.white,
+            fontSize = 6.5.sp,
+            lineHeight = 7.5.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 0.4.sp,
+            maxLines = 1
+        )
+        Text(
+            text = "10",
+            color = colors.white,
+            fontSize = 10.5.sp,
+            lineHeight = 11.sp,
+            fontWeight = FontWeight.Black,
+            maxLines = 1,
+            style = TabularNumbers
+        )
+    }
+}
+
+/** Netflix's centered bottom-edge red pill ("Recently Added", "New Season", "New Episode"). */
+@Composable
+fun NetflixBottomRibbon(
+    label: String,
+    modifier: Modifier = Modifier
+) {
+    val colors = SeerflixTokens.colors
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
+            .background(colors.accent)
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = label,
+            color = colors.white,
+            fontSize = 9.5.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -770,20 +850,26 @@ fun Top10PosterCard(
                             .align(Alignment.TopEnd)
                             .padding(6.dp)
                     )
+                    if (!item.netflixBadgeLabel.isNullOrBlank()) {
+                        NetflixBottomRibbon(
+                            label = item.netflixBadgeLabel,
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-private val TOP10_POSTER_WIDTH = 126.dp
-private val TOP10_POSTER_HEIGHT = 189.dp
+private val TOP10_POSTER_WIDTH = 128.dp
+private val TOP10_POSTER_HEIGHT = 192.dp
 /** Visible width left of the poster for the numeral. */
-private val TOP10_NUMERAL_SLOT = 78.dp
+private val TOP10_NUMERAL_SLOT = 76.dp
 /** How far the numeral runs under the poster's left edge. */
 private val TOP10_NUMERAL_TUCK = 22.dp
-private val TOP10_NUMERAL_STROKE = 3.5.dp
-private val TOP10_NUMERAL_IDLE = Color(0xFF8C8C8C)
+private val TOP10_NUMERAL_STROKE = 3.dp
+private val TOP10_NUMERAL_IDLE = Color(0xFFD0D0D0)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -860,6 +946,26 @@ fun ContinueWatchingCard(
                     .background(rememberBottomScrim(colors.deepBlack, 0.85f))
             )
 
+            // Netflix-style centered circular Play button indicator
+            if (spec.preset == UiPreset.NETFLIX) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(if (focused) 44.dp else 40.dp)
+                        .clip(CircleShape)
+                        .background(Color(if (focused) 0xCC000000 else 0x8C000000))
+                        .border(1.5.dp, colors.white.copy(alpha = if (focused) 1f else 0.88f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        tint = colors.white,
+                        modifier = Modifier.size(if (focused) 26.dp else 24.dp)
+                    )
+                }
+            }
+
             if (focused && onOptionsMenu != null) {
                 Box(
                     modifier = Modifier
@@ -884,7 +990,7 @@ fun ContinueWatchingCard(
                     .fillMaxWidth()
                     .height(4.dp)
                     .align(Alignment.BottomCenter)
-                    .background(Color(0x66FFFFFF))
+                    .background(Color(0x55FFFFFF))
             ) {
                 Box(
                     modifier = Modifier

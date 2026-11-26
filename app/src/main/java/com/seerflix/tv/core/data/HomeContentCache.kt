@@ -115,7 +115,7 @@ class HomeContentCache internal constructor(
 
     companion object {
         private const val DIR_NAME = "home_cache"
-        internal const val VERSION = 1
+        internal const val VERSION = 2
         internal const val MAX_ROWS = 30
         internal const val MAX_ITEMS_PER_ROW = 40
         private const val MAX_FILES = 40
@@ -251,6 +251,8 @@ internal data class CachedItem(
     @SerialName("rd") val releaseDate: String? = null,
     @SerialName("na") val nextAirDate: String? = null,
     @SerialName("ub") val upcomingBadgeLabel: String? = null,
+    @SerialName("t10") val isTop10: Boolean = false,
+    @SerialName("nb") val netflixBadgeLabel: String? = null,
     @SerialName("ci") val collectionId: Int? = null,
     @SerialName("cn") val collectionName: String? = null,
     @SerialName("bx") val boxSetId: String? = null,
@@ -295,6 +297,8 @@ internal data class CachedItem(
             releaseDate = releaseDate,
             nextAirDate = nextAirDate,
             upcomingBadgeLabel = upcomingBadgeLabel,
+            isTop10 = isTop10,
+            netflixBadgeLabel = netflixBadgeLabel,
             collectionId = collectionId,
             collectionName = collectionName,
             boxSetId = boxSetId,
@@ -372,6 +376,8 @@ private fun UnifiedMediaItem.toCached() = CachedItem(
     releaseDate = releaseDate,
     nextAirDate = nextAirDate,
     upcomingBadgeLabel = upcomingBadgeLabel,
+    isTop10 = isTop10,
+    netflixBadgeLabel = netflixBadgeLabel,
     collectionId = collectionId,
     collectionName = collectionName,
     boxSetId = boxSetId,

@@ -338,23 +338,53 @@ data class UiStrings(
         internal set
     var genreAll: String = "All Genres"
         internal set
-    var genreAction: String = "Action"
+    var genreAction: String = "Action & Adventure"
         internal set
-    var genreComedy: String = "Comedy"
+    var genreComedy: String = "Comedies"
         internal set
-    var genreSciFi: String = "Sci-Fi"
+    var genreSciFi: String = "Sci-Fi & Fantasy"
         internal set
     var genreHorrorMystery: String = "Horror & Mystery"
         internal set
-    var genreDrama: String = "Drama"
+    var genreDrama: String = "Dramas"
         internal set
     var genreCrime: String = "Crime"
         internal set
-    var genreThriller: String = "Thriller"
+    var genreThriller: String = "Thrillers"
         internal set
-    var genreDocumentary: String = "Documentary"
+    var genreDocumentary: String = "Documentaries"
         internal set
     var genreAnimation: String = "Animation"
+        internal set
+    var genreFamily: String = "Family"
+        internal set
+    var genreFantasy: String = "Fantasy"
+        internal set
+    var genreRomance: String = "Romance"
+        internal set
+    var genreReality: String = "Reality TV"
+        internal set
+    var genreKids: String = "Kids"
+        internal set
+    var genreHistory: String = "History & War"
+        internal set
+    var genreMusic: String = "Music"
+        internal set
+    var actionPlayMovie: String = "Play Movie"
+        internal set
+    var actionPlayShow: String = "Play Show"
+        internal set
+    var homeCategories: String = "Categories"
+        internal set
+    var homeCategoriesTitle: String = "Browse Categories"
+        internal set
+    var homeContinueWatchingFor: String = "Continue Watching for %s"
+        internal set
+    var badgeRecentlyAdded: String = "Recently Added"
+        internal set
+    var badgeNewSeason: String = "New Season"
+        internal set
+    var badgeNewEpisode: String = "New Episode"
         internal set
 
     // ---- Live TV guide (0.7) ----

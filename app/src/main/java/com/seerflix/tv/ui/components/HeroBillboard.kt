@@ -292,8 +292,29 @@ fun HeroBillboard(
             // Rating, year, maturity, runtime, format badges — same line as Details and the header.
             TitleMetaLine(item = item)
 
+            // Netflix-style concise genre descriptor line (e.g. "Movie • Sci-Fi • Adventure • Drama")
+            val genreLine = remember(item.genres, item.mediaType, strings) {
+                val topGenres = item.genres.filter { it.isNotBlank() }.distinct().take(3)
+                if (topGenres.isEmpty()) null
+                else {
+                    val kind = if (item.mediaType.name == "MOVIE") strings.commonMovie else strings.commonSeries
+                    (listOf(kind) + topGenres).joinToString(" • ")
+                }
+            }
+            if (genreLine != null) {
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    text = genreLine,
+                    color = colors.textSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
             if (item.overview.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = item.overview,
                     color = colors.textPrimary,
@@ -321,7 +342,8 @@ fun HeroBillboard(
             ) {
                 val primaryLabel = when {
                     item.isPlayable && item.resumePositionTicks > 0L -> strings.actionResume
-                    item.isPlayable -> strings.actionPlay
+                    item.isPlayable && item.mediaType.name == "MOVIE" -> strings.actionPlayMovie
+                    item.isPlayable -> strings.actionPlayShow
                     item.activeDownload != null || item.overallAvailability == AvailabilityTier.PROCESSING -> strings.heroViewProgress
                     item.overallAvailability == AvailabilityTier.PENDING -> strings.commonRequested
                     else -> strings.actionRequestMore
@@ -423,14 +445,14 @@ fun HeroPillButton(
                         if (isPrimary) colors.primaryButtonFocusBorder else colors.focusBorder,
                         shape
                     )
-                } else if (!isPrimary && spec.preset == UiPreset.APPLE_TV) {
-                    Modifier.border(1.dp, colors.badgeBorder, shape)
+                } else if (!isPrimary && (spec.preset == UiPreset.APPLE_TV || spec.preset == UiPreset.NETFLIX)) {
+                    Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.65f), shape)
                 } else Modifier
             )
             .onFocusChanged { focused = it.isFocused || it.hasFocus }
             .clickable(onClick = onClick)
             .padding(
-                horizontal = if (spec.preset == UiPreset.APPLE_TV) 22.dp else 20.dp,
+                horizontal = if (spec.preset == UiPreset.APPLE_TV || spec.preset == UiPreset.NETFLIX) 22.dp else 20.dp,
                 vertical = 10.dp
             )
     ) {

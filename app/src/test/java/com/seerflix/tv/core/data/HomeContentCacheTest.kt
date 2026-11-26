@@ -50,10 +50,12 @@ class HomeContentCacheTest {
         hdDownload = DownloadProgressInfo(false, "downloading", "Dune", 100, 50, 50f, "1h", null),
         resumePositionTicks = 42L,
         mediaBadges = listOf("4K"),
+        isTop10 = true,
+        netflixBadgeLabel = "Recently Added",
         youtubeTrailerKey = "abc"
     )
 
-    private val rows = listOf(CatalogRow("trending_now", "Trending Now", RowStyle.POSTER, listOf(item)))
+    private val rows = listOf(CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, listOf(item)))
 
     private fun newCache(dir: File = File(tempFolder.root, "home")) = HomeContentCache { dir }
 
@@ -62,6 +64,9 @@ class HomeContentCacheTest {
         newCache().write(key(), rows, base)
         val restored = newCache().read(key(), base)
         assertEquals(rows, restored)
+        val restoredItem = restored!!.single().items.single()
+        assertEquals(true, restoredItem.isTop10)
+        assertEquals("Recently Added", restoredItem.netflixBadgeLabel)
     }
 
     @Test

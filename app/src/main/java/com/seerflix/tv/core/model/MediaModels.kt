@@ -186,16 +186,29 @@ data class GenreFilterOption(
     companion object {
         val ALL_GENRES = listOf(
             GenreFilterOption("all", "All Genres", null, null),
-            GenreFilterOption("action", "Action", 28, 10759),
-            GenreFilterOption("comedy", "Comedy", 35, 35),
-            GenreFilterOption("scifi", "Sci-Fi", 878, 10765),
+            GenreFilterOption("action", "Action & Adventure", 28, 10759),
+            GenreFilterOption("comedy", "Comedies", 35, 35),
+            GenreFilterOption("scifi", "Sci-Fi & Fantasy", 878, 10765),
             GenreFilterOption("horror", "Horror & Mystery", 27, 9648),
-            GenreFilterOption("drama", "Drama", 18, 18),
+            GenreFilterOption("drama", "Dramas", 18, 18),
             GenreFilterOption("crime", "Crime", 80, 80),
-            GenreFilterOption("thriller", "Thriller", 53, 9648),
-            GenreFilterOption("documentary", "Documentary", 99, 99),
-            GenreFilterOption("animation", "Animation", 16, 16)
+            GenreFilterOption("thriller", "Thrillers", 53, 9648),
+            GenreFilterOption("documentary", "Documentaries", 99, 99),
+            GenreFilterOption("animation", "Animation", 16, 16),
+            GenreFilterOption("family", "Family", 10751, 10751),
+            GenreFilterOption("fantasy", "Fantasy", 14, 10765),
+            GenreFilterOption("romance", "Romance", 10749, 10749),
+            GenreFilterOption("reality", "Reality TV", null, 10764),
+            GenreFilterOption("kids", "Kids", 10751, 10762),
+            GenreFilterOption("history", "History & War", 36, 10768),
+            GenreFilterOption("music", "Music", 10402, null)
         )
+
+        fun forMediaType(mediaType: MediaType?): List<GenreFilterOption> = when (mediaType) {
+            MediaType.MOVIE -> ALL_GENRES.filter { it.id == "all" || it.movieGenreId != null }
+            MediaType.SERIES -> ALL_GENRES.filter { it.id == "all" || it.tvGenreId != null }
+            else -> ALL_GENRES
+        }
     }
 }
 
@@ -270,6 +283,10 @@ data class UnifiedMediaItem(
     val releaseDate: String? = null,
     val nextAirDate: String? = null,
     val upcomingBadgeLabel: String? = null,
+    /** True when this title is in today's Top 10 Movies or TV Shows (renders Netflix's corner ribbon). */
+    val isTop10: Boolean = false,
+    /** Netflix-style bottom-center status pill on posters (e.g. "Recently Added", "New Season"). */
+    val netflixBadgeLabel: String? = null,
     val collectionId: Int? = null,
     val collectionName: String? = null,
     val boxSetId: String? = null,

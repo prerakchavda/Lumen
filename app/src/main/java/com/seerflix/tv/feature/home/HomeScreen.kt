@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Hd
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
@@ -167,6 +169,13 @@ private fun GenreFilterOption.localizedLabel(s: UiStrings): String = when (id) {
     "thriller" -> s.genreThriller
     "documentary" -> s.genreDocumentary
     "animation" -> s.genreAnimation
+    "family" -> s.genreFamily
+    "fantasy" -> s.genreFantasy
+    "romance" -> s.genreRomance
+    "reality" -> s.genreReality
+    "kids" -> s.genreKids
+    "history" -> s.genreHistory
+    "music" -> s.genreMusic
     else -> label
 }
 
@@ -352,10 +361,16 @@ fun HomeContent(
 
     // Cached: a new Brush every recomposition invalidates the full-screen background draw.
     val canvasBg = remember(spec.preset, colors) {
-        if (spec.preset == UiPreset.DISNEY_PLUS) {
-            Brush.verticalGradient(listOf(colors.backgroundGlow.copy(alpha = 0.45f), colors.background))
-        } else {
-            SolidColor(colors.background)
+        when (spec.preset) {
+            UiPreset.DISNEY_PLUS ->
+                Brush.verticalGradient(listOf(colors.backgroundGlow.copy(alpha = 0.45f), colors.background))
+            UiPreset.NETFLIX ->
+                Brush.verticalGradient(
+                    0.0f to colors.backgroundGlow.copy(alpha = 0.42f),
+                    0.38f to colors.background,
+                    1.0f to colors.background
+                )
+            else -> SolidColor(colors.background)
         }
     }
 
@@ -959,10 +974,11 @@ private fun HomeMainCanvas(
                     }
 
                     if (isMoviesOrShows) {
-                        // One chip row for Movies / TV Shows: browse-all grid, Collections, the
-                        // availability filter and genres (used to be two or three rows of chips).
+                        // Clean Netflix-style control row: Categories picker pill + browse-all, Collections, availability filter.
                         item(key = "genre_filter_bar", contentType = "genre_bar") {
+                            val tabMediaType = if (state.activeTab == HomeTab.MOVIES) MediaType.MOVIE else MediaType.SERIES
                             GenreFilterBar(
+                                mediaType = tabMediaType,
                                 selectedGenre = state.selectedGenre,
                                 onSelectGenre = onSelectGenre,
                                 bringIntoViewSpec = rowBringIntoViewSpec,
@@ -971,11 +987,7 @@ private fun HomeMainCanvas(
                                 } else {
                                     strings.libraryAllShows
                                 },
-                                onBrowseAll = {
-                                    extraActions.onBrowseAll(
-                                        if (state.activeTab == HomeTab.MOVIES) MediaType.MOVIE else MediaType.SERIES
-                                    )
-                                },
+                                onBrowseAll = { extraActions.onBrowseAll(tabMediaType) },
                                 onOpenCollections = if (state.activeTab == HomeTab.MOVIES && state.profile?.isRestricted != true) {
                                     { onSelectTab(HomeTab.COLLECTIONS) }
                                 } else null,
@@ -1530,13 +1542,14 @@ private fun AvailabilityFilterBar(
     }
 }
 
-/** One chip style for every filter on Home: white when selected, outlined otherwise. */
+/** One chip style for every filter on Home: white when focused, outlined when selected. */
 @Composable
 private fun FilterChip(
     label: String,
     selected: Boolean,
     onClick: () -> Unit,
     icon: ImageVector? = null,
+    trailingIcon: ImageVector? = null,
     emphasized: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -1569,7 +1582,7 @@ private fun FilterChip(
         if (icon != null) {
             Icon(imageVector = icon, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
             Spacer(Modifier.width(6.dp))
-        } else if (selected) {
+        } else if (selected && trailingIcon == null) {
             Icon(imageVector = Icons.Filled.Check, contentDescription = null, tint = fg, modifier = Modifier.size(14.dp))
             Spacer(Modifier.width(5.dp))
         }
@@ -1580,24 +1593,17 @@ private fun FilterChip(
             fontWeight = if (selected || focused || emphasized) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1
         )
+        if (trailingIcon != null) {
+            Spacer(Modifier.width(4.dp))
+            Icon(imageVector = trailingIcon, contentDescription = null, tint = fg, modifier = Modifier.size(18.dp))
+        }
     }
-}
-
-@Composable
-private fun ChipDivider() {
-    val colors = SeerflixTokens.colors
-    Box(
-        modifier = Modifier
-            .padding(horizontal = 4.dp)
-            .width(1.dp)
-            .height(22.dp)
-            .background(colors.badgeBorder)
-    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GenreFilterBar(
+    mediaType: MediaType?,
     selectedGenre: GenreFilterOption,
     onSelectGenre: (GenreFilterOption) -> Unit,
     bringIntoViewSpec: BringIntoViewSpec? = null,
@@ -1610,12 +1616,24 @@ private fun GenreFilterBar(
 ) {
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
+    var showCategoriesDialog by remember { mutableStateOf(false) }
+    val isGenreActive = selectedGenre.id != GenreFilterOption.ALL_GENRES.first().id
+    val categoriesLabel = if (isGenreActive) selectedGenre.localizedLabel(strings) else strings.homeCategories
+
     WithBringIntoViewSpec(bringIntoViewSpec) {
     LazyRow(
         contentPadding = PaddingValues(horizontal = spec.contentStartPaddingDp.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        item(key = "categories_picker", contentType = "action_chip") {
+            FilterChip(
+                label = categoriesLabel,
+                selected = isGenreActive,
+                trailingIcon = Icons.Filled.KeyboardArrowDown,
+                onClick = { showCategoriesDialog = true }
+            )
+        }
         if (onBrowseAll != null && browseAllLabel != null) {
             item(key = "browse_all", contentType = "action_chip") {
                 FilterChip(
@@ -1654,15 +1672,125 @@ private fun GenreFilterBar(
                 }
             )
         }
-        item(key = "divider", contentType = "divider") { ChipDivider() }
-        items(GenreFilterOption.ALL_GENRES, key = { it.id }, contentType = { "genre_chip" }) { genre ->
-            FilterChip(
-                label = genre.localizedLabel(strings),
-                selected = selectedGenre.id == genre.id,
-                onClick = { onSelectGenre(genre) }
-            )
-        }
     }
+    }
+
+    if (showCategoriesDialog) {
+        CategoriesPickerDialog(
+            mediaType = mediaType,
+            selectedGenre = selectedGenre,
+            onSelect = { genre ->
+                showCategoriesDialog = false
+                onSelectGenre(genre)
+            },
+            onDismiss = { showCategoriesDialog = false }
+        )
+    }
+}
+
+/** Netflix-style translucent category picker overlay for Movies and TV Shows. */
+@Composable
+private fun CategoriesPickerDialog(
+    mediaType: MediaType?,
+    selectedGenre: GenreFilterOption,
+    onSelect: (GenreFilterOption) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val categories = remember(mediaType) { GenreFilterOption.forMediaType(mediaType) }
+    val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val selectedFocusRequester = remember { FocusRequester() }
+    val selectedIndex = remember(categories, selectedGenre.id) {
+        categories.indexOfFirst { it.id == selectedGenre.id }.coerceAtLeast(0)
+    }
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (selectedIndex - 2).coerceAtLeast(0))
+
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { selectedFocusRequester.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(420.dp)
+                .heightIn(max = 520.dp)
+                .clip(dialogShape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogShape)
+                .padding(22.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = strings.homeCategoriesTitle,
+                    color = colors.white,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (mediaType == MediaType.MOVIE) strings.navMovies else strings.navShows,
+                    color = colors.textSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            LazyColumn(
+                state = listState,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                itemsIndexed(categories, key = { _, g -> g.id }) { idx, genre ->
+                    val isSelected = genre.id == selectedGenre.id
+                    var focused by remember { mutableStateOf(false) }
+                    val itemShape = RoundedCornerShape(8.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(if (idx == selectedIndex) Modifier.focusRequester(selectedFocusRequester) else Modifier)
+                            .clip(itemShape)
+                            .background(
+                                when {
+                                    focused -> colors.white
+                                    isSelected -> colors.surfaceElevated
+                                    else -> Color.Transparent
+                                }
+                            )
+                            .then(
+                                if (isSelected && !focused) Modifier.border(1.dp, colors.badgeBorder, itemShape)
+                                else Modifier
+                            )
+                            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                            .clickable { onSelect(genre) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                    ) {
+                        Text(
+                            text = genre.localizedLabel(strings),
+                            color = if (focused) colors.deepBlack else colors.white,
+                            fontSize = 15.sp,
+                            fontWeight = if (isSelected || focused) FontWeight.Bold else FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Filled.Check,
+                                contentDescription = null,
+                                tint = if (focused) colors.deepBlack else colors.accent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

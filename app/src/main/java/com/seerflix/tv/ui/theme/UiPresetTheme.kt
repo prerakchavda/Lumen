@@ -70,23 +70,25 @@ data class SeerflixUiSpec(
     val buttonCornerRadiusDp: Int,
     val dialogCornerRadiusDp: Int,
     val showBrandMicroMark: Boolean,
-    val contentStartPaddingDp: Int
+    val contentStartPaddingDp: Int,
+    /** Whether vertical portrait poster cards render a text title underneath the artwork. */
+    val showPosterTitleBelow: Boolean = true
 )
 
 val NetflixPresetColors = SeerflixColors(
-    background = Color(0xFF141414),
-    backgroundGlow = Color(0xFF2B0609),
-    deepBlack = Color(0xFF0A0A0A),
-    surface = Color(0xFF1F1F1F),
-    surfaceElevated = Color(0xFF2B2B2B),
-    dialogSurface = Color(0xFF1A1A1A),
+    background = Color(0xFF000000),
+    backgroundGlow = Color(0xFF1F0A0D),
+    deepBlack = Color(0xFF000000),
+    surface = Color(0xFF161616),
+    surfaceElevated = Color(0xFF262626),
+    dialogSurface = Color(0xF0141414),
     accent = Color(0xFFE50914),
     accentDark = Color(0xFFB20710),
     primaryButtonBg = Color(0xFFFFFFFF),
     primaryButtonFg = Color(0xFF0A0A0A),
     primaryButtonFocusBorder = Color(0xFFE50914),
-    secondaryButtonBg = Color(0x99383838),
-    secondaryButtonFocusedBg = Color(0xCC555555),
+    secondaryButtonBg = Color(0x8C3D3D3D),
+    secondaryButtonFocusedBg = Color(0xCC5C5C5C),
     white = Color(0xFFFFFFFF),
     textPrimary = Color(0xFFF5F5F5),
     textSecondary = Color(0xFFB3B3B3),
@@ -95,7 +97,7 @@ val NetflixPresetColors = SeerflixColors(
     downloadingBlue = Color(0xFF2B8AFF),
     pendingAmber = Color(0xFFF5A623),
     badgeBorder = Color(0x55FFFFFF),
-    navBarBackground = Color(0xE60B0B0B),
+    navBarBackground = Color(0xEB050505),
     navBarBorder = Color(0x22FFFFFF),
     focusBorder = Color(0xFFFFFFFF),
     progressFill = Color(0xFFE50914)
@@ -169,12 +171,13 @@ fun specForPreset(preset: UiPreset): SeerflixUiSpec = when (preset) {
         navStyle = NavLayoutStyle.LEFT_RAIL,
         cardStyle = CardPresentationStyle.PORTRAIT_2_3,
         top10Style = Top10Style.OUTLINED_NUMERAL,
-        heroHeightDp = 250,
-        cardCornerRadiusDp = 6,
-        buttonCornerRadiusDp = 4,
-        dialogCornerRadiusDp = 10,
+        heroHeightDp = 240,
+        cardCornerRadiusDp = 8,
+        buttonCornerRadiusDp = 24,
+        dialogCornerRadiusDp = 12,
         showBrandMicroMark = true,
-        contentStartPaddingDp = 24
+        contentStartPaddingDp = 24,
+        showPosterTitleBelow = false
     )
     UiPreset.APPLE_TV -> SeerflixUiSpec(
         preset = UiPreset.APPLE_TV,
@@ -186,7 +189,8 @@ fun specForPreset(preset: UiPreset): SeerflixUiSpec = when (preset) {
         buttonCornerRadiusDp = 24,
         dialogCornerRadiusDp = 18,
         showBrandMicroMark = false,
-        contentStartPaddingDp = 44
+        contentStartPaddingDp = 44,
+        showPosterTitleBelow = true
     )
     UiPreset.DISNEY_PLUS -> SeerflixUiSpec(
         preset = UiPreset.DISNEY_PLUS,
@@ -198,7 +202,8 @@ fun specForPreset(preset: UiPreset): SeerflixUiSpec = when (preset) {
         buttonCornerRadiusDp = 8,
         dialogCornerRadiusDp = 14,
         showBrandMicroMark = false,
-        contentStartPaddingDp = 44
+        contentStartPaddingDp = 44,
+        showPosterTitleBelow = true
     )
 }
 

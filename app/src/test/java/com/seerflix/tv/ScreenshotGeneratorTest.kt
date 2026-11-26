@@ -167,10 +167,10 @@ class ScreenshotGeneratorTest {
                 ),
                 CatalogRow(
                     id = "top_10_movies",
-                    title = "Top 10 Movies on Lumen Today",
+                    title = "Top 10 Movies in the U.S. Today",
                     style = RowStyle.TOP_10,
                     items = listOf(
-                        dune,
+                        dune.copy(netflixBadgeLabel = "Recently Added"),
                         samplePosterItem(
                             "m2", "Interstellar", "art://poster/interstellar/INTERSTELLAR/0xFF0E1B38/0xFFF4B942",
                             uhd = AvailabilityTier.AVAILABLE, hd = AvailabilityTier.AVAILABLE, jfId = "jf2"
@@ -178,7 +178,8 @@ class ScreenshotGeneratorTest {
                         samplePosterItem(
                             "m3", "The Brutalist", "art://poster/brutalist/THE BRUTALIST/0xFF292421/0xFFE07A5F",
                             hd = AvailabilityTier.PROCESSING,
-                            hdDl = DownloadProgressInfo(false, "downloading", "2160p", 100L, 11L, 89f, "~2m left", null)
+                            hdDl = DownloadProgressInfo(false, "downloading", "2160p", 100L, 11L, 89f, "~2m left", null),
+                            netflixBadgeLabel = "Recently Added"
                         ),
                         samplePosterItem(
                             "m4", "Blade Runner 2049", "art://poster/br2049/BLADE RUNNER/0xFF3E1810/0xFFFF9800",
@@ -191,16 +192,16 @@ class ScreenshotGeneratorTest {
                     )
                 ),
                 CatalogRow(
-                    id = "trending",
-                    title = "Trending Now",
+                    id = "todays_top_picks",
+                    title = "Today's Top Picks for You",
                     style = RowStyle.POSTER,
                     items = listOf(
-                        samplePosterItem("t1", "Severance", "art://poster/sev/SEVERANCE/0xFF0E3A4C/0xFF1CC8B8", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jft1"),
-                        samplePosterItem("t2", "Cyberpunk: Edgerunners", "art://poster/cp/EDGERUNNERS/0xFF1E133D/0xFF00E5FF", hd = AvailabilityTier.AVAILABLE, jfId = "jft2"),
-                        samplePosterItem("t3", "Daredevil: Born Again", "art://poster/dd/DAREDEVIL/0xFF3D0A0E/0xFFE50914", hd = AvailabilityTier.PENDING),
-                        samplePosterItem("t4", "Shōgun", "art://poster/shogun/SHOGUN/0xFF2B1B17/0xFFD4AF37", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jft4"),
+                        samplePosterItem("t1", "Severance", "art://poster/sev/SEVERANCE/0xFF0E3A4C/0xFF1CC8B8", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jft1", isTop10 = true, netflixBadgeLabel = "New Season"),
+                        samplePosterItem("t2", "Cyberpunk: Edgerunners", "art://poster/cp/EDGERUNNERS/0xFF1E133D/0xFF00E5FF", hd = AvailabilityTier.AVAILABLE, jfId = "jft2", netflixBadgeLabel = "Recently Added"),
+                        samplePosterItem("t3", "Daredevil: Born Again", "art://poster/dd/DAREDEVIL/0xFF3D0A0E/0xFFE50914", hd = AvailabilityTier.PENDING, isTop10 = true),
+                        samplePosterItem("t4", "Shōgun", "art://poster/shogun/SHOGUN/0xFF2B1B17/0xFFD4AF37", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jft4", netflixBadgeLabel = "New Season"),
                         samplePosterItem("t5", "Fallout", "art://poster/fallout/FALLOUT/0xFF1B2E3C/0xFFFFD54F", hd = AvailabilityTier.AVAILABLE, jfId = "jft5"),
-                        samplePosterItem("t6", "Mickey 17", "art://poster/mickey/MICKEY 17/0xFF1A2230/0xFF64B5F6", hd = AvailabilityTier.UNKNOWN)
+                        samplePosterItem("t6", "Mickey 17", "art://poster/mickey/MICKEY 17/0xFF1A2230/0xFF64B5F6", hd = AvailabilityTier.UNKNOWN, netflixBadgeLabel = "Recently Added")
                     )
                 )
             )
@@ -727,16 +728,16 @@ class ScreenshotGeneratorTest {
         val state = HomeUiState(
             activeTab = HomeTab.MOVIES,
             profile = UserProfile("1", "Prerak", "1", "token", avatarColorHex = 0xFFE50914),
-            featuredItem = sampleDune(),
+            featuredItem = sampleDune().copy(resumePositionTicks = 0L),
             activeDownloadCount = 2,
             isLoading = false,
             rows = listOf(
                 CatalogRow(
                     id = "top_10_movies",
-                    title = "Top 10 Movies on Lumen Today",
+                    title = "Top 10 Movies in the U.S. Today",
                     style = RowStyle.TOP_10,
                     items = listOf(
-                        sampleDune(),
+                        sampleDune().copy(netflixBadgeLabel = "Recently Added"),
                         samplePosterItem(
                             "m2", "Interstellar", "art://poster/interstellar/INTERSTELLAR/0xFF0E1B38/0xFFF4B942",
                             uhd = AvailabilityTier.AVAILABLE, hd = AvailabilityTier.AVAILABLE, jfId = "jf2"
@@ -744,7 +745,8 @@ class ScreenshotGeneratorTest {
                         samplePosterItem(
                             "m3", "The Brutalist", "art://poster/brutalist/THE BRUTALIST/0xFF292421/0xFFE07A5F",
                             hd = AvailabilityTier.PROCESSING,
-                            hdDl = DownloadProgressInfo(false, "downloading", "1080p", 100L, 11L, 89f, "~2m left", null)
+                            hdDl = DownloadProgressInfo(false, "downloading", "1080p", 100L, 11L, 89f, "~2m left", null),
+                            netflixBadgeLabel = "Recently Added"
                         ),
                         samplePosterItem(
                             "m4", "Blade Runner 2049", "art://poster/br2049/BLADE RUNNER/0xFF3E1810/0xFFFF9800",
@@ -752,7 +754,8 @@ class ScreenshotGeneratorTest {
                         ),
                         samplePosterItem(
                             "m5", "Nosferatu", "art://poster/nosferatu/NOSFERATU/0xFF121824/0xFF8FA8C8",
-                            hd = AvailabilityTier.PENDING
+                            hd = AvailabilityTier.PENDING,
+                            netflixBadgeLabel = "Recently Added"
                         )
                     )
                 )
@@ -760,6 +763,78 @@ class ScreenshotGeneratorTest {
         )
 
         snapshotScreen("home_top10") {
+            HomeContent(
+                state = state,
+                onOpenDetails = {},
+                onPlayDirect = {},
+                onOpenSearch = {},
+                onOpenRequests = {},
+                onSwitchProfile = {},
+                onOpenSettings = {},
+                onSelectTab = {},
+                onRefresh = {},
+                onTogglePreviewMute = {},
+                onItemFocused = {}
+            )
+        }
+    }
+
+    @Test
+    fun homeNetflixCurated() {
+        val state = HomeUiState(
+            activeTab = HomeTab.SHOWS,
+            profile = UserProfile("1", "Prerak", "1", "token", avatarColorHex = 0xFFE50914),
+            featuredItem = UnifiedMediaItem(
+                id = "tmdb_tv_1396",
+                tmdbId = 1396,
+                jellyfinId = "jf_bb",
+                mediaType = MediaType.SERIES,
+                title = "Breaking Bad",
+                overview = "A high school chemistry teacher diagnosed with inoperable lung cancer turns to manufacturing and selling methamphetamine to secure his family's future.",
+                releaseYear = "2008",
+                runtimeMinutes = 47,
+                maturityRating = "TV-MA",
+                voteAverage = 8.9,
+                genres = listOf("Crime", "Drama", "Thriller"),
+                posterUrl = "art://poster/bb/BREAKING BAD/0xFF142A18/0xFF46D369",
+                backdropUrl = "art://backdrop/bb/BREAKING BAD/0xFF102414/0xFF46D369",
+                hdStatus = AvailabilityTier.AVAILABLE,
+                uhdStatus = AvailabilityTier.AVAILABLE,
+                isInMyList = true,
+                mediaBadges = listOf("4K", "Dolby Vision")
+            ),
+            activeDownloadCount = 2,
+            isLoading = false,
+            rows = listOf(
+                CatalogRow(
+                    id = "todays_top_picks",
+                    title = "Today's Top Picks for You",
+                    style = RowStyle.POSTER,
+                    items = listOf(
+                        samplePosterItem("s1", "Severance", "art://poster/sev/SEVERANCE/0xFF0E3A4C/0xFF1CC8B8", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jfs1", isTop10 = true, netflixBadgeLabel = "New Season"),
+                        samplePosterItem("s2", "One Piece", "art://poster/op/ONE PIECE/0xFF4D2908/0xFFFFC107", hd = AvailabilityTier.AVAILABLE, jfId = "jfs2", netflixBadgeLabel = "New Season"),
+                        samplePosterItem("s3", "From", "art://poster/from/FROM/0xFF1C232B/0xFF90A4AE", hd = AvailabilityTier.AVAILABLE, jfId = "jfs3", isTop10 = true, netflixBadgeLabel = "Recently Added"),
+                        samplePosterItem("s4", "Cyberpunk: Edgerunners", "art://poster/cp/EDGERUNNERS/0xFF3A0B14/0xFFFF1744", hd = AvailabilityTier.AVAILABLE, jfId = "jfs4"),
+                        samplePosterItem("s5", "Shōgun", "art://poster/shogun/SHOGUN/0xFF2B1B17/0xFFD4AF37", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jfs5", isTop10 = true),
+                        samplePosterItem("s6", "Arcane", "art://poster/arcane/ARCANE/0xFF1D1038/0xFFE91E63", hd = AvailabilityTier.AVAILABLE, jfId = "jfs6", netflixBadgeLabel = "Recently Added")
+                    )
+                ),
+                CatalogRow(
+                    id = "award_winning_tv_dramas",
+                    title = "Award-Winning TV Dramas",
+                    style = RowStyle.POSTER,
+                    items = listOf(
+                        samplePosterItem("d1", "Breaking Bad", "art://poster/bb/BREAKING BAD/0xFF142A18/0xFF46D369", hd = AvailabilityTier.AVAILABLE, jfId = "jfd1"),
+                        samplePosterItem("d2", "Better Call Saul", "art://poster/bcs/BETTER CALL SAUL/0xFF332210/0xFFFFB300", hd = AvailabilityTier.AVAILABLE, jfId = "jfd2"),
+                        samplePosterItem("d3", "Stranger Things", "art://poster/st/STRANGER THINGS/0xFF2A090D/0xFFE50914", hd = AvailabilityTier.AVAILABLE, uhd = AvailabilityTier.AVAILABLE, jfId = "jfd3"),
+                        samplePosterItem("d4", "The Last of Us", "art://poster/tlou/THE LAST OF US/0xFF243016/0xFFD99B38", hd = AvailabilityTier.AVAILABLE, jfId = "jfd4", isTop10 = true),
+                        samplePosterItem("d5", "Andor", "art://poster/andor/ANDOR/0xFF1F242D/0xFFFF7043", hd = AvailabilityTier.AVAILABLE, jfId = "jfd5")
+                    )
+                )
+            )
+        )
+
+        snapshotScreen("home_netflix_curated") {
             HomeContent(
                 state = state,
                 onOpenDetails = {},
@@ -1066,7 +1141,9 @@ class ScreenshotGeneratorTest {
         uhd: AvailabilityTier = AvailabilityTier.UNKNOWN,
         jfId: String? = null,
         hdDl: DownloadProgressInfo? = null,
-        backdropUrl: String? = null
+        backdropUrl: String? = null,
+        isTop10: Boolean = false,
+        netflixBadgeLabel: String? = null
     ) = UnifiedMediaItem(
         id = id,
         tmdbId = abs(id.hashCode()),
@@ -1077,7 +1154,9 @@ class ScreenshotGeneratorTest {
         backdropUrl = backdropUrl,
         hdStatus = hd,
         uhdStatus = uhd,
-        hdDownload = hdDl
+        hdDownload = hdDl,
+        isTop10 = isTop10,
+        netflixBadgeLabel = netflixBadgeLabel
     )
 
     private fun renderSyntheticArtwork(uri: String): Bitmap {

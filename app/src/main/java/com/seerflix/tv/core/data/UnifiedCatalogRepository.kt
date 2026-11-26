@@ -1015,63 +1015,178 @@ class UnifiedCatalogRepository @Inject constructor(
                 loadHomeReleaseMovieRows(today, availabilityFilter)
             } else HomeReleaseMovieRows.EMPTY
         }
-        val streamingServiceRowsDeferred = StreamingService.entries.map { service ->
-            service to async {
-                if (seerrActive) {
-                    fetchTop10ForStreamingService(service, filterType, today, availabilityFilter)
-                } else emptyList()
-            }
-        }
         val topNewTvPremieresDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
                 fetchTop10NewSeriesPremieres(today, availabilityFilter)
             } else emptyList()
         }
-        val topComedyMoviesDeferred = async {
-            if (seerrActive && (filterType == null || filterType == MediaType.MOVIE)) {
-                fetchTop10MoviesByGenre(35, availabilityFilter, today)
+
+        // Home curated editorial rows
+        val gemsForYouDeferred = async {
+            if (filterType != null) emptyList()
+            else if (seerrActive) fetchGemsForYou(today, availabilityFilter)
+            else if (availabilityFilter != AvailabilityFilter.REQUESTABLE) {
+                val topRated = allLibraryItems
+                    .filter { (it.communityRating ?: 0.0) >= 7.4 }
+                    .sortedByDescending { it.communityRating ?: 0.0 }
+                    .take(20)
+                withOverviews(userId, topRated).map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
             } else emptyList()
         }
-        val topActionMoviesDeferred = async {
-            if (seerrActive && (filterType == null || filterType == MediaType.MOVIE)) {
-                fetchTop10MoviesByGenre(28, availabilityFilter, today)
+        val awardWinningTvDeferred = async {
+            if (seerrActive && filterType == null) {
+                fetchCuratedTv(
+                    cacheTag = "award_tv",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    sortBy = "vote_average.desc",
+                    voteCountGte = 250,
+                    voteAverageGte = 7.6
+                )
             } else emptyList()
         }
-        val topHorrorMoviesDeferred = async {
+        val seasonalSpec = seasonalRowSpec(today)
+        val seasonalDeferred = async {
+            if (seerrActive && filterType == null) {
+                fetchSeasonalRow(seasonalSpec, today, availabilityFilter)
+            } else emptyList()
+        }
+
+        // Movies curated editorial & genre poster rows
+        val needAGoodLaughDeferred = async {
             if (seerrActive && filterType == MediaType.MOVIE) {
-                fetchTop10MoviesByGenre(27, availabilityFilter, today)
+                fetchCuratedMovies(
+                    cacheTag = "good_laugh",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    genre = "35",
+                    sortBy = "vote_average.desc",
+                    voteCountGte = 300,
+                    voteAverageGte = 6.8
+                )
             } else emptyList()
         }
-        val topSciFiMoviesDeferred = async {
+        val animationCriticsDeferred = async {
             if (seerrActive && filterType == MediaType.MOVIE) {
-                fetchTop10MoviesByGenre(878, availabilityFilter, today)
+                fetchCuratedMovies(
+                    cacheTag = "anim_critics",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    genre = "16",
+                    sortBy = "vote_average.desc",
+                    voteCountGte = 250,
+                    voteAverageGte = 7.4
+                )
             } else emptyList()
         }
-        val topAnimatedMoviesDeferred = async {
+        val blockbusterMoviesDeferred = async {
             if (seerrActive && filterType == MediaType.MOVIE) {
-                fetchTop10MoviesByGenre(16, availabilityFilter, today)
+                fetchCuratedMovies(
+                    cacheTag = "blockbusters",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    sortBy = "popularity.desc",
+                    voteCountGte = 1500
+                )
             } else emptyList()
         }
-        val topSciFiTvDeferred = async {
-            if (seerrActive && (filterType == null || filterType == MediaType.SERIES)) {
-                fetchTop10TvByGenre(10765, availabilityFilter, today)
+        val movieComediesDeferred = async {
+            if (seerrActive && filterType == MediaType.MOVIE) {
+                fetchCuratedMovies("m_comedy", today, availabilityFilter, genre = "35")
             } else emptyList()
         }
-        val topComedyTvDeferred = async {
+        val movieActionDeferred = async {
+            if (seerrActive && filterType == MediaType.MOVIE) {
+                fetchCuratedMovies("m_action", today, availabilityFilter, genre = "28")
+            } else emptyList()
+        }
+        val movieHorrorDeferred = async {
+            if (seerrActive && filterType == MediaType.MOVIE) {
+                fetchCuratedMovies("m_horror", today, availabilityFilter, genre = "27")
+            } else emptyList()
+        }
+        val movieDramaDeferred = async {
+            if (seerrActive && filterType == MediaType.MOVIE) {
+                fetchCuratedMovies("m_drama", today, availabilityFilter, genre = "18")
+            } else emptyList()
+        }
+        val movieFamilyAnimationDeferred = async {
+            if (seerrActive && filterType == MediaType.MOVIE) {
+                fetchCuratedMovies("m_family_anim", today, availabilityFilter, genre = "16,10751")
+            } else emptyList()
+        }
+        val movieSciFiDeferred = async {
+            if (seerrActive && filterType == MediaType.MOVIE) {
+                fetchCuratedMovies("m_scifi", today, availabilityFilter, genre = "878")
+            } else emptyList()
+        }
+
+        // TV Shows curated editorial & genre poster rows
+        val awardWinningTvDramasDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
-                fetchTop10TvByGenre(35, availabilityFilter, today)
+                fetchCuratedTv(
+                    cacheTag = "award_tv_dramas",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    genre = "18",
+                    sortBy = "vote_average.desc",
+                    voteCountGte = 200,
+                    voteAverageGte = 7.6
+                )
             } else emptyList()
         }
-        val topDramaTvDeferred = async {
+        val thirtyMinuteHitsDeferred = async {
+            if (filterType != MediaType.SERIES) emptyList()
+            else if (seerrActive) {
+                fetchCuratedTv(
+                    cacheTag = "tv_30min",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    genre = "35",
+                    sortBy = "popularity.desc",
+                    voteCountGte = 80,
+                    withRuntimeLte = 35
+                )
+            } else if (availabilityFilter != AvailabilityFilter.REQUESTABLE) {
+                val quickShows = allLibraryItems.filter { dto ->
+                    dto.type.equals("Series", ignoreCase = true) &&
+                        (dto.runTimeTicks ?: 0L) in 1L..(35L * 600_000_000L)
+                }.take(20)
+                withOverviews(userId, quickShows).map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
+            } else emptyList()
+        }
+        val imaginativeTvDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
-                fetchTop10TvByGenre(18, availabilityFilter, today)
+                fetchCuratedTv("tv_imaginative", today, availabilityFilter, genre = "10765")
             } else emptyList()
         }
-        val topCrimeTvDeferred = async {
+        val familiarTvFavoritesDeferred = async {
             if (seerrActive && filterType == MediaType.SERIES) {
-                fetchTop10TvByGenre(80, availabilityFilter, today)
+                fetchCuratedTv(
+                    cacheTag = "tv_familiar",
+                    today = today,
+                    availabilityFilter = availabilityFilter,
+                    sortBy = "popularity.desc",
+                    voteCountGte = 500
+                )
             } else emptyList()
         }
+        val tvComediesDeferred = async {
+            if (seerrActive && filterType == MediaType.SERIES) {
+                fetchCuratedTv("tv_comedy", today, availabilityFilter, genre = "35")
+            } else emptyList()
+        }
+        val tvRealityDeferred = async {
+            if (seerrActive && filterType == MediaType.SERIES) {
+                fetchCuratedTv("tv_reality", today, availabilityFilter, genre = "10764", voteCountGte = 5)
+            } else emptyList()
+        }
+        val tvCrimeDeferred = async {
+            if (seerrActive && filterType == MediaType.SERIES) {
+                fetchCuratedTv("tv_crime", today, availabilityFilter, genre = "80")
+            } else emptyList()
+        }
+
         val readyToWatchDeferred = async {
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) emptyList()
             else loadReadyToWatchAlerts(userId)
@@ -1081,7 +1196,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 loadAiringThisWeek(userId, today)
             } else emptyList()
         }
-        // In Jellyfin-Only Mode (or when user has a large library), surface Movies & TV Series library rows
+        // In Jellyfin-Only Mode, surface Movies, TV Series, and genre rows from the library
         val jellyfinLibraryRowsDeferred = async {
             if (seerrActive || availabilityFilter == AvailabilityFilter.REQUESTABLE) {
                 return@async emptyList<CatalogRow>()
@@ -1089,7 +1204,6 @@ class UnifiedCatalogRepository @Inject constructor(
             val wantMovies = filterType == null || filterType == MediaType.MOVIE
             val wantSeries = filterType == null || filterType == MediaType.SERIES
             val index = allLibraryItems
-            // Library items are always playable, so taking 25 before mapping equals map-filter-take.
             val movieDtos = if (wantMovies) {
                 index.asSequence().filter { it.type.equals("Movie", ignoreCase = true) }.take(25).toList()
             } else emptyList()
@@ -1110,6 +1224,8 @@ class UnifiedCatalogRepository @Inject constructor(
         }
 
         val rows = mutableListOf<CatalogRow>()
+        val regionSuffix = regionTodaySuffix(watchRegion)
+        val cwTitle = continueWatchingTitle(activeProfile)
 
         val readyToWatch = readyToWatchDeferred.await()
             .filter {
@@ -1126,110 +1242,17 @@ class UnifiedCatalogRepository @Inject constructor(
         }
 
         val resumeItems = resumeItemsDeferred.await()
-        if (resumeItems.isNotEmpty()) {
-            rows += CatalogRow(
-                id = "continue_watching",
-                title = "Continue Watching",
-                style = RowStyle.CONTINUE_WATCHING,
-                items = resumeItems
-            )
-        }
-
         val myListItems = myListDeferred.await()
             .filter { (filterType == null || it.mediaType == filterType) && availabilityFilter.matches(it) }
-        if (myListItems.isNotEmpty()) {
-            rows += CatalogRow(
-                id = "my_list",
-                title = "My List",
-                style = RowStyle.POSTER,
-                items = myListItems
-            )
-        }
-
-        rows += pinnedLibraryRowsDeferred.await()
-
-        if (filterType == null || filterType == MediaType.MOVIE) {
-            val top10MoviesNow = topMoviesNowDeferred.await()
-            if (top10MoviesNow.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_movies_now",
-                    title = "Top 10 Movies Out Right Now",
-                    style = RowStyle.TOP_10,
-                    items = top10MoviesNow
-                )
-            }
-        }
-
-        if (filterType == null || filterType == MediaType.SERIES) {
-            val top10TvNow = topTvAiringNowDeferred.await()
-            if (top10TvNow.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_tv_now",
-                    title = "Top 10 TV Shows Airing Now",
-                    style = RowStyle.TOP_10,
-                    items = top10TvNow
-                )
-            }
-        }
-
+        val top10MoviesNow = topMoviesNowDeferred.await()
+        val top10TvNow = topTvAiringNowDeferred.await()
         val homeReleaseMovies = homeReleaseMoviesDeferred.await()
-        if ((filterType == null || filterType == MediaType.MOVIE) && homeReleaseMovies.newOnDigital.isNotEmpty()) {
-            rows += CatalogRow(
-                id = "new_on_digital",
-                title = "New on Digital & Streaming",
-                style = RowStyle.POSTER,
-                items = homeReleaseMovies.newOnDigital
-            )
-        }
-
-        streamingServiceRowsDeferred.forEach { (service, deferred) ->
-            val items = deferred.await()
-            if (items.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = service.homeRowId,
-                    title = streamingRowTitle(service, filterType),
-                    style = RowStyle.TOP_10,
-                    items = items
-                )
-            }
-        }
-
-        if (filterType == MediaType.SERIES) {
-            val newPremieres = topNewTvPremieresDeferred.await()
-            if (newPremieres.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_new_tv_premieres",
-                    title = "Top 10 New Series Premieres",
-                    style = RowStyle.TOP_10,
-                    items = newPremieres
-                )
-            }
-        }
-
-        // Netflix-style Genre Top 10 rows
-        if (filterType == null || filterType == MediaType.MOVIE) {
-            val comedyMovies = topComedyMoviesDeferred.await()
-            if (comedyMovies.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_comedy_movies",
-                    title = "Top 10 Comedy Movies",
-                    style = RowStyle.TOP_10,
-                    items = comedyMovies
-                )
-            }
-        }
-
-        if (filterType == null || filterType == MediaType.SERIES) {
-            val sciFiTv = topSciFiTvDeferred.await()
-            if (sciFiTv.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_scifi_tv",
-                    title = "Top 10 Sci-Fi & Fantasy Series",
-                    style = RowStyle.TOP_10,
-                    items = sciFiTv
-                )
-            }
-        }
+        val personalized = personalizedDeferred.await()
+        val airingThisWeek = airingThisWeekDeferred.await().filter(availabilityFilter::matches)
+        val latest = latestDeferred.await()
+            .map { mapJellyfinItem(it) }
+            .filter { (filterType == null || it.mediaType == filterType) && availabilityFilter.matches(it) }
+        val newPremieres = topNewTvPremieresDeferred.await()
 
         val trendingRaw = trendingDeferred.await()
             .mapNotNull { res ->
@@ -1244,110 +1267,173 @@ class UnifiedCatalogRepository @Inject constructor(
             .filter { isReleasedOnOrBefore(it.releaseDate, today) }
             .filter(availabilityFilter::matches)
         val trending = filterMoviesAvailableAtHome(trendingRaw, today)
-        if (trending.isNotEmpty()) {
-            rows += CatalogRow(
-                id = "trending_now",
-                title = "Trending Now",
-                style = RowStyle.POSTER,
-                items = trending
-            )
-        }
 
-        val personalized = personalizedDeferred.await()
-        if (personalized != null && personalized.second.isNotEmpty()) {
-            rows += CatalogRow(
-                id = "because_you_watched",
-                title = "Because you watched ${personalized.first}",
-                style = RowStyle.POSTER,
-                items = personalized.second
-            )
-        }
+        // Blend personalized recs + trending + headline hits into "Today's Top Picks for You"
+        val todaysTopPicks = buildList {
+            personalized?.second?.take(8)?.let(::addAll)
+            addAll(trending)
+            if (filterType == MediaType.MOVIE) addAll(top10MoviesNow)
+            if (filterType == MediaType.SERIES) addAll(top10TvNow)
+        }.distinctBy { "${it.mediaType}_${it.tmdbId ?: it.id}" }.take(20)
 
-        if (filterType == null || filterType == MediaType.MOVIE) {
-            val actionMovies = topActionMoviesDeferred.await()
-            if (actionMovies.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_action_movies",
-                    title = "Top 10 Action & Thriller Movies",
-                    style = RowStyle.TOP_10,
-                    items = actionMovies
-                )
+        when (filterType) {
+            null -> {
+                // ---- HOME TAB ----
+                if (resumeItems.isNotEmpty()) {
+                    rows += CatalogRow("continue_watching", cwTitle, RowStyle.CONTINUE_WATCHING, resumeItems)
+                }
+                val gems = gemsForYouDeferred.await()
+                if (gems.isNotEmpty()) {
+                    rows += CatalogRow("gems_for_you", "Gems for You", RowStyle.POSTER, gems)
+                }
+                if (todaysTopPicks.isNotEmpty()) {
+                    rows += CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, todaysTopPicks)
+                }
+                val awardTv = awardWinningTvDeferred.await()
+                if (awardTv.isNotEmpty()) {
+                    rows += CatalogRow("award_winning_tv", "Award-Winning TV Shows", RowStyle.POSTER, awardTv)
+                }
+                if (top10TvNow.isNotEmpty()) {
+                    rows += CatalogRow("top10_tv_now", "Top 10 TV Shows $regionSuffix", RowStyle.TOP_10, top10TvNow)
+                }
+                if (top10MoviesNow.isNotEmpty()) {
+                    rows += CatalogRow("top10_movies_now", "Top 10 Movies $regionSuffix", RowStyle.TOP_10, top10MoviesNow)
+                }
+                if (myListItems.isNotEmpty()) {
+                    rows += CatalogRow("my_list", "My List", RowStyle.POSTER, myListItems)
+                }
+                rows += pinnedLibraryRowsDeferred.await()
+                if (personalized != null && personalized.second.isNotEmpty()) {
+                    rows += CatalogRow(
+                        id = "because_you_watched",
+                        title = "Because you watched ${personalized.first}",
+                        style = RowStyle.POSTER,
+                        items = personalized.second
+                    )
+                }
+                val seasonal = seasonalDeferred.await()
+                if (seasonal.isNotEmpty()) {
+                    rows += CatalogRow(seasonalSpec.id, seasonalSpec.title, RowStyle.POSTER, seasonal)
+                }
+                if (homeReleaseMovies.newOnDigital.isNotEmpty()) {
+                    rows += CatalogRow("new_on_digital", "New on Digital & Streaming", RowStyle.POSTER, homeReleaseMovies.newOnDigital)
+                }
+                if (latest.isNotEmpty()) {
+                    rows += CatalogRow("recently_added", "Recently Added", RowStyle.POSTER, latest)
+                }
+                rows += jellyfinLibraryRowsDeferred.await()
+            }
+
+            MediaType.MOVIE -> {
+                // ---- MOVIES TAB ----
+                if (todaysTopPicks.isNotEmpty()) {
+                    rows += CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, todaysTopPicks)
+                }
+                if (top10MoviesNow.isNotEmpty()) {
+                    rows += CatalogRow("top10_movies_now", "Top 10 Movies $regionSuffix", RowStyle.TOP_10, top10MoviesNow)
+                }
+                if (resumeItems.isNotEmpty()) {
+                    rows += CatalogRow("continue_watching", cwTitle, RowStyle.CONTINUE_WATCHING, resumeItems)
+                }
+                val goodLaugh = needAGoodLaughDeferred.await()
+                if (goodLaugh.isNotEmpty()) {
+                    rows += CatalogRow("need_a_good_laugh", "Need a Good Laugh?", RowStyle.POSTER, goodLaugh)
+                }
+                val animCritics = animationCriticsDeferred.await()
+                if (animCritics.isNotEmpty()) {
+                    rows += CatalogRow("animation_critics_love", "Animation Critics Love", RowStyle.POSTER, animCritics)
+                }
+                val blockbusters = blockbusterMoviesDeferred.await()
+                if (blockbusters.isNotEmpty()) {
+                    rows += CatalogRow("blockbuster_movies", "Blockbuster Movies", RowStyle.POSTER, blockbusters)
+                }
+                val comedies = movieComediesDeferred.await()
+                if (comedies.isNotEmpty()) {
+                    rows += CatalogRow("movie_comedies", "Comedies", RowStyle.POSTER, comedies)
+                }
+                val action = movieActionDeferred.await()
+                if (action.isNotEmpty()) {
+                    rows += CatalogRow("movie_action_adventure", "Action & Adventure Movies", RowStyle.POSTER, action)
+                }
+                val horror = movieHorrorDeferred.await()
+                if (horror.isNotEmpty()) {
+                    rows += CatalogRow("movie_horror", "Horror Movies", RowStyle.POSTER, horror)
+                }
+                val drama = movieDramaDeferred.await()
+                if (drama.isNotEmpty()) {
+                    rows += CatalogRow("movie_drama", "Drama Movies", RowStyle.POSTER, drama)
+                }
+                val familyAnim = movieFamilyAnimationDeferred.await()
+                if (familyAnim.isNotEmpty()) {
+                    rows += CatalogRow("movie_family_animation", "Family Animation", RowStyle.POSTER, familyAnim)
+                }
+                val sciFi = movieSciFiDeferred.await()
+                if (sciFi.isNotEmpty()) {
+                    rows += CatalogRow("movie_scifi", "Sci-Fi Movies", RowStyle.POSTER, sciFi)
+                }
+                if (myListItems.isNotEmpty()) {
+                    rows += CatalogRow("my_list", "My List", RowStyle.POSTER, myListItems)
+                }
+                rows += pinnedLibraryRowsDeferred.await()
+                if (homeReleaseMovies.newOnDigital.isNotEmpty()) {
+                    rows += CatalogRow("new_on_digital", "New on Digital & Streaming", RowStyle.POSTER, homeReleaseMovies.newOnDigital)
+                }
+                if (latest.isNotEmpty()) {
+                    rows += CatalogRow("recently_added", "Recently Added", RowStyle.POSTER, latest)
+                }
+                rows += jellyfinLibraryRowsDeferred.await()
+            }
+
+            MediaType.SERIES, MediaType.EPISODE -> {
+                // ---- TV SHOWS TAB ----
+                if (todaysTopPicks.isNotEmpty()) {
+                    rows += CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, todaysTopPicks)
+                }
+                val awardDramas = awardWinningTvDramasDeferred.await()
+                if (awardDramas.isNotEmpty()) {
+                    rows += CatalogRow("award_winning_tv_dramas", "Award-Winning TV Dramas", RowStyle.POSTER, awardDramas)
+                }
+                val quickHits = thirtyMinuteHitsDeferred.await()
+                if (quickHits.isNotEmpty()) {
+                    rows += CatalogRow("thirty_minute_hits", "In a Hurry? Try These 30-Minute Hits", RowStyle.POSTER, quickHits)
+                }
+                val imaginative = imaginativeTvDeferred.await()
+                if (imaginative.isNotEmpty()) {
+                    rows += CatalogRow("imaginative_tv", "Imaginative TV Shows", RowStyle.POSTER, imaginative)
+                }
+                val familiar = familiarTvFavoritesDeferred.await()
+                if (familiar.isNotEmpty()) {
+                    rows += CatalogRow("familiar_tv_favorites", "Familiar TV Favorites", RowStyle.POSTER, familiar)
+                }
+                if (resumeItems.isNotEmpty()) {
+                    rows += CatalogRow("continue_watching", cwTitle, RowStyle.CONTINUE_WATCHING, resumeItems)
+                }
+                if (top10TvNow.isNotEmpty()) {
+                    rows += CatalogRow("top10_tv_now", "Top 10 TV Shows $regionSuffix", RowStyle.TOP_10, top10TvNow)
+                }
+                val tvComedies = tvComediesDeferred.await()
+                if (tvComedies.isNotEmpty()) {
+                    rows += CatalogRow("tv_comedies", "TV Comedies", RowStyle.POSTER, tvComedies)
+                }
+                val newOnLumen = (latest + newPremieres).distinctBy { "${it.mediaType}_${it.tmdbId ?: it.id}" }
+                if (newOnLumen.isNotEmpty()) {
+                    rows += CatalogRow("recently_added", "New on Lumen", RowStyle.POSTER, newOnLumen)
+                }
+                val tvReality = tvRealityDeferred.await()
+                if (tvReality.isNotEmpty()) {
+                    rows += CatalogRow("tv_reality", "Reality TV", RowStyle.POSTER, tvReality)
+                }
+                val tvCrime = tvCrimeDeferred.await()
+                if (tvCrime.isNotEmpty()) {
+                    rows += CatalogRow("tv_crime", "Crime TV Shows", RowStyle.POSTER, tvCrime)
+                }
+                if (myListItems.isNotEmpty()) {
+                    rows += CatalogRow("my_list", "My List", RowStyle.POSTER, myListItems)
+                }
+                rows += pinnedLibraryRowsDeferred.await()
+                rows += jellyfinLibraryRowsDeferred.await()
             }
         }
-
-        if (filterType == MediaType.MOVIE) {
-            val horrorMovies = topHorrorMoviesDeferred.await()
-            if (horrorMovies.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_horror_movies",
-                    title = "Top 10 Horror & Mystery Movies",
-                    style = RowStyle.TOP_10,
-                    items = horrorMovies
-                )
-            }
-            val sciFiMovies = topSciFiMoviesDeferred.await()
-            if (sciFiMovies.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_scifi_movies",
-                    title = "Top 10 Sci-Fi Movies",
-                    style = RowStyle.TOP_10,
-                    items = sciFiMovies
-                )
-            }
-            val animatedMovies = topAnimatedMoviesDeferred.await()
-            if (animatedMovies.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_animated_movies",
-                    title = "Top 10 Animated Movies",
-                    style = RowStyle.TOP_10,
-                    items = animatedMovies
-                )
-            }
-        }
-
-        if (filterType == MediaType.SERIES) {
-            val comedyTv = topComedyTvDeferred.await()
-            if (comedyTv.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_comedy_tv",
-                    title = "Top 10 Comedy Series",
-                    style = RowStyle.TOP_10,
-                    items = comedyTv
-                )
-            }
-            val dramaTv = topDramaTvDeferred.await()
-            if (dramaTv.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_drama_tv",
-                    title = "Top 10 Drama Series",
-                    style = RowStyle.TOP_10,
-                    items = dramaTv
-                )
-            }
-            val crimeTv = topCrimeTvDeferred.await()
-            if (crimeTv.isNotEmpty()) {
-                rows += CatalogRow(
-                    id = "top10_crime_tv",
-                    title = "Top 10 Crime Series",
-                    style = RowStyle.TOP_10,
-                    items = crimeTv
-                )
-            }
-        }
-
-        val latest = latestDeferred.await()
-            .map { mapJellyfinItem(it) }
-            .filter { (filterType == null || it.mediaType == filterType) && availabilityFilter.matches(it) }
-        if (latest.isNotEmpty()) {
-            rows += CatalogRow(
-                id = "recently_added",
-                title = "Recently Added to Your Server",
-                style = RowStyle.POSTER,
-                items = latest
-            )
-        }
-
-        rows += jellyfinLibraryRowsDeferred.await()
 
         val collections = collectionsDeferred.await()
         if (collections.isNotEmpty()) {
@@ -1359,8 +1445,6 @@ class UnifiedCatalogRepository @Inject constructor(
             )
         }
 
-        val airingThisWeek = airingThisWeekDeferred.await()
-            .filter(availabilityFilter::matches)
         if (airingThisWeek.isNotEmpty()) {
             rows += CatalogRow(
                 id = "airing_this_week",
@@ -1406,7 +1490,16 @@ class UnifiedCatalogRepository @Inject constructor(
             )
         }
 
-        applyRowCustomizationAndParentalFilters(rows, activeProfile)
+        val decorated = decorateNetflixBadges(
+            rows = rows,
+            top10Movies = top10MoviesNow,
+            top10Tv = top10TvNow,
+            latestItems = latest,
+            newOnDigital = homeReleaseMovies.newOnDigital,
+            airingThisWeek = airingThisWeek,
+            newSeriesPremieres = newPremieres
+        )
+        applyRowCustomizationAndParentalFilters(decorated, activeProfile)
     }
 
     private fun applyRowCustomizationAndParentalFilters(
@@ -1560,16 +1653,20 @@ class UnifiedCatalogRepository @Inject constructor(
             else loadAiringThisWeek(userId, today)
         }
 
+        val regionSuffix = regionTodaySuffix(watchRegion)
+        val moviesNow = moviesNowDeferred.await()
+        val tvNow = tvNowDeferred.await()
+        val homeReleaseMovies = homeReleaseMoviesDeferred.await()
+        val airingThisWeek = airingThisWeekDeferred.await().filter(availabilityFilter::matches)
+        val latest = latestDeferred.await().map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
+
         val rows = buildList {
-            val moviesNow = moviesNowDeferred.await()
             if (moviesNow.isNotEmpty()) {
-                add(CatalogRow("np_top10_movies_now", "Top 10 Movies Out Right Now", RowStyle.TOP_10, moviesNow))
+                add(CatalogRow("np_top10_movies_now", "Top 10 Movies $regionSuffix", RowStyle.TOP_10, moviesNow))
             }
-            val tvNow = tvNowDeferred.await()
             if (tvNow.isNotEmpty()) {
-                add(CatalogRow("np_top10_tv_now", "Top 10 TV Shows Airing Now", RowStyle.TOP_10, tvNow))
+                add(CatalogRow("np_top10_tv_now", "Top 10 TV Shows $regionSuffix", RowStyle.TOP_10, tvNow))
             }
-            val homeReleaseMovies = homeReleaseMoviesDeferred.await()
             if (homeReleaseMovies.newOnDigital.isNotEmpty()) {
                 add(CatalogRow("np_new_on_digital", "New on Digital & Streaming", RowStyle.POSTER, homeReleaseMovies.newOnDigital))
             }
@@ -1594,8 +1691,6 @@ class UnifiedCatalogRepository @Inject constructor(
             if (trending.isNotEmpty()) {
                 add(CatalogRow("np_trending", "Trending Now", RowStyle.TOP_10, trending.take(10)))
             }
-            val airingThisWeek = airingThisWeekDeferred.await()
-                .filter(availabilityFilter::matches)
             if (airingThisWeek.isNotEmpty()) {
                 add(CatalogRow("np_airing_this_week", "New Episodes Coming This Week", RowStyle.POSTER, airingThisWeek))
             }
@@ -1608,14 +1703,20 @@ class UnifiedCatalogRepository @Inject constructor(
             if (upcomingTv.isNotEmpty()) {
                 add(CatalogRow("np_coming_tv", "Coming Soon • TV Shows", RowStyle.POSTER, upcomingTv))
             }
-            val latest = latestDeferred.await()
-                .map { mapJellyfinItem(it) }
-                .filter(availabilityFilter::matches)
             if (latest.isNotEmpty()) {
                 add(CatalogRow("np_latest", "Just Added to Your Server", RowStyle.POSTER, latest))
             }
         }
-        applyRowCustomizationAndParentalFilters(rows, activeProfile)
+        val decorated = decorateNetflixBadges(
+            rows = rows,
+            top10Movies = moviesNow,
+            top10Tv = tvNow,
+            latestItems = latest,
+            newOnDigital = homeReleaseMovies.newOnDigital,
+            airingThisWeek = airingThisWeek,
+            newSeriesPremieres = emptyList()
+        )
+        applyRowCustomizationAndParentalFilters(decorated, activeProfile)
     }
 
     /**
@@ -2060,20 +2161,265 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
-    private suspend fun fetchTop10MoviesByGenre(
-        genreId: Int,
+    private class CuratedDiscoverCacheEntry(val atMs: Long, val results: List<SeerrMediaResultDto>)
+
+    private val curatedDiscoverCache = java.util.concurrent.ConcurrentHashMap<String, CuratedDiscoverCacheEntry>()
+
+    private suspend fun fetchCuratedMovies(
+        cacheTag: String,
+        today: LocalDate,
         availabilityFilter: AvailabilityFilter,
-        today: LocalDate
-    ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
-        discoverReleasedByGenre(MediaType.MOVIE, genreId, page, today)
+        genre: String? = null,
+        sortBy: String = "popularity.desc",
+        voteCountGte: Int = GENRE_MIN_VOTES_MOVIE,
+        voteAverageGte: Double? = null,
+        withRuntimeLte: Int? = null
+    ): List<UnifiedMediaItem> = fetchCuratedPool(availabilityFilter) { page ->
+        val key = "m_${cacheTag}_${page}_${today}_$metaLang"
+        val now = System.currentTimeMillis()
+        val raw = curatedDiscoverCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }?.results
+            ?: runCatchingCancellable {
+                seerrApi.getDiscoverMovies(
+                    page = page,
+                    language = metaLang,
+                    sortBy = sortBy,
+                    genre = genre,
+                    primaryReleaseDateLte = today.toString(),
+                    voteAverageGte = voteAverageGte,
+                    voteCountGte = voteCountGte,
+                    withRuntimeLte = withRuntimeLte
+                ).results
+            }.getOrDefault(emptyList()).also {
+                if (it.isNotEmpty()) curatedDiscoverCache[key] = CuratedDiscoverCacheEntry(now, it)
+            }
+        raw.filter { isReleasedOnOrBefore(it.releaseDate, today) }
+            .map { mapSeerrResult(it, MediaType.MOVIE, today) }
     }
 
-    private suspend fun fetchTop10TvByGenre(
-        genreId: Int,
+    private suspend fun fetchCuratedTv(
+        cacheTag: String,
+        today: LocalDate,
         availabilityFilter: AvailabilityFilter,
-        today: LocalDate
-    ): List<UnifiedMediaItem> = fetchTop10Matching(availabilityFilter) { page ->
-        discoverReleasedByGenre(MediaType.SERIES, genreId, page, today)
+        genre: String? = null,
+        sortBy: String = "popularity.desc",
+        voteCountGte: Int = GENRE_MIN_VOTES_TV,
+        voteAverageGte: Double? = null,
+        withRuntimeLte: Int? = null
+    ): List<UnifiedMediaItem> = fetchCuratedPool(availabilityFilter) { page ->
+        val key = "tv_${cacheTag}_${page}_${today}_$metaLang"
+        val now = System.currentTimeMillis()
+        val raw = curatedDiscoverCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }?.results
+            ?: runCatchingCancellable {
+                seerrApi.getDiscoverTv(
+                    page = page,
+                    language = metaLang,
+                    sortBy = sortBy,
+                    genre = genre,
+                    firstAirDateLte = today.toString(),
+                    voteAverageGte = voteAverageGte,
+                    voteCountGte = voteCountGte,
+                    withRuntimeLte = withRuntimeLte
+                ).results
+            }.getOrDefault(emptyList()).also {
+                if (it.isNotEmpty()) curatedDiscoverCache[key] = CuratedDiscoverCacheEntry(now, it)
+            }
+        raw.filter { isReleasedOnOrBefore(it.firstAirDate, today) }
+            .map { mapSeerrResult(it, MediaType.SERIES, today) }
+    }
+
+    private suspend fun fetchGemsForYou(
+        today: LocalDate,
+        availabilityFilter: AvailabilityFilter
+    ): List<UnifiedMediaItem> = coroutineScope {
+        val moviesDeferred = async {
+            fetchCuratedMovies(
+                cacheTag = "gems_movies",
+                today = today,
+                availabilityFilter = availabilityFilter,
+                sortBy = "vote_average.desc",
+                voteCountGte = 200,
+                voteAverageGte = 7.6
+            )
+        }
+        val tvDeferred = async {
+            fetchCuratedTv(
+                cacheTag = "gems_tv",
+                today = today,
+                availabilityFilter = availabilityFilter,
+                sortBy = "vote_average.desc",
+                voteCountGte = 150,
+                voteAverageGte = 7.7
+            )
+        }
+        val movies = moviesDeferred.await()
+        val tv = tvDeferred.await()
+        buildList {
+            val maxLen = maxOf(movies.size, tv.size)
+            for (i in 0 until maxLen) {
+                if (i < tv.size) add(tv[i])
+                if (i < movies.size) add(movies[i])
+            }
+        }.distinctBy { "${it.mediaType}_${it.tmdbId ?: it.id}" }.take(CURATED_ROW_SIZE)
+    }
+
+    private data class SeasonalRowSpec(
+        val id: String,
+        val title: String,
+        val movieGenre: String?,
+        val tvGenre: String?,
+        val sortBy: String = "popularity.desc",
+        val voteCountGte: Int = 100,
+        val voteAverageGte: Double? = null
+    )
+
+    private fun seasonalRowSpec(today: LocalDate): SeasonalRowSpec = when (today.monthValue) {
+        2 -> SeasonalRowSpec("seasonal_picks", "Date Night & Romance", movieGenre = "10749", tvGenre = "10749")
+        6, 7, 8 -> SeasonalRowSpec("seasonal_picks", "Summer Blockbusters", movieGenre = "28,12", tvGenre = "10759")
+        10 -> SeasonalRowSpec("seasonal_picks", "Spooky Season Picks", movieGenre = "27", tvGenre = "9648")
+        11 -> SeasonalRowSpec("seasonal_picks", "Cozy Autumn & Thanksgiving Picks", movieGenre = "35,10751", tvGenre = "35")
+        12 -> SeasonalRowSpec("seasonal_picks", "Holiday Favorites", movieGenre = "10751", tvGenre = "10751")
+        else -> SeasonalRowSpec(
+            id = "seasonal_picks",
+            title = "Critically Acclaimed Films",
+            movieGenre = null,
+            tvGenre = null,
+            sortBy = "vote_average.desc",
+            voteCountGte = 400,
+            voteAverageGte = 7.6
+        )
+    }
+
+    private suspend fun fetchSeasonalRow(
+        spec: SeasonalRowSpec,
+        today: LocalDate,
+        availabilityFilter: AvailabilityFilter
+    ): List<UnifiedMediaItem> = coroutineScope {
+        val moviesDeferred = async {
+            fetchCuratedMovies(
+                cacheTag = "seasonal_m_${today.monthValue}",
+                today = today,
+                availabilityFilter = availabilityFilter,
+                genre = spec.movieGenre,
+                sortBy = spec.sortBy,
+                voteCountGte = spec.voteCountGte,
+                voteAverageGte = spec.voteAverageGte
+            )
+        }
+        val tvDeferred = async {
+            if (spec.tvGenre == null) emptyList()
+            else fetchCuratedTv(
+                cacheTag = "seasonal_tv_${today.monthValue}",
+                today = today,
+                availabilityFilter = availabilityFilter,
+                genre = spec.tvGenre,
+                sortBy = spec.sortBy,
+                voteCountGte = spec.voteCountGte / 2,
+                voteAverageGte = spec.voteAverageGte
+            )
+        }
+        val movies = moviesDeferred.await()
+        val tv = tvDeferred.await()
+        if (tv.isEmpty()) return@coroutineScope movies.take(CURATED_ROW_SIZE)
+        buildList {
+            val maxLen = maxOf(movies.size, tv.size)
+            for (i in 0 until maxLen) {
+                if (i < movies.size) add(movies[i])
+                if (i < tv.size) add(tv[i])
+            }
+        }.distinctBy { "${it.mediaType}_${it.tmdbId ?: it.id}" }.take(CURATED_ROW_SIZE)
+    }
+
+    private suspend fun fetchCuratedPool(
+        availabilityFilter: AvailabilityFilter,
+        fetchPage: suspend (Int) -> List<UnifiedMediaItem>
+    ): List<UnifiedMediaItem> {
+        val maxPages = if (availabilityFilter == AvailabilityFilter.ALL) 1 else 2
+        val collected = mutableListOf<UnifiedMediaItem>()
+        val seenKeys = mutableSetOf<String>()
+        for (page in 1..maxPages) {
+            val raw = fetchPage(page)
+            if (raw.isEmpty()) break
+            raw.filter(availabilityFilter::matches).forEach { item ->
+                val key = "${item.mediaType}_${item.tmdbId}_${item.id}"
+                if (seenKeys.add(key)) {
+                    collected += item
+                }
+            }
+            if (collected.size >= CURATED_ROW_SIZE) break
+        }
+        return collected.take(CURATED_ROW_SIZE)
+    }
+
+    private fun decorateNetflixBadges(
+        rows: List<CatalogRow>,
+        top10Movies: List<UnifiedMediaItem>,
+        top10Tv: List<UnifiedMediaItem>,
+        latestItems: List<UnifiedMediaItem>,
+        newOnDigital: List<UnifiedMediaItem>,
+        airingThisWeek: List<UnifiedMediaItem>,
+        newSeriesPremieres: List<UnifiedMediaItem>
+    ): List<CatalogRow> {
+        val top10MovieTmdb = top10Movies.mapNotNull { it.tmdbId }.toSet()
+        val top10TvTmdb = top10Tv.mapNotNull { it.tmdbId }.toSet()
+
+        fun UnifiedMediaItem.matchKeys(): List<String> = buildList(2) {
+            tmdbId?.let { add("${mediaType.name}_$it") }
+            jellyfinId?.let { add("jf_$it") }
+        }
+
+        val newEpisodeKeys = airingThisWeek.flatMapTo(HashSet()) { it.matchKeys() }
+        val newSeasonKeys = buildSet {
+            newSeriesPremieres.forEach { addAll(it.matchKeys()) }
+            latestItems.filter { it.mediaType == MediaType.SERIES }.forEach { addAll(it.matchKeys()) }
+        }
+        val recentlyAddedKeys = buildSet {
+            latestItems.filter { it.mediaType == MediaType.MOVIE }.forEach { addAll(it.matchKeys()) }
+            newOnDigital.forEach { addAll(it.matchKeys()) }
+        }
+
+        return rows.map { row ->
+            if (row.style == RowStyle.CONTINUE_WATCHING) return@map row
+            row.copy(
+                items = row.items.map { item ->
+                    if (item.boxSetId != null) return@map item
+                    val inTop10 = when (item.mediaType) {
+                        MediaType.MOVIE -> item.tmdbId != null && item.tmdbId in top10MovieTmdb
+                        MediaType.SERIES -> item.tmdbId != null && item.tmdbId in top10TvTmdb
+                        MediaType.EPISODE -> false
+                    }
+                    val badge = if (!item.upcomingBadgeLabel.isNullOrBlank()) {
+                        item.netflixBadgeLabel
+                    } else {
+                        val keys = item.matchKeys()
+                        when {
+                            keys.any { it in newEpisodeKeys } -> "New Episode"
+                            keys.any { it in newSeasonKeys } -> "New Season"
+                            keys.any { it in recentlyAddedKeys } -> "Recently Added"
+                            else -> item.netflixBadgeLabel
+                        }
+                    }
+                    if (inTop10 == item.isTop10 && badge == item.netflixBadgeLabel) item
+                    else item.copy(isTop10 = inTop10, netflixBadgeLabel = badge)
+                }
+            )
+        }
+    }
+
+    private fun regionTodaySuffix(region: String): String = when (region.uppercase(java.util.Locale.US)) {
+        "US" -> "in the U.S. Today"
+        "GB", "UK" -> "in the UK Today"
+        "CA" -> "in Canada Today"
+        "AU" -> "in Australia Today"
+        "DE" -> "in Germany Today"
+        "FR" -> "in France Today"
+        "ES" -> "in Spain Today"
+        "JP" -> "in Japan Today"
+        else -> "Today"
+    }
+
+    private fun continueWatchingTitle(activeProfile: UserProfile?): String {
+        val name = activeProfile?.name?.trim().orEmpty()
+        return if (name.isNotEmpty()) "Continue Watching for $name" else "Continue Watching"
     }
 
     /**
@@ -3425,6 +3771,8 @@ class UnifiedCatalogRepository @Inject constructor(
             // one so parental filtering can see it.
             maturityRating = matchedJf?.officialRating,
             voteAverage = res.voteAverage,
+            genres = matchedJf?.genres?.takeIf { it.isNotEmpty() }
+                ?: res.genreIds.mapNotNull { TMDB_GENRE_NAMES[it] },
             posterUrl = MediaImageUrls.tmdbPoster(res.posterPath)
                 ?: matchedJf?.let { jellyfinPrimaryUrl(jfBase, it) },
             backdropUrl = MediaImageUrls.tmdbBackdrop(res.backdropPath)
@@ -3658,8 +4006,9 @@ class UnifiedCatalogRepository @Inject constructor(
         private const val BROWSE_FIELDS_MERGED =
             "ProviderIds,ProductionYear,OfficialRating,CommunityRating,UserData,PrimaryImageAspectRatio,Genres,RunTimeTicks,SortName,DateCreated"
 
-        // Top 10 charts
+        // Top 10 charts & curated rows
         private const val TOP_N = 10
+        private const val CURATED_ROW_SIZE = 20
         /** Chart titles looked up in parallel per round; 12 leaves room for a couple of misses. */
         private const val CHART_BATCH = 12
         private const val CHART_MAX_BATCHES = 3
@@ -3670,6 +4019,35 @@ class UnifiedCatalogRepository @Inject constructor(
         private const val HOME_RELEASE_CANDIDATE_LIMIT = 28
         private const val NEW_ON_DIGITAL_WINDOW_DAYS = 45L
         private const val COMING_TO_HOME_WINDOW_DAYS = 90L
+
+        private val TMDB_GENRE_NAMES = mapOf(
+            12 to "Adventure",
+            14 to "Fantasy",
+            16 to "Animation",
+            18 to "Drama",
+            27 to "Horror",
+            28 to "Action",
+            35 to "Comedy",
+            36 to "History",
+            37 to "Western",
+            53 to "Thriller",
+            80 to "Crime",
+            99 to "Documentary",
+            878 to "Sci-Fi",
+            9648 to "Mystery",
+            10402 to "Music",
+            10749 to "Romance",
+            10751 to "Family",
+            10752 to "War",
+            10759 to "Action & Adventure",
+            10762 to "Kids",
+            10763 to "News",
+            10764 to "Reality",
+            10765 to "Sci-Fi & Fantasy",
+            10766 to "Soap",
+            10767 to "Talk",
+            10768 to "War & Politics"
+        )
 
         /**
          * Everything index consumers read besides UserData (EnableUserData) and Overview (back-filled

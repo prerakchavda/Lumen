@@ -463,5 +463,12 @@ private fun GenreFilterOption.localizedLabel(s: UiStrings): String = when (id) {
     "thriller" -> s.genreThriller
     "documentary" -> s.genreDocumentary
     "animation" -> s.genreAnimation
+    "family" -> s.genreFamily
+    "fantasy" -> s.genreFantasy
+    "romance" -> s.genreRomance
+    "reality" -> s.genreReality
+    "kids" -> s.genreKids
+    "history" -> s.genreHistory
+    "music" -> s.genreMusic
     else -> label
 }

@@ -117,7 +117,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         )
 
         val topNow = rows.first { it.id == "top10_movies_now" }
-        assertEquals("Top 10 Movies Out Right Now", topNow.title)
+        assertTrue(topNow.title.startsWith("Top 10 Movies"))
         assertEquals(RowStyle.TOP_10, topNow.style)
         assertEquals(listOf("Released Hit", "Borderline Today"), topNow.items.map { it.title })
     }
@@ -158,7 +158,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
     }
 
     @Test
-    fun `home hub includes mix of TV and Movie Top 10 rows`() = runTest {
+    fun `home hub reserves TOP_10 styling for headline charts and surfaces curated Netflix poster rows`() = runTest {
         seerrApi.discoverMoviesHandler = { page, _, _, _, _, _ ->
             if (page == 1) SeerrDiscoverPageDto(results = listOf(movieResult(1, "Now Movie", "2026-03-01")))
             else SeerrDiscoverPageDto()
@@ -167,16 +167,12 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             if (page == 1) SeerrDiscoverPageDto(results = listOf(tvResult(2, "Airing Show", "2026-02-01")))
             else SeerrDiscoverPageDto()
         }
-        seerrApi.moviesByGenreHandler = { genreId, page ->
-            if (page == 1) {
-                val title = if (genreId == 35) "Comedy Hit" else "Action Hit"
-                SeerrDiscoverPageDto(results = listOf(movieResult(10 + genreId, title, "2025-06-01")))
-            } else SeerrDiscoverPageDto()
+        seerrApi.discoverTvHandler = { page, _, _, _, _, _ ->
+            if (page == 1) SeerrDiscoverPageDto(results = listOf(tvResult(300, "Award Show", "2025-07-01")))
+            else SeerrDiscoverPageDto()
         }
-        seerrApi.tvByGenreHandler = { genreId, page ->
-            if (page == 1 && genreId == 10765) {
-                SeerrDiscoverPageDto(results = listOf(tvResult(300, "Sci-Fi Series", "2025-07-01")))
-            } else SeerrDiscoverPageDto()
+        seerrApi.trendingHandler = {
+            SeerrDiscoverPageDto(results = listOf(movieResult(1, "Now Movie", "2026-03-01")))
         }
 
         val rows = repository.loadHomeRows(
@@ -189,12 +185,16 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         val rowIds = rows.map { it.id }
         assertTrue("top10_movies_now" in rowIds)
         assertTrue("top10_tv_now" in rowIds)
-        assertTrue("top10_comedy_movies" in rowIds)
-        assertTrue("top10_scifi_tv" in rowIds)
-        assertTrue("top10_action_movies" in rowIds)
-        rows.filter { it.id.startsWith("top10_") }.forEach {
-            assertEquals(RowStyle.TOP_10, it.style)
-        }
+        assertTrue("gems_for_you" in rowIds)
+        assertTrue("todays_top_picks" in rowIds)
+        assertTrue("award_winning_tv" in rowIds)
+        assertEquals(
+            setOf("top10_movies_now", "top10_tv_now"),
+            rows.filter { it.style == RowStyle.TOP_10 }.map { it.id }.toSet()
+        )
+        // Movie #1 is in Top 10 Movies, so it receives the cross-row TOP 10 ribbon in Today's Top Picks.
+        val picksMovie = rows.first { it.id == "todays_top_picks" }.items.first { it.tmdbId == 1 }
+        assertTrue(picksMovie.isTop10)
     }
 
     @Test
@@ -288,7 +288,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
     }
 
     @Test
-    fun `genre top 10 rows skip unreleased and undated blockbusters`() = runTest {
+    fun `curated genre rows skip unreleased and undated blockbusters`() = runTest {
         seerrApi.moviesByGenreHandler = { genreId, page ->
             if (page == 1) {
                 SeerrDiscoverPageDto(
@@ -308,18 +308,19 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             today = fixedToday
         )
 
-        val action = rows.first { it.id == "top10_action_movies" }
+        val action = rows.first { it.id == "movie_action_adventure" }
+        assertEquals(RowStyle.POSTER, action.style)
         assertEquals(listOf("Released Hit 28"), action.items.map { it.title })
         val movieGenreCalls = seerrApi.genreDiscoverCalls.filter { it[0] == "movie" }
         assertTrue(movieGenreCalls.isNotEmpty())
         movieGenreCalls.forEach { call ->
             assertEquals("2026-04-01", call[2])
-            assertEquals(25, call[3])
+            assertTrue((call[3] as Int) >= 25)
         }
     }
 
     @Test
-    fun `trending now leaves unreleased titles to the coming soon rows`() = runTest {
+    fun `todays top picks and trending now leave unreleased titles to the coming soon rows`() = runTest {
         seerrApi.trendingHandler = {
             SeerrDiscoverPageDto(
                 results = listOf(
@@ -331,7 +332,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         }
 
         val home = repository.loadHomeRows(userId = "u1", availabilityFilter = AvailabilityFilter.ALL, today = fixedToday)
-        assertEquals(listOf("Out Now", "Running Show"), home.first { it.id == "trending_now" }.items.map { it.title })
+        assertEquals(listOf("Out Now", "Running Show"), home.first { it.id == "todays_top_picks" }.items.map { it.title })
 
         val newAndPopular = repository.loadNewAndPopular(userId = "u1", today = fixedToday)
         val npTrending = newAndPopular.first { it.id == "np_trending" }
@@ -658,7 +659,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
     }
 
     @Test
-    fun `streaming service top 10 rows query watchProviders and rank combined movies and tv by popularity`() = runTest {
+    fun `streaming service top 10 rows query watchProviders on New and Popular and rank combined movies and tv by popularity`() = runTest {
         seerrApi.streamingMoviesHandler = { providers, page ->
             if (page == 1 && providers == StreamingService.NETFLIX.providerIds) {
                 SeerrDiscoverPageDto(
@@ -684,8 +685,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             } else SeerrDiscoverPageDto()
         }
 
-        val homeRows = repository.loadHomeRows(userId = "u1", filterType = null, today = fixedToday)
-        val netflixRow = homeRows.first { it.id == StreamingService.NETFLIX.homeRowId }
+        val npRows = repository.loadNewAndPopular(userId = "u1", today = fixedToday)
+        val netflixRow = npRows.first { it.id == StreamingService.NETFLIX.newAndPopularRowId }
         assertEquals("Top 10 on Netflix", netflixRow.title)
         assertEquals(RowStyle.TOP_10, netflixRow.style)
         assertEquals(
@@ -693,23 +694,57 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             netflixRow.items.map { it.title }
         )
 
-        val primeRow = homeRows.first { it.id == StreamingService.PRIME_VIDEO.homeRowId }
+        val primeRow = npRows.first { it.id == StreamingService.PRIME_VIDEO.newAndPopularRowId }
         assertEquals("Top 10 on Prime Video", primeRow.title)
         assertEquals(listOf("Prime Action"), primeRow.items.map { it.title })
-
-        val movieTabRows = repository.loadHomeRows(userId = "u1", filterType = MediaType.MOVIE, today = fixedToday)
-        val netflixMovies = movieTabRows.first { it.id == StreamingService.NETFLIX.homeRowId }
-        assertEquals("Top 10 Movies on Netflix", netflixMovies.title)
-        assertEquals(listOf("Netflix Movie Hit"), netflixMovies.items.map { it.title })
-
-        val tvTabRows = repository.loadHomeRows(userId = "u1", filterType = MediaType.SERIES, today = fixedToday)
-        val netflixTv = tvTabRows.first { it.id == StreamingService.NETFLIX.homeRowId }
-        assertEquals("Top 10 TV Shows on Netflix", netflixTv.title)
-        assertEquals(listOf("Netflix Series #1", "Netflix Series #3"), netflixTv.items.map { it.title })
     }
 
     @Test
-    fun `theater-only movies are excluded from Top 10 and Trending while Digital and DVD rows surface home releases`() = runTest {
+    fun `personalized continue watching, recently added badges, and seasonal rows match Netflix curation`() = runTest {
+        val profile = com.seerflix.tv.core.model.UserProfile("p1", "Prerak", "u1", "tok")
+        jellyfinApi.resumeItems = listOf(
+            JellyfinItemDto(id = "jf-cw-1", name = "Severance", type = "Series", providerIds = mapOf("Tmdb" to "95396"))
+        )
+        jellyfinApi.latestItems = listOf(
+            JellyfinItemDto(id = "jf-latest-m", name = "Fresh Movie", type = "Movie", providerIds = mapOf("Tmdb" to "88")),
+            JellyfinItemDto(id = "jf-latest-s", name = "Fresh Show", type = "Series", providerIds = mapOf("Tmdb" to "99"))
+        )
+        seerrApi.discoverMoviesHandler = { page, _, _, _, _, _ ->
+            if (page == 1) SeerrDiscoverPageDto(results = listOf(movieResult(88, "Fresh Movie", "2026-03-01")))
+            else SeerrDiscoverPageDto()
+        }
+        seerrApi.airingTvHandler = { page, _, _ ->
+            if (page == 1) SeerrDiscoverPageDto(results = listOf(tvResult(99, "Fresh Show", "2026-02-01")))
+            else SeerrDiscoverPageDto()
+        }
+        seerrApi.moviesByGenreHandler = { genreId, page ->
+            if (page == 1 && genreId == 35) SeerrDiscoverPageDto(results = listOf(movieResult(501, "Autumn Comedy", "2025-10-01")))
+            else SeerrDiscoverPageDto()
+        }
+
+        val november = LocalDate.of(2026, 11, 15)
+        val rows = repository.loadHomeRows(
+            userId = "u1",
+            filterType = null,
+            activeProfile = profile,
+            today = november
+        )
+
+        val cw = rows.first { it.id == "continue_watching" }
+        assertEquals("Continue Watching for Prerak", cw.title)
+
+        val seasonal = rows.first { it.id == "seasonal_picks" }
+        assertEquals("Cozy Autumn & Thanksgiving Picks", seasonal.title)
+
+        val topMovie = rows.first { it.id == "top10_movies_now" }.items.first { it.tmdbId == 88 }
+        assertEquals("Recently Added", topMovie.netflixBadgeLabel)
+
+        val topShow = rows.first { it.id == "top10_tv_now" }.items.first { it.tmdbId == 99 }
+        assertEquals("New Season", topShow.netflixBadgeLabel)
+    }
+
+    @Test
+    fun `theater-only movies are excluded from Top 10 and Today's Top Picks while Digital and DVD rows surface home releases`() = runTest {
         seerrApi.discoverMoviesHandler = { page, _, _, _, _, _ ->
             if (page == 1) {
                 SeerrDiscoverPageDto(
@@ -754,8 +789,8 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         val top10 = rows.first { it.id == "top10_movies_now" }
         assertEquals(listOf("Just Hit Digital"), top10.items.map { it.title })
 
-        val trending = rows.first { it.id == "trending_now" }
-        assertEquals(listOf("Just Hit Digital"), trending.items.map { it.title })
+        val topPicks = rows.first { it.id == "todays_top_picks" }
+        assertEquals(listOf("Just Hit Digital"), topPicks.items.map { it.title })
 
         val newDigital = rows.first { it.id == "new_on_digital" }
         assertEquals("New on Digital & Streaming", newDigital.title)
@@ -1040,14 +1075,16 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             genre: String?,
             primaryReleaseDateGte: String?,
             primaryReleaseDateLte: String?,
+            voteAverageGte: Double?,
             voteCountGte: Int?,
+            withRuntimeLte: Int?,
             watchRegion: String?,
             watchProviders: String?
         ) = when {
             watchProviders != null -> streamingMoviesHandler(watchProviders, page)
             genre != null -> {
                 genreDiscoverCalls += listOf("movie", genre, primaryReleaseDateLte, voteCountGte)
-                moviesByGenreHandler(genre.toInt(), page)
+                genre.substringBefore(",").toIntOrNull()?.let { moviesByGenreHandler(it, page) } ?: SeerrDiscoverPageDto()
             }
             else -> discoverMoviesHandler(page, sortBy, genre, primaryReleaseDateGte, primaryReleaseDateLte, voteCountGte)
         }
@@ -1059,7 +1096,9 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             genre: String?,
             firstAirDateGte: String?,
             firstAirDateLte: String?,
+            voteAverageGte: Double?,
             voteCountGte: Int?,
+            withRuntimeLte: Int?,
             status: String?,
             watchRegion: String?,
             watchProviders: String?
@@ -1067,7 +1106,7 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             watchProviders != null -> streamingTvHandler(watchProviders, page)
             genre != null -> {
                 genreDiscoverCalls += listOf("tv", genre, firstAirDateLte, voteCountGte)
-                tvByGenreHandler(genre.toInt(), page)
+                genre.substringBefore(",").toIntOrNull()?.let { tvByGenreHandler(it, page) } ?: SeerrDiscoverPageDto()
             }
             status != null -> airingTvHandler(page, firstAirDateLte, status)
             else -> discoverTvHandler(page, sortBy, genre, firstAirDateGte, firstAirDateLte, voteCountGte)

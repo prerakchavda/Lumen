@@ -582,24 +582,37 @@ class HomeViewModel @Inject constructor(
      */
     fun refreshContinueWatching() {
         val state = _uiState.value
-        if (state.activeTab != HomeTab.HOME || state.availabilityFilter != AvailabilityFilter.ALL) return
-        if (lastLoadedTab != HomeTab.HOME || state.isLoading || catalogJob?.isActive == true) return
+        val tab = state.activeTab
+        if ((tab != HomeTab.HOME && tab != HomeTab.MOVIES && tab != HomeTab.SHOWS) ||
+            state.availabilityFilter != AvailabilityFilter.ALL
+        ) return
+        if (lastLoadedTab != tab || state.isLoading || catalogJob?.isActive == true) return
         if (continueWatchingJob?.isActive == true) return
         val profile = state.profile ?: return
         continueWatchingJob = viewModelScope.launch(Dispatchers.IO) {
-            val items = try {
+            val allItems = try {
                 catalogRepository.loadContinueWatchingItems(profile.jellyfinUserId, profile)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 return@launch
             }
+            val items = when (tab) {
+                HomeTab.MOVIES -> allItems.filter { it.mediaType == MediaType.MOVIE }
+                HomeTab.SHOWS -> allItems.filter { it.mediaType != MediaType.MOVIE }
+                else -> allItems
+            }
+            val cwTitle = profile.name.trim().takeIf { it.isNotEmpty() }
+                ?.let { "Continue Watching for $it" }
+                ?: "Continue Watching"
             _uiState.update { s ->
-                if (s.activeTab != HomeTab.HOME || s.isLoading) return@update s
+                if (s.activeTab != tab || s.isLoading) return@update s
                 val idx = s.rows.indexOfFirst { it.id == "continue_watching" }
                 val newRows = when {
                     idx >= 0 && items.isEmpty() -> s.rows.filterIndexed { i, _ -> i != idx }
-                    idx >= 0 -> s.rows.toMutableList().also { it[idx] = it[idx].copy(items = items) }
+                    idx >= 0 -> s.rows.toMutableList().also {
+                        it[idx] = it[idx].copy(title = cwTitle, items = items)
+                    }
                     items.isNotEmpty() -> {
                         val insertAt = if (s.rows.firstOrNull()?.id == "ready_to_watch") 1 else 0
                         s.rows.toMutableList().also {
@@ -607,7 +620,7 @@ class HomeViewModel @Inject constructor(
                                 insertAt,
                                 CatalogRow(
                                     id = "continue_watching",
-                                    title = "Continue Watching",
+                                    title = cwTitle,
                                     style = RowStyle.CONTINUE_WATCHING,
                                     items = items
                                 )
