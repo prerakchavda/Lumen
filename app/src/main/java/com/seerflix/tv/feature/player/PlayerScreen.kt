@@ -111,17 +111,24 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.SeekParameters
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaSession
 import com.seerflix.tv.core.player.SyncPlayAction
+import com.seerflix.tv.core.model.PlayMethod
+import com.seerflix.tv.core.model.SleepTimerOption
 import com.seerflix.tv.core.model.SubtitleEdgeStyle
 import com.seerflix.tv.core.model.SubtitlePosition
+import com.seerflix.tv.core.model.SubtitleSelectionMode
 import com.seerflix.tv.core.model.SubtitleTextColor
+import com.seerflix.tv.core.model.TrackOption
+import com.seerflix.tv.core.model.VideoResizeMode
 import com.seerflix.tv.feature.settings.localized
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.SubtitleView
@@ -142,12 +149,15 @@ import com.seerflix.tv.core.model.TrickplayInfo
 import com.seerflix.tv.core.player.AssActiveCuesOverlay
 import com.seerflix.tv.core.player.AssCue
 import com.seerflix.tv.core.player.AssCueIndex
+import com.seerflix.tv.core.player.AudioDelayProcessor
 import com.seerflix.tv.core.player.AutoSkipHelper
 import com.seerflix.tv.core.player.FrameRateMatcher
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.OffsetSubtitleParserFactory
+import com.seerflix.tv.core.player.PlaybackReportState
 import com.seerflix.tv.core.player.PlayerTuning
 import com.seerflix.tv.core.player.SkipSegmentType
+import com.seerflix.tv.core.player.SubtitleTrackSelector
 import com.seerflix.tv.core.player.TrickplayThumbnailLoader
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.SeerflixTokens
@@ -170,13 +180,21 @@ fun PlayerScreen(
     val activity = remember(context) { FrameRateMatcher.findActivity(context) }
 
     val subtitleOffsetUsRef = remember { AtomicLong(0L) }
+    val audioDelayProcessor = remember { AudioDelayProcessor() }
     val player = remember(context) {
         val subtitleParserFactory = OffsetSubtitleParserFactory { subtitleOffsetUsRef.get() }
         val upstreamFactory = OkHttpDataSource.Factory(viewModel.mediaHttpClient)
         val mediaSourceFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, upstreamFactory))
             .setSubtitleParserFactory(subtitleParserFactory)
             .experimentalParseSubtitlesDuringExtraction(true)
-        ExoPlayer.Builder(context, PlayerTuning.buildRenderersFactory(context))
+        ExoPlayer.Builder(
+            context,
+            PlayerTuning.buildRenderersFactory(
+                context = context,
+                enableSoftwareAudioDecoding = viewModel.softwareAudioDecodingEnabled,
+                audioDelayProcessor = audioDelayProcessor
+            )
+        )
             .setMediaSourceFactory(mediaSourceFactory)
             // Faster start + a heap-bounded buffer so 4K remuxes can't OOM 2 GB sticks.
             .setLoadControl(PlayerTuning.buildLoadControl())
@@ -204,18 +222,38 @@ fun PlayerScreen(
     var tracksRevision by remember { mutableIntStateOf(0) }
     var scrubPreviewMs by remember { mutableStateOf<Long?>(null) }
     var detectedVideoFrameRate by remember { mutableFloatStateOf(0f) }
+    var activeVideoDecoderName by remember { mutableStateOf<String?>(null) }
+    var activeAudioDecoderName by remember { mutableStateOf<String?>(null) }
+    var liveStreamStats by remember { mutableStateOf<LiveStreamStats?>(null) }
+    var initialSubtitleAppliedForPlaySession by remember { mutableStateOf<String?>(null) }
     var skippedIntroItemId by remember { mutableStateOf<String?>(null) }
     var skippedRecapItemId by remember { mutableStateOf<String?>(null) }
     var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
     var subtitleOffsetHudText by remember { mutableStateOf<String?>(null) }
+    var audioOffsetHudText by remember { mutableStateOf<String?>(null) }
+    var sleepTimerHudText by remember { mutableStateOf<String?>(null) }
     var syncPlayNotice by remember { mutableStateOf<String?>(null) }
     var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
+    var hasInitializedAudioOffsetEffect by remember { mutableStateOf(false) }
+    var hasInitializedSleepTimerEffect by remember { mutableStateOf(false) }
     // Written on every remote key press but only read inside effects (never during composition), so
     // key presses / held D-pad repeats don't recompose the whole screen.
     val lastInteractionTick = remember { mutableLongStateOf(0L) }
     val playPauseFocusRequester = remember { FocusRequester() }
     val trickplayLoader = remember { TrickplayThumbnailLoader(viewModel.mediaHttpClient) }
     DisposableEffect(trickplayLoader) { onDispose { trickplayLoader.close() } }
+
+    fun buildLiveReportState(): PlaybackReportState {
+        val vol = (player.volume * 100f).toInt().coerceIn(0, 100)
+        return PlaybackReportState(
+            playMethod = state.session?.playMethod?.jellyfinValue,
+            audioStreamIndex = state.selectedAudioStreamIndex ?: state.session?.activeAudioStreamIndex,
+            subtitleStreamIndex = state.burnInSubtitleIndex ?: state.activeAssSubtitleIndex ?: state.selectedSubtitleStreamIndex,
+            isMuted = player.volume <= 0.001f,
+            volumeLevel = vol,
+            playbackRate = state.selectedSpeed
+        )
+    }
 
     // Relative seeks (D-pad, ±10 s, scrubbing) snap to a nearby keyframe: no decode-and-drop up to
     // an exact frame, which is what makes seeking in 4K HEVC remuxes sluggish on weak SoCs.
@@ -293,7 +331,7 @@ fun PlayerScreen(
             // Pause / resume shows up right away in other Jellyfin apps (remote control, dashboard)
             // instead of at the next 10 s progress report.
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-                viewModel.reportProgress(player.currentPosition.coerceAtLeast(0L), !playWhenReady)
+                viewModel.reportProgress(player.currentPosition.coerceAtLeast(0L), !playWhenReady, buildLiveReportState())
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
@@ -320,6 +358,80 @@ fun PlayerScreen(
                 if (videoRate > 1f) {
                     detectedVideoFrameRate = videoRate
                 }
+                val activeSession = state.session
+                if (activeSession != null && !activeSession.isTrailer) {
+                    val selectedAudioFmt = tracks.groups
+                        .firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+                        ?.let { g -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { g.getTrackFormat(it) } }
+                    val selectedTextFmt = tracks.groups
+                        .firstOrNull { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
+                        ?.let { g -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { g.getTrackFormat(it) } }
+                    val matchedAudioIdx = if (activeSession.isHls) {
+                        state.selectedAudioStreamIndex ?: activeSession.activeAudioStreamIndex
+                    } else {
+                        selectedAudioFmt?.let { fmt ->
+                            activeSession.audioTracks.firstOrNull {
+                                SubtitleTrackSelector.languagesMatch(it.language, fmt.language) &&
+                                    (fmt.label == null || it.label.contains(fmt.label!!, ignoreCase = true))
+                            }?.index ?: activeSession.audioTracks.firstOrNull {
+                                SubtitleTrackSelector.languagesMatch(it.language, fmt.language)
+                            }?.index
+                        } ?: activeSession.activeAudioStreamIndex
+                    }
+                    val matchedSubIdx = state.burnInSubtitleIndex
+                        ?: state.activeAssSubtitleIndex
+                        ?: selectedTextFmt?.let { fmt ->
+                            activeSession.subtitleTracks.firstOrNull {
+                                SubtitleTrackSelector.languagesMatch(it.language, fmt.language) &&
+                                    (fmt.label == null || it.label.contains(fmt.label!!, ignoreCase = true))
+                            }?.index ?: activeSession.subtitleTracks.firstOrNull {
+                                SubtitleTrackSelector.languagesMatch(it.language, fmt.language)
+                            }?.index
+                        }
+                    viewModel.updateActiveTrackIndexes(matchedAudioIdx, matchedSubIdx)
+
+                    // Apply Jellyfin SubtitleSelectionMode (Smart / Only Forced / Default / Always / None) once per playSession.
+                    if (initialSubtitleAppliedForPlaySession != activeSession.playSessionId &&
+                        state.burnInSubtitleIndex == null &&
+                        activeSession.subtitleTracks.isNotEmpty()
+                    ) {
+                        initialSubtitleAppliedForPlaySession = activeSession.playSessionId
+                        val activeAudioLang = selectedAudioFmt?.language
+                            ?: activeSession.audioTracks.firstOrNull { it.index == matchedAudioIdx }?.language
+                        val chosen = SubtitleTrackSelector.selectSubtitleTrack(
+                            mode = state.subtitleSelectionMode,
+                            preferredSubtitleLang = state.preferredSubtitleLang,
+                            preferredAudioLang = state.preferredAudioLang,
+                            activeAudioLang = activeAudioLang,
+                            subtitleTracks = activeSession.subtitleTracks
+                        )
+                        val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                        if (chosen == null) {
+                            if (state.activeAssSubtitleIndex == null) {
+                                player.trackSelectionParameters = player.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                                    .build()
+                            }
+                        } else if (state.activeAssSubtitleIndex == null) {
+                            val matchGroup = textGroups.firstOrNull { grp ->
+                                val fmt = grp.getTrackFormat(0)
+                                val langOk = SubtitleTrackSelector.languagesMatch(fmt.language, chosen.language)
+                                val forcedFlag = (fmt.selectionFlags and C.SELECTION_FLAG_FORCED) != 0
+                                langOk && (!chosen.isForced || forcedFlag || fmt.label.orEmpty().contains("forced", ignoreCase = true))
+                            } ?: textGroups.firstOrNull { grp ->
+                                SubtitleTrackSelector.languagesMatch(grp.getTrackFormat(0).language, chosen.language)
+                            }
+                            if (matchGroup != null) {
+                                player.trackSelectionParameters = player.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+                                    .setOverrideForType(TrackSelectionOverride(matchGroup.mediaTrackGroup, 0))
+                                    .build()
+                            }
+                        }
+                    }
+                }
             }
 
             override fun onVideoSizeChanged(videoSize: VideoSize) {
@@ -339,8 +451,29 @@ fun PlayerScreen(
                 viewModel.onPlaybackError(error.message, player.currentPosition.coerceAtLeast(0L))
             }
         }
+        val analyticsListener = object : AnalyticsListener {
+            override fun onVideoDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long
+            ) {
+                activeVideoDecoderName = decoderName
+            }
+
+            override fun onAudioDecoderInitialized(
+                eventTime: AnalyticsListener.EventTime,
+                decoderName: String,
+                initializedTimestampMs: Long,
+                initializationDurationMs: Long
+            ) {
+                activeAudioDecoderName = decoderName
+            }
+        }
         player.addListener(listener)
+        player.addAnalyticsListener(analyticsListener)
         onDispose {
+            player.removeAnalyticsListener(analyticsListener)
             player.removeListener(listener)
             activity?.window?.let { win ->
                 val params = win.attributes
@@ -349,7 +482,7 @@ fun PlayerScreen(
                     win.attributes = params
                 }
             }
-            viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L))
+            viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
             player.release()
         }
     }
@@ -415,6 +548,91 @@ fun PlayerScreen(
         subtitleOffsetHudText = null
     }
 
+    // Apply live PCM audio sync offset & show quick HUD badge
+    LaunchedEffect(state.audioOffsetMs) {
+        audioDelayProcessor.setDelayMs(state.audioOffsetMs)
+        if (!hasInitializedAudioOffsetEffect) {
+            hasInitializedAudioOffsetEffect = true
+            return@LaunchedEffect
+        }
+        if (state.isLoading) return@LaunchedEffect
+        val label = if (state.audioOffsetMs == 0L) "0ms" else String.format(Locale.US, "%+dms", state.audioOffsetMs)
+        audioOffsetHudText = strings.playerAudioSyncHud.format(label)
+        delay(2500L)
+        audioOffsetHudText = null
+    }
+
+    // Sleep timer countdown & notification HUD
+    LaunchedEffect(state.sleepTimerOption, state.sleepTimerEndMs) {
+        if (!hasInitializedSleepTimerEffect) {
+            hasInitializedSleepTimerEffect = true
+            return@LaunchedEffect
+        }
+        val opt = state.sleepTimerOption
+        if (opt == SleepTimerOption.OFF) {
+            sleepTimerHudText = strings.sleepTimerHudCancelled
+            delay(2200L)
+            sleepTimerHudText = null
+            return@LaunchedEffect
+        }
+        val label = opt.localized(strings)
+        sleepTimerHudText = strings.sleepTimerHudSet.format(label)
+        launch {
+            delay(2500L)
+            if (sleepTimerHudText == strings.sleepTimerHudSet.format(label)) {
+                sleepTimerHudText = null
+            }
+        }
+        val endMs = state.sleepTimerEndMs ?: return@LaunchedEffect
+        val remaining = (endMs - System.currentTimeMillis()).coerceAtLeast(0L)
+        delay(remaining)
+        player.pause()
+        osdVisible = true
+        sleepTimerHudText = strings.sleepTimerHudTriggered
+        viewModel.clearSleepTimer()
+        delay(4000L)
+        sleepTimerHudText = null
+    }
+
+    // Real "Stats for Nerds" sampler — only runs when the overlay is toggled on.
+    LaunchedEffect(state.showStreamInfo, state.session?.playSessionId) {
+        if (!state.showStreamInfo) {
+            liveStreamStats = null
+            return@LaunchedEffect
+        }
+        while (true) {
+            val s = state.session
+            if (s != null) {
+                val vf = player.videoFormat
+                val af = player.audioFormat
+                val res = if (vf != null && vf.width > 0 && vf.height > 0) "${vf.width}x${vf.height}" else s.resolutionLabel
+                val fps = vf?.frameRate?.takeIf { it > 1f } ?: detectedVideoFrameRate.takeIf { it > 1f } ?: s.videoFps
+                val vCodec = vf?.sampleMimeType?.substringAfter('/')?.uppercase() ?: s.videoCodec
+                val aCodec = af?.let { formatAudioTrackLabel(it, 0, strings) } ?: s.audioCodec
+                val vBitrate = vf?.bitrate?.takeIf { it > 0 }?.toLong() ?: s.videoBitrate
+                val aBitrate = af?.bitrate?.takeIf { it > 0 }?.toLong() ?: s.audioBitrate
+                val bufferedMs = (player.bufferedPosition - player.currentPosition).coerceAtLeast(0L)
+                val dropped = player.videoDecoderCounters?.droppedBufferCount ?: 0
+                liveStreamStats = LiveStreamStats(
+                    playMethod = s.playMethod,
+                    transcodeReasons = s.transcodeReasons,
+                    videoCodec = vCodec,
+                    videoResolution = res,
+                    videoFps = fps,
+                    videoBitrateBps = vBitrate,
+                    hdrFormat = s.hdrFormat,
+                    audioCodec = aCodec,
+                    audioBitrateBps = aBitrate,
+                    videoDecoderName = activeVideoDecoderName,
+                    audioDecoderName = activeAudioDecoderName,
+                    bufferedDurationMs = bufferedMs,
+                    droppedFrames = dropped
+                )
+            }
+            delay(1000L)
+        }
+    }
+
     // Apply 24fps / frame-rate matching strategy & optional Display.Mode on TV.
     // Declared before the media-setup effect: with Jellyfin's frame-rate metadata the display mode
     // switch (an HDMI resync of 1-3 s on most TVs) is requested before prepare() and overlaps with
@@ -463,6 +681,9 @@ fun PlayerScreen(
     LaunchedEffect(state.session?.itemId, state.session?.playSessionId, state.session?.streamUrl) {
         val session = state.session ?: return@LaunchedEffect
         detectedVideoFrameRate = 0f
+        activeVideoDecoderName = null
+        activeAudioDecoderName = null
+        initialSubtitleAppliedForPlaySession = null
         autoSkipUndoPrompt = null
         // Drop the previous item's position so auto-skip / up-next don't evaluate the new item
         // against stale values before the progress loop catches up.
@@ -511,10 +732,13 @@ fun PlayerScreen(
                     "ass", "ssa" -> MimeTypes.TEXT_SSA
                     else -> MimeTypes.APPLICATION_SUBRIP
                 }
+                val flags = (if (ext.isForced) C.SELECTION_FLAG_FORCED else 0) or
+                    (if (ext.isDefault) C.SELECTION_FLAG_DEFAULT else 0)
                 MediaItem.SubtitleConfiguration.Builder(Uri.parse(ext.url))
                     .setMimeType(mimeType)
                     .setLanguage(ext.language)
                     .setLabel(ext.title)
+                    .setSelectionFlags(flags)
                     .build()
             }
             if (subConfigs.isNotEmpty()) {
@@ -528,11 +752,11 @@ fun PlayerScreen(
         state.preferredAudioLang?.takeIf { it.isNotBlank() }?.let { lang ->
             paramsBuilder.setPreferredAudioLanguage(lang)
         }
-        when (val subLang = state.preferredSubtitleLang) {
-            "off" -> paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-            null, "" -> {}
-            else -> {
-                paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+        if (state.burnInSubtitleIndex != null || state.subtitleSelectionMode == SubtitleSelectionMode.NONE || state.preferredSubtitleLang == "off") {
+            paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+        } else {
+            paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            state.preferredSubtitleLang?.takeIf { it.isNotBlank() }?.let { subLang ->
                 paramsBuilder.setPreferredTextLanguage(subLang)
             }
         }
@@ -549,7 +773,7 @@ fun PlayerScreen(
         } else {
             player.play()
         }
-        viewModel.reportStart(resumeMs)
+        viewModel.reportStart(resumeMs, buildLiveReportState())
     }
 
     LaunchedEffect(state.selectedSpeed) {
@@ -568,7 +792,7 @@ fun PlayerScreen(
             val now = System.currentTimeMillis()
             if (now - lastReportAt >= PROGRESS_REPORT_INTERVAL_MS && state.session != null) {
                 lastReportAt = now
-                viewModel.reportProgress(currentPosMs, !player.playWhenReady)
+                viewModel.reportProgress(currentPosMs, !player.playWhenReady, buildLiveReportState())
             }
             // 4 Hz while the OSD (time label / seek bar) is on screen, 2 Hz otherwise.
             delay(if (osdVisible) 250L else 500L)
@@ -581,6 +805,13 @@ fun PlayerScreen(
     LaunchedEffect(state.isLoading) {
         if (state.isLoading && player.playbackState != Player.STATE_IDLE) {
             player.stop()
+        }
+    }
+
+    // Pause playback if the "Are you still watching?" binge prompt opens.
+    LaunchedEffect(state.showStillWatchingPrompt) {
+        if (state.showStillWatchingPrompt && player.playWhenReady) {
+            player.pause()
         }
     }
 
@@ -706,16 +937,17 @@ fun PlayerScreen(
 
     // Keyed on isLoading so the countdown stops once "Play Now"/Next already started loading the
     // next episode (otherwise it fired a second stopped report + loadItem).
-    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading) {
+    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading, state.sleepTimerOption) {
         val nextId = state.session?.nextEpisodeId
-        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && nextId != null) {
+        val blockedBySleepEnd = state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO
+        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && !blockedBySleepEnd && nextId != null) {
             nextEpisodeCountdown = 5
             while (nextEpisodeCountdown > 0) {
                 delay(1000L)
                 nextEpisodeCountdown--
             }
-            viewModel.reportStopped(currentPosMs)
-            viewModel.loadItem(nextId)
+            viewModel.reportStopped(currentPosMs, buildLiveReportState())
+            viewModel.loadItem(nextId, isAutoplayAdvance = true, nextTitleForPrompt = state.session?.nextEpisodeTitle)
         }
     }
 
@@ -725,12 +957,21 @@ fun PlayerScreen(
     LaunchedEffect(playbackEnded, state.isLoading) {
         if (!playbackEnded || state.isLoading) return@LaunchedEffect
         val s = state.session ?: return@LaunchedEffect
+        if (state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO) {
+            player.pause()
+            osdVisible = true
+            viewModel.clearSleepTimer()
+            sleepTimerHudText = strings.sleepTimerHudTriggered
+            delay(4000L)
+            sleepTimerHudText = null
+            return@LaunchedEffect
+        }
         val nextId = s.nextEpisodeId
         if (nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
             delay(400L) // let an in-flight Up Next countdown win if it's about to fire
-            if (state.isLoading) return@LaunchedEffect
-            viewModel.reportStopped(durationMs.coerceAtLeast(currentPosMs))
-            viewModel.loadItem(nextId)
+            if (state.isLoading || state.showStillWatchingPrompt) return@LaunchedEffect
+            viewModel.reportStopped(durationMs.coerceAtLeast(currentPosMs), buildLiveReportState())
+            viewModel.loadItem(nextId, isAutoplayAdvance = true, nextTitleForPrompt = s.nextEpisodeTitle)
         } else if (nextId == null || !state.autoplayNextEpisode || state.autoplayCancelled) {
             // Keep the Up Next card up when autoplay is off/cancelled but a next episode exists;
             // only leave automatically when there's nothing to go to next.
@@ -938,6 +1179,11 @@ fun PlayerScreen(
                 if (view.player !== player) view.player = player
                 // Stop the TV screensaver / sleep timer from kicking in mid-movie.
                 view.keepScreenOn = isPlaying
+                view.resizeMode = when (state.videoResizeMode) {
+                    VideoResizeMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    VideoResizeMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    VideoResizeMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                }
                 view.subtitleView?.let { sv ->
                     sv.visibility = if (useAssOverlay) View.GONE else View.VISIBLE
                     sv.setApplyEmbeddedStyles(false)
@@ -1028,20 +1274,21 @@ fun PlayerScreen(
                     )
                 }
 
-                // Stream Info HUD Badge (top-right)
+                // Stream Info ("Stats for Nerds") HUD Badge (top-right)
                 if (state.showStreamInfo && session != null) {
                     StreamInfoOverlay(
                         session = session,
                         selectedQuality = state.selectedQuality,
                         playbackSpeed = state.selectedSpeed,
+                        liveStats = liveStreamStats,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(top = 28.dp, end = 48.dp)
                     )
                 }
 
-                // Subtitle Offset / Feedback Quick HUD Badge (top-center)
-                (subtitleOffsetHudText ?: syncPlayNotice ?: state.feedbackMessage)?.let { hudText ->
+                // Subtitle/Audio Offset, Sleep Timer, SyncPlay, or Feedback Quick HUD Badge (top-center)
+                (subtitleOffsetHudText ?: audioOffsetHudText ?: sleepTimerHudText ?: syncPlayNotice ?: state.feedbackMessage)?.let { hudText ->
                     Box(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
@@ -1110,13 +1357,13 @@ fun PlayerScreen(
                 }
 
                 // Next Episode Overlay Card with Auto-Play Countdown
-                if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer && activeSheet == null) {
+                if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer && activeSheet == null && !state.showStillWatchingPrompt) {
                     NextEpisodeOverlayCard(
                         nextEpisodeTitle = session.nextEpisodeTitle ?: strings.playerNextEpisode,
-                        autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled,
+                        autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled && state.sleepTimerOption != SleepTimerOption.END_OF_VIDEO,
                         countdownSeconds = nextEpisodeCountdown,
                         onPlayNow = {
-                            viewModel.reportStopped(currentPosMs)
+                            viewModel.reportStopped(currentPosMs, buildLiveReportState())
                             viewModel.loadItem(session.nextEpisodeId)
                         },
                         onWatchCredits = viewModel::cancelAutoplayNext,
@@ -1126,14 +1373,27 @@ fun PlayerScreen(
                     )
                 }
 
-                val captionsActive = remember(tracksRevision, state.activeAssSubtitleIndex) {
+                // "Are you still watching?" binge limit prompt
+                if (state.showStillWatchingPrompt) {
+                    StillWatchingOverlay(
+                        nextTitle = state.pendingStillWatchingNextTitle,
+                        onContinue = viewModel::confirmStillWatching,
+                        onExit = {
+                            viewModel.dismissStillWatching()
+                            exitPlayer()
+                        }
+                    )
+                }
+
+                val captionsActive = remember(tracksRevision, state.activeAssSubtitleIndex, state.burnInSubtitleIndex) {
                     state.activeAssSubtitleIndex != null ||
+                        state.burnInSubtitleIndex != null ||
                         player.currentTracks.groups.any { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
                 }
 
                 // OSD Overlay
                 AnimatedVisibility(
-                    visible = osdVisible && !showEpisodesDrawer && activeSheet == null,
+                    visible = osdVisible && !showEpisodesDrawer && activeSheet == null && !state.showStillWatchingPrompt,
                     enter = fadeIn(),
                     exit = fadeOut()
                 ) {
@@ -1154,7 +1414,7 @@ fun PlayerScreen(
                                 .height(300.dp)
                                 .background(OSD_BOTTOM_SCRIM)
                         )
-                        // Title + SyncPlay room badge
+                        // Title + SyncPlay / Sleep Timer badges
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1186,23 +1446,40 @@ fun PlayerScreen(
                                 }
                             }
 
-                            state.syncPlayGroup?.let { group ->
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(16.dp))
-                                        .background(colors.accent.copy(alpha = 0.22f))
-                                        .border(1.dp, colors.accent, RoundedCornerShape(16.dp))
-                                        .padding(horizontal = 14.dp, vertical = 6.dp)
-                                ) {
-                                    Icon(Icons.Filled.Groups, contentDescription = null, tint = colors.white, modifier = Modifier.size(16.dp))
-                                    Text(
-                                        text = "${AppStrings.current.actionWatchTogether}: ${group.groupName} (${group.participants.size})",
-                                        color = colors.white,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                if (state.sleepTimerOption != SleepTimerOption.OFF) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(colors.surfaceElevated.copy(alpha = 0.85f))
+                                            .border(1.dp, colors.badgeBorder, RoundedCornerShape(16.dp))
+                                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    ) {
+                                        val timerText = state.sleepTimerEndMs?.let { end ->
+                                            val minsLeft = ((end - System.currentTimeMillis()) / 60_000L).coerceAtLeast(1L)
+                                            "${strings.playerSleepTimer}: ${strings.sleepTimerMinutesShort.format(minsLeft)}"
+                                        } ?: "${strings.playerSleepTimer}: ${state.sleepTimerOption.localized(strings)}"
+                                        Text(timerText, color = colors.white, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                                state.syncPlayGroup?.let { group ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(colors.accent.copy(alpha = 0.22f))
+                                            .border(1.dp, colors.accent, RoundedCornerShape(16.dp))
+                                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                                    ) {
+                                        Icon(Icons.Filled.Groups, contentDescription = null, tint = colors.white, modifier = Modifier.size(16.dp))
+                                        Text(
+                                            text = "${AppStrings.current.actionWatchTogether}: ${group.groupName} (${group.participants.size})",
+                                            color = colors.white,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1359,7 +1636,7 @@ fun PlayerScreen(
                                             icon = Icons.Filled.SkipNext,
                                             label = strings.playerNextEpisode,
                                             onClick = {
-                                                viewModel.reportStopped(currentPosMs)
+                                                viewModel.reportStopped(currentPosMs, buildLiveReportState())
                                                 viewModel.loadItem(nextId)
                                             },
                                             onFocusChange = { focused ->
@@ -1387,7 +1664,7 @@ fun PlayerScreen(
                         onSelectEpisode = { ep ->
                             if (ep.isAvailableInJellyfin) {
                                 showEpisodesDrawer = false
-                                viewModel.reportStopped(currentPosMs)
+                                viewModel.reportStopped(currentPosMs, buildLiveReportState())
                                 viewModel.loadItem(ep.id)
                             }
                         },
@@ -1410,6 +1687,7 @@ fun PlayerScreen(
                         subtitleOffsetMs = state.subtitleOffsetMs,
                         assSubtitleMode = state.assSubtitleMode,
                         activeAssSubtitleIndex = state.activeAssSubtitleIndex,
+                        burnInSubtitleIndex = state.burnInSubtitleIndex,
                         remoteSubtitles = state.remoteSubtitles,
                         remoteSubtitlesLoading = state.remoteSubtitlesLoading,
                         remoteSubtitleLanguage = state.remoteSubtitleLanguage,
@@ -1424,6 +1702,10 @@ fun PlayerScreen(
                             viewModel.selectExternalAssTrack(ext, currentPosMs)
                             if (ext != null) activeSheet = null
                         },
+                        onSelectBurnInSubtitle = { idx ->
+                            activeSheet = null
+                            viewModel.selectBurnInSubtitleTrack(idx, currentPosMs)
+                        },
                         onSearchRemoteSubtitles = viewModel::searchRemoteSubtitles,
                         onDownloadRemoteSubtitle = { subId ->
                             activeSheet = null
@@ -1434,9 +1716,18 @@ fun PlayerScreen(
                     PlayerSheet.AUDIO -> AudioSideSheet(
                         player = player,
                         tracksRevision = tracksRevision,
+                        session = session,
                         isTrailer = session?.isTrailer == true,
+                        selectedAudioStreamIndex = state.selectedAudioStreamIndex,
+                        audioOffsetMs = state.audioOffsetMs,
                         audioPassthroughEnabled = state.audioPassthroughEnabled,
                         stereoDownmixEnabled = state.stereoDownmixEnabled,
+                        onSelectServerAudioTrack = { idx, forceHls ->
+                            activeSheet = null
+                            viewModel.selectServerAudioTrack(idx, currentPosMs, forceHls = forceHls)
+                        },
+                        onAdjustAudioOffset = viewModel::adjustAudioOffset,
+                        onResetAudioOffset = viewModel::resetAudioOffset,
                         onToggleAudioPassthrough = {
                             activeSheet = null
                             viewModel.toggleAudioPassthrough(currentPosMs)
@@ -1464,6 +1755,8 @@ fun PlayerScreen(
                         selectedSpeed = state.selectedSpeed,
                         selectedQuality = state.selectedQuality,
                         selectedMediaSourceId = state.selectedMediaSourceId,
+                        videoResizeMode = state.videoResizeMode,
+                        sleepTimerOption = state.sleepTimerOption,
                         autoSkipIntro = state.autoSkipIntro,
                         autoSkipRecap = state.autoSkipRecap,
                         frameRateMatchMode = state.frameRateMatchMode,
@@ -1477,6 +1770,8 @@ fun PlayerScreen(
                             activeSheet = null
                             viewModel.switchMediaSource(sourceId, currentPosMs)
                         },
+                        onSelectResizeMode = viewModel::setVideoResizeMode,
+                        onSelectSleepTimer = viewModel::setSleepTimer,
                         onToggleAutoSkipIntro = viewModel::toggleAutoSkipIntro,
                         onToggleAutoSkipRecap = viewModel::toggleAutoSkipRecap,
                         onSelectFrameRateMatchMode = viewModel::setFrameRateMatchMode,
@@ -1502,7 +1797,8 @@ fun StreamInfoOverlay(
     session: PlaybackSessionData,
     selectedQuality: QualityPreset,
     playbackSpeed: Float,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    liveStats: LiveStreamStats? = null
 ) {
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
@@ -1511,26 +1807,147 @@ fun StreamInfoOverlay(
     Column(
         modifier = modifier
             .clip(corner)
-            .background(colors.dialogSurface)
+            .background(colors.dialogSurface.copy(alpha = 0.92f))
             .border(1.dp, colors.badgeBorder, corner)
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-        val videoParts = listOfNotNull(session.resolutionLabel, session.hdrFormat, session.videoCodec)
+        val playMethod = liveStats?.playMethod ?: session.playMethod
+        val methodLabel = when (playMethod) {
+            PlayMethod.DIRECT_PLAY -> strings.statsPlayMethodDirectPlay
+            PlayMethod.DIRECT_STREAM -> strings.statsPlayMethodDirectStream
+            PlayMethod.TRANSCODE -> strings.statsPlayMethodTranscode
+        }
         Text(
-            text = videoParts.joinToString(" • ").ifBlank { strings.playerVideoStream },
-            color = colors.white,
+            text = strings.statsPlayMethod.format(methodLabel),
+            color = if (playMethod == PlayMethod.DIRECT_PLAY) colors.matchGreen else Color(0xFFFFB74D),
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
         )
-        session.audioCodec?.let {
-            Text(text = strings.playerAudioInfo.format(it), color = colors.textSecondary, fontSize = 11.sp)
+        val reasons = (liveStats?.transcodeReasons ?: session.transcodeReasons).takeIf { it.isNotEmpty() }
+        if (reasons != null && playMethod != PlayMethod.DIRECT_PLAY) {
+            Text(
+                text = strings.statsTranscodeReasons.format(reasons.joinToString(", ")),
+                color = Color(0xFFFFB74D),
+                fontSize = 11.sp
+            )
+        }
+        val fpsLabel = (liveStats?.videoFps ?: session.videoFps)?.let { String.format(Locale.US, "%.2f fps", it) }
+        val vBitrateLabel = (liveStats?.videoBitrateBps ?: session.videoBitrate)?.takeIf { it > 0L }?.let {
+            String.format(Locale.US, "%.1f Mbps", it / 1_000_000.0)
+        }
+        val videoParts = listOfNotNull(
+            liveStats?.videoResolution ?: session.resolutionLabel,
+            fpsLabel,
+            liveStats?.hdrFormat ?: session.hdrFormat,
+            liveStats?.videoCodec ?: session.videoCodec,
+            vBitrateLabel
+        )
+        Text(
+            text = strings.statsVideoLine.format(videoParts.joinToString(" • ").ifBlank { strings.playerVideoStream }),
+            color = colors.white,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        val aBitrateLabel = (liveStats?.audioBitrateBps ?: session.audioBitrate)?.takeIf { it > 0L }?.let {
+            "${it / 1_000L} kbps"
+        }
+        val audioParts = listOfNotNull(liveStats?.audioCodec ?: session.audioCodec, aBitrateLabel)
+        if (audioParts.isNotEmpty()) {
+            Text(
+                text = strings.statsAudioLine.format(audioParts.joinToString(" • ")),
+                color = colors.textSecondary,
+                fontSize = 11.sp
+            )
+        }
+        val decoders = listOfNotNull(liveStats?.videoDecoderName, liveStats?.audioDecoderName)
+        if (decoders.isNotEmpty()) {
+            Text(
+                text = strings.statsDecoderLine.format(decoders.joinToString(" / ")),
+                color = colors.textSecondary,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (liveStats != null) {
+            Text(
+                text = strings.statsBufferDroppedLine.format(liveStats.bufferedDurationMs / 1000.0, liveStats.droppedFrames),
+                color = colors.textSecondary,
+                fontSize = 11.sp
+            )
         }
         Text(
             text = strings.playerQualityInfo.format(selectedQuality.localized(strings), "${playbackSpeed}x"),
             color = colors.textSecondary,
             fontSize = 11.sp
         )
+    }
+}
+
+@Composable
+private fun StillWatchingOverlay(
+    nextTitle: String?,
+    onContinue: () -> Unit,
+    onExit: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
+    val spec = SeerflixTokens.spec
+    val corner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val continueFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        delay(60L)
+        runCatching { continueFocus.requestFocus() }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xCC000000)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .width(460.dp)
+                .clip(corner)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, corner)
+                .padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = strings.playerStillWatchingTitle,
+                color = colors.white,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (!nextTitle.isNullOrBlank()) {
+                Text(
+                    text = strings.playerStillWatchingBody.format(nextTitle),
+                    color = colors.textSecondary,
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                HeroPillButton(
+                    text = strings.playerStillWatchingContinue,
+                    icon = Icons.Filled.PlayArrow,
+                    isPrimary = true,
+                    onClick = onContinue,
+                    modifier = Modifier.focusRequester(continueFocus)
+                )
+                HeroPillButton(
+                    text = strings.playerStillWatchingExit,
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = onExit
+                )
+            }
+        }
     }
 }
 
@@ -2176,6 +2593,7 @@ private fun CaptionsSideSheet(
     subtitleOffsetMs: Long,
     assSubtitleMode: AssSubtitleMode,
     activeAssSubtitleIndex: Int?,
+    burnInSubtitleIndex: Int?,
     remoteSubtitles: List<RemoteSubtitleOption>,
     remoteSubtitlesLoading: Boolean,
     remoteSubtitleLanguage: String,
@@ -2187,6 +2605,7 @@ private fun CaptionsSideSheet(
     onResetSubtitleOffset: () -> Unit,
     onSelectAssMode: (AssSubtitleMode) -> Unit,
     onSelectExternalAssTrack: (ExternalSubtitleFile?) -> Unit,
+    onSelectBurnInSubtitle: (Int?) -> Unit,
     onSearchRemoteSubtitles: (String) -> Unit,
     onDownloadRemoteSubtitle: (String) -> Unit,
     onClose: () -> Unit
@@ -2205,7 +2624,8 @@ private fun CaptionsSideSheet(
                 .firstOrNull { group.isTrackSelected(it) }
                 ?.let { idx -> group.getTrackFormat(idx).sampleMimeType }
         }
-    val isBitmapSubtitle = selectedTextMime == MimeTypes.APPLICATION_PGS ||
+    val isBitmapSubtitle = burnInSubtitleIndex != null ||
+        selectedTextMime == MimeTypes.APPLICATION_PGS ||
         selectedTextMime == MimeTypes.APPLICATION_VOBSUB ||
         selectedTextMime == MimeTypes.APPLICATION_DVBSUBS
     val assExternalTracks = session?.externalSubtitleFiles.orEmpty().filter {
@@ -2214,9 +2634,21 @@ private fun CaptionsSideSheet(
             it.url.contains(".ass", ignoreCase = true) ||
             it.url.contains(".ssa", ignoreCase = true)
     }
+    val bitmapSubtitleTracks = remember(session?.subtitleTracks) {
+        session?.subtitleTracks.orEmpty().filter { JellyfinPlaybackManager.isImageBasedSubtitle(it.codec) }
+    }
+    val hasAnySubtitles = textGroups.isNotEmpty() || assExternalTracks.isNotEmpty() || (!isTrailer && bitmapSubtitleTracks.isNotEmpty())
 
-    val activeCaptionLabel = remember(tracksRevision, activeAssSubtitleIndex, assExternalTracks) {
+    val activeCaptionLabel = remember(tracksRevision, activeAssSubtitleIndex, burnInSubtitleIndex, assExternalTracks, bitmapSubtitleTracks) {
         when {
+            burnInSubtitleIndex != null -> {
+                val bmp = bitmapSubtitleTracks.firstOrNull { it.index == burnInSubtitleIndex }
+                listOfNotNull(
+                    bmp?.language?.uppercase(),
+                    bmp?.label?.takeIf { it.isNotBlank() },
+                    strings.playerBurnInBadge
+                ).distinct().joinToString(" • ").ifBlank { strings.playerBurnInBadge }
+            }
             activeAssSubtitleIndex != null -> {
                 val ext = assExternalTracks.firstOrNull { it.index == activeAssSubtitleIndex }
                 listOfNotNull(ext?.language?.uppercase(), ext?.title?.takeIf { it.isNotBlank() })
@@ -2239,7 +2671,7 @@ private fun CaptionsSideSheet(
         subtitle = activeCaptionLabel,
         icon = Icons.Filled.Subtitles,
         onClose = onClose,
-        closeFocusRequester = if (isTrailer && textGroups.isEmpty() && assExternalTracks.isEmpty()) {
+        closeFocusRequester = if (isTrailer && !hasAnySubtitles) {
             firstFocusRequester
         } else {
             remember { FocusRequester() }
@@ -2247,7 +2679,7 @@ private fun CaptionsSideSheet(
     ) {
         SheetSectionHeader(strings.settingsSubtitlesSection, showTopSpacer = false)
 
-        if (textGroups.isEmpty() && assExternalTracks.isEmpty()) {
+        if (!hasAnySubtitles) {
             Text(
                 text = strings.playerNoSubtitles,
                 color = colors.textSecondary,
@@ -2257,24 +2689,29 @@ private fun CaptionsSideSheet(
         } else {
             TrackChoiceRow(
                 label = strings.optionOff,
-                selected = textGroups.none { it.isSelected } && activeAssSubtitleIndex == null,
+                selected = textGroups.none { it.isSelected } && activeAssSubtitleIndex == null && burnInSubtitleIndex == null,
                 onClick = {
                     player.trackSelectionParameters = player.trackSelectionParameters
                         .buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                         .build()
                     onSelectExternalAssTrack(null)
+                    if (burnInSubtitleIndex != null) onSelectBurnInSubtitle(null)
                 },
                 modifier = Modifier.focusRequester(firstFocusRequester)
             )
             textGroups.forEachIndexed { idx, group ->
                 val format = group.getTrackFormat(0)
-                val label = listOfNotNull(format.language?.uppercase(), format.label)
-                    .joinToString(" • ")
+                val isForced = (format.selectionFlags and C.SELECTION_FLAG_FORCED) != 0
+                val label = listOfNotNull(
+                    format.language?.uppercase()?.takeIf { it != "UND" },
+                    format.label?.takeIf { it.isNotBlank() },
+                    if (isForced) strings.playerForcedBadge else null
+                ).distinct().joinToString(" • ")
                     .ifBlank { strings.playerSubtitleTrackN.format(idx + 1) }
                 TrackChoiceRow(
                     label = label,
-                    selected = group.isSelected && activeAssSubtitleIndex == null,
+                    selected = group.isSelected && activeAssSubtitleIndex == null && burnInSubtitleIndex == null,
                     onClick = {
                         player.trackSelectionParameters = player.trackSelectionParameters
                             .buildUpon()
@@ -2284,7 +2721,27 @@ private fun CaptionsSideSheet(
                         // The styled ASS overlay hides ExoPlayer's SubtitleView; drop it so the
                         // chosen track is actually visible.
                         if (activeAssSubtitleIndex != null) onSelectExternalAssTrack(null)
+                        if (burnInSubtitleIndex != null) onSelectBurnInSubtitle(null)
                     }
+                )
+            }
+        }
+
+        // Image-based subtitles (PGS / VobSub / DVB) — surfaced in HLS and available for explicit server burn-in
+        if (!isTrailer && bitmapSubtitleTracks.isNotEmpty()) {
+            SheetSectionHeader(strings.playerBitmapBurnInSection)
+            bitmapSubtitleTracks.forEach { track ->
+                val label = listOfNotNull(
+                    track.language?.uppercase()?.takeIf { it != "UND" },
+                    track.label.takeIf { it.isNotBlank() },
+                    track.codec?.uppercase(),
+                    if (track.isForced) strings.playerForcedBadge else null,
+                    strings.playerBurnInBadge
+                ).distinct().joinToString(" • ")
+                TrackChoiceRow(
+                    label = label,
+                    selected = burnInSubtitleIndex == track.index,
+                    onClick = { onSelectBurnInSubtitle(track.index) }
                 )
             }
         }
@@ -2306,7 +2763,8 @@ private fun CaptionsSideSheet(
                 val label = listOfNotNull(
                     ext.language?.uppercase(),
                     ext.title.ifBlank { strings.playerAssTrackN.format(ext.index) },
-                    ext.codec?.uppercase()
+                    ext.codec?.uppercase(),
+                    if (ext.isForced) strings.playerForcedBadge else null
                 ).distinct().joinToString(" • ")
                 TrackChoiceRow(
                     label = label,
@@ -2329,7 +2787,7 @@ private fun CaptionsSideSheet(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                val syncModifier = if (textGroups.isEmpty() && assExternalTracks.isEmpty()) {
+                val syncModifier = if (!hasAnySubtitles) {
                     Modifier.weight(1f).focusRequester(firstFocusRequester)
                 } else Modifier.weight(1f)
                 SettingChip(label = "-0.5s", selected = false, onClick = { onAdjustSubtitleOffset(-500L) }, modifier = syncModifier)
@@ -2450,9 +2908,15 @@ private fun CaptionsSideSheet(
 private fun AudioSideSheet(
     player: ExoPlayer,
     tracksRevision: Int,
+    session: PlaybackSessionData?,
     isTrailer: Boolean,
+    selectedAudioStreamIndex: Int?,
+    audioOffsetMs: Long,
     audioPassthroughEnabled: Boolean,
     stereoDownmixEnabled: Boolean,
+    onSelectServerAudioTrack: (Int, Boolean) -> Unit,
+    onAdjustAudioOffset: (Long) -> Unit,
+    onResetAudioOffset: () -> Unit,
     onToggleAudioPassthrough: () -> Unit,
     onToggleStereoDownmix: () -> Unit,
     onClose: () -> Unit
@@ -2464,9 +2928,20 @@ private fun AudioSideSheet(
     val audioGroups = remember(tracksRevision, player) {
         player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
     }
-    val activeAudioLabel = remember(tracksRevision, audioGroups) {
-        audioGroups.firstOrNull { it.isSelected }?.let { group ->
-            formatAudioTrackLabel(group.getTrackFormat(0), 0, strings)
+    val serverAudioTracks = session?.audioTracks.orEmpty()
+    val useServerAudioList = !isTrailer && session?.isHls == true && serverAudioTracks.isNotEmpty()
+    val activeServerAudioIndex = selectedAudioStreamIndex
+        ?: session?.activeAudioStreamIndex
+        ?: serverAudioTracks.firstOrNull { it.isDefault }?.index
+        ?: serverAudioTracks.firstOrNull()?.index
+
+    val activeAudioLabel = remember(tracksRevision, audioGroups, useServerAudioList, activeServerAudioIndex, serverAudioTracks) {
+        if (useServerAudioList) {
+            serverAudioTracks.firstOrNull { it.index == activeServerAudioIndex }?.let { formatServerAudioTrackLabel(it, strings) }
+        } else {
+            audioGroups.firstOrNull { it.isSelected }?.let { group ->
+                formatAudioTrackLabel(group.getTrackFormat(0), 0, strings)
+            }
         }
     }
 
@@ -2475,15 +2950,30 @@ private fun AudioSideSheet(
         runCatching { firstFocusRequester.requestFocus() }
     }
 
+    val hasNoTracks = if (useServerAudioList) serverAudioTracks.isEmpty() else audioGroups.isEmpty()
+
     PlayerSideSheet(
         title = strings.playerAudio,
         subtitle = activeAudioLabel,
         icon = Icons.AutoMirrored.Filled.VolumeUp,
         onClose = onClose,
-        closeFocusRequester = if (audioGroups.isEmpty() && isTrailer) firstFocusRequester else remember { FocusRequester() }
+        closeFocusRequester = if (hasNoTracks && isTrailer) firstFocusRequester else remember { FocusRequester() }
     ) {
         SheetSectionHeader(strings.playerAudioTracks, showTopSpacer = false)
-        if (audioGroups.isEmpty()) {
+        if (useServerAudioList) {
+            serverAudioTracks.forEachIndexed { idx, track ->
+                TrackChoiceRow(
+                    label = formatServerAudioTrackLabel(track, strings),
+                    selected = track.index == activeServerAudioIndex,
+                    onClick = {
+                        if (track.index != activeServerAudioIndex) {
+                            onSelectServerAudioTrack(track.index, false)
+                        }
+                    },
+                    modifier = if (idx == 0) Modifier.focusRequester(firstFocusRequester) else Modifier
+                )
+            }
+        } else if (audioGroups.isEmpty()) {
             Text(
                 text = strings.playerNoAudioTracks,
                 color = colors.textSecondary,
@@ -2492,15 +2982,34 @@ private fun AudioSideSheet(
             )
         } else {
             audioGroups.forEachIndexed { idx, group ->
-                val label = formatAudioTrackLabel(group.getTrackFormat(0), idx, strings)
+                val format = group.getTrackFormat(0)
+                val label = formatAudioTrackLabel(format, idx, strings)
+                val isSupportedLocally = group.isTrackSupported(0)
                 TrackChoiceRow(
                     label = label,
                     selected = group.isSelected,
                     onClick = {
-                        player.trackSelectionParameters = player.trackSelectionParameters
-                            .buildUpon()
-                            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
-                            .build()
+                        if (isSupportedLocally || isTrailer) {
+                            player.trackSelectionParameters = player.trackSelectionParameters
+                                .buildUpon()
+                                .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                                .build()
+                        } else {
+                            // Direct Play track cannot be decoded locally; fall back to server audio conversion.
+                            val matchingServerTrack = serverAudioTracks.getOrNull(idx)
+                                ?: serverAudioTracks.firstOrNull {
+                                    SubtitleTrackSelector.normalizeLanguage(it.language) ==
+                                        SubtitleTrackSelector.normalizeLanguage(format.language)
+                                }
+                            if (matchingServerTrack != null) {
+                                onSelectServerAudioTrack(matchingServerTrack.index, true)
+                            } else {
+                                player.trackSelectionParameters = player.trackSelectionParameters
+                                    .buildUpon()
+                                    .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+                                    .build()
+                            }
+                        }
                     },
                     modifier = if (idx == 0) Modifier.focusRequester(firstFocusRequester) else Modifier
                 )
@@ -2508,12 +3017,28 @@ private fun AudioSideSheet(
         }
 
         if (!isTrailer) {
+            // Audio Sync Offset (±ms)
+            val audioOffsetLabel = String.format(Locale.US, "%+dms", audioOffsetMs)
+            SheetSectionHeader(strings.playerAudioSync.format(audioOffsetLabel))
+            Text(
+                text = strings.playerAudioSyncHint,
+                color = colors.textSecondary,
+                fontSize = 11.sp
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                val offsetMod = if (hasNoTracks) Modifier.weight(1f).focusRequester(firstFocusRequester) else Modifier.weight(1f)
+                SettingChip(label = "-250ms", selected = false, onClick = { onAdjustAudioOffset(-250L) }, modifier = offsetMod)
+                SettingChip(label = "-50ms", selected = false, onClick = { onAdjustAudioOffset(-50L) }, modifier = Modifier.weight(1f))
+                SettingChip(label = "0ms", selected = audioOffsetMs == 0L, onClick = onResetAudioOffset, modifier = Modifier.weight(1f))
+                SettingChip(label = "+50ms", selected = false, onClick = { onAdjustAudioOffset(50L) }, modifier = Modifier.weight(1f))
+                SettingChip(label = "+250ms", selected = false, onClick = { onAdjustAudioOffset(250L) }, modifier = Modifier.weight(1f))
+            }
+
             SheetSectionHeader(strings.playerAudioRouting)
             TrackChoiceRow(
                 label = strings.playerPassthrough,
                 selected = audioPassthroughEnabled,
-                onClick = onToggleAudioPassthrough,
-                modifier = if (audioGroups.isEmpty()) Modifier.focusRequester(firstFocusRequester) else Modifier
+                onClick = onToggleAudioPassthrough
             )
             TrackChoiceRow(
                 label = strings.playerDownmix,
@@ -2522,6 +3047,22 @@ private fun AudioSideSheet(
             )
         }
     }
+}
+
+private fun formatServerAudioTrackLabel(track: TrackOption, strings: UiStrings): String {
+    val channels = when (track.channels) {
+        8 -> "7.1"
+        6 -> "5.1"
+        2 -> "2.0"
+        1 -> "1.0"
+        else -> null
+    }
+    return listOfNotNull(
+        track.language?.uppercase()?.takeIf { it != "UND" },
+        track.label.takeIf { it.isNotBlank() },
+        channels,
+        track.codec?.uppercase()
+    ).distinct().joinToString(" • ").ifBlank { strings.playerAudioTrackN.format(track.index + 1) }
 }
 
 private fun formatAudioTrackLabel(
@@ -2611,6 +3152,8 @@ private fun PlaybackSettingsSideSheet(
     selectedSpeed: Float,
     selectedQuality: QualityPreset,
     selectedMediaSourceId: String?,
+    videoResizeMode: VideoResizeMode,
+    sleepTimerOption: SleepTimerOption,
     autoSkipIntro: Boolean,
     autoSkipRecap: Boolean,
     frameRateMatchMode: FrameRateMatchMode,
@@ -2618,6 +3161,8 @@ private fun PlaybackSettingsSideSheet(
     onSelectSpeed: (Float) -> Unit,
     onSelectQuality: (QualityPreset) -> Unit,
     onSwitchMediaSource: (String) -> Unit,
+    onSelectResizeMode: (VideoResizeMode) -> Unit,
+    onSelectSleepTimer: (SleepTimerOption) -> Unit,
     onToggleAutoSkipIntro: () -> Unit,
     onToggleAutoSkipRecap: () -> Unit,
     onSelectFrameRateMatchMode: (FrameRateMatchMode) -> Unit,
@@ -2672,18 +3217,57 @@ private fun PlaybackSettingsSideSheet(
             }
         }
 
-        // Playback Speed
-        SheetSectionHeader(strings.playerSpeed, showTopSpacer = !isTrailer)
+        // Aspect Ratio / Zoom Mode
+        SheetSectionHeader(strings.playerAspectRatio, showTopSpacer = !isTrailer)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEachIndexed { idx, spd ->
+            VideoResizeMode.entries.forEachIndexed { idx, mode ->
                 SettingChip(
-                    label = "${spd}x",
-                    selected = selectedSpeed == spd,
-                    onClick = { onSelectSpeed(spd) },
+                    label = mode.localized(strings),
+                    selected = videoResizeMode == mode,
+                    onClick = { onSelectResizeMode(mode) },
                     modifier = if (isTrailer && idx == 0) {
                         Modifier.weight(1f).focusRequester(firstFocusRequester)
                     } else Modifier.weight(1f)
                 )
+            }
+        }
+
+        // Playback Speed
+        SheetSectionHeader(strings.playerSpeed)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f).forEach { spd ->
+                SettingChip(
+                    label = "${spd}x",
+                    selected = selectedSpeed == spd,
+                    onClick = { onSelectSpeed(spd) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        // Sleep Timer
+        if (!isTrailer) {
+            SheetSectionHeader(strings.playerSleepTimer)
+            val sleepEntries = SleepTimerOption.entries
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                sleepEntries.take(3).forEach { opt ->
+                    SettingChip(
+                        label = opt.localized(strings),
+                        selected = sleepTimerOption == opt,
+                        onClick = { onSelectSleepTimer(opt) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                sleepEntries.drop(3).forEach { opt ->
+                    SettingChip(
+                        label = opt.localized(strings),
+                        selected = sleepTimerOption == opt,
+                        onClick = { onSelectSleepTimer(opt) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
 
@@ -2844,6 +3428,21 @@ private fun FrameRateMatchMode.localized(s: UiStrings): String = when (this) {
     FrameRateMatchMode.OFF -> s.optionOff
     FrameRateMatchMode.SEAMLESS_ONLY -> s.frameRateSeamless
     FrameRateMatchMode.ALWAYS -> s.frameRateAlways
+}
+
+private fun VideoResizeMode.localized(s: UiStrings): String = when (this) {
+    VideoResizeMode.FIT -> s.resizeModeFit
+    VideoResizeMode.FILL -> s.resizeModeFill
+    VideoResizeMode.STRETCH -> s.resizeModeStretch
+}
+
+private fun SleepTimerOption.localized(s: UiStrings): String = when (this) {
+    SleepTimerOption.OFF -> s.optionOff
+    SleepTimerOption.MIN_15 -> s.sleepTimerMinutesShort.format(15)
+    SleepTimerOption.MIN_30 -> s.sleepTimerMinutesShort.format(30)
+    SleepTimerOption.MIN_45 -> s.sleepTimerMinutesShort.format(45)
+    SleepTimerOption.MIN_60 -> s.sleepTimerMinutesShort.format(60)
+    SleepTimerOption.END_OF_VIDEO -> s.sleepTimerEndOfVideo
 }
 
 private fun formatMs(ms: Long): String {

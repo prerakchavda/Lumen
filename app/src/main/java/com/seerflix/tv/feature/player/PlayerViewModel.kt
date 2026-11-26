@@ -11,18 +11,26 @@ import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExternalSubtitleFile
 import com.seerflix.tv.core.model.FrameRateMatchMode
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.PlayMethod
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.QualityPreset
 import com.seerflix.tv.core.model.RemoteSubtitleOption
 import com.seerflix.tv.core.model.SeasonSummary
+import com.seerflix.tv.core.model.SleepTimerOption
+import com.seerflix.tv.core.model.SubtitleSelectionMode
 import com.seerflix.tv.core.model.SyncPlayGroup
+import com.seerflix.tv.core.model.VideoResizeMode
 import com.seerflix.tv.core.network.MediaClient
+import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.player.AssCue
 import com.seerflix.tv.core.player.AssSubtitleParser
+import com.seerflix.tv.core.player.AudioDelayProcessor
 import com.seerflix.tv.core.player.ExternalPlayerHelper
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.NextEpisodeInfo
+import com.seerflix.tv.core.player.PlaybackReportState
 import com.seerflix.tv.core.player.PlaybackSegments
+import com.seerflix.tv.core.player.SubtitleTrackSelector
 import com.seerflix.tv.core.player.SyncPlayAction
 import com.seerflix.tv.core.player.SyncPlayManager
 import com.seerflix.tv.core.network.JellyfinSocketClient
@@ -46,17 +54,38 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.inject.Inject
 
+data class LiveStreamStats(
+    val playMethod: PlayMethod,
+    val transcodeReasons: List<String> = emptyList(),
+    val videoCodec: String? = null,
+    val videoResolution: String? = null,
+    val videoFps: Float? = null,
+    val videoBitrateBps: Long? = null,
+    val hdrFormat: String? = null,
+    val audioCodec: String? = null,
+    val audioBitrateBps: Long? = null,
+    val videoDecoderName: String? = null,
+    val audioDecoderName: String? = null,
+    val bufferedDurationMs: Long = 0L,
+    val droppedFrames: Int = 0
+)
+
 data class PlayerUiState(
     val session: PlaybackSessionData? = null,
     val selectedSpeed: Float = 1.0f,
     val selectedQuality: QualityPreset = QualityPreset.AUTO,
     val selectedMediaSourceId: String? = null,
+    val selectedAudioStreamIndex: Int? = null,
+    val selectedSubtitleStreamIndex: Int? = null,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
     val subtitleTextColor: com.seerflix.tv.core.model.SubtitleTextColor = com.seerflix.tv.core.model.SubtitleTextColor.WHITE,
     val subtitleEdgeStyle: com.seerflix.tv.core.model.SubtitleEdgeStyle = com.seerflix.tv.core.model.SubtitleEdgeStyle.OUTLINE,
     val subtitlePosition: com.seerflix.tv.core.model.SubtitlePosition = com.seerflix.tv.core.model.SubtitlePosition.BOTTOM,
     val subtitleOffsetMs: Long = 0L,
+    val audioOffsetMs: Long = 0L,
+    val videoResizeMode: VideoResizeMode = VideoResizeMode.FIT,
+    val subtitleSelectionMode: SubtitleSelectionMode = SubtitleSelectionMode.DEFAULT,
     val autoSkipIntro: Boolean = false,
     val autoSkipRecap: Boolean = false,
     val frameRateMatchMode: FrameRateMatchMode = FrameRateMatchMode.OFF,
@@ -69,6 +98,12 @@ data class PlayerUiState(
     val showStreamInfo: Boolean = false,
     val autoplayNextEpisode: Boolean = true,
     val autoplayCancelled: Boolean = false,
+    val bingeLimitEpisodes: Int = 0,
+    val showStillWatchingPrompt: Boolean = false,
+    val pendingStillWatchingNextId: String? = null,
+    val pendingStillWatchingNextTitle: String? = null,
+    val sleepTimerOption: SleepTimerOption = SleepTimerOption.OFF,
+    val sleepTimerEndMs: Long? = null,
     val preferredAudioLang: String? = null,
     val preferredSubtitleLang: String? = null,
     val remoteSubtitles: List<RemoteSubtitleOption> = emptyList(),
@@ -96,19 +131,27 @@ class PlayerViewModel @Inject constructor(
     private val catalogRepository: UnifiedCatalogRepository,
     private val trailerResolver: YouTubeTrailerResolver,
     private val syncPlayManager: SyncPlayManager,
+    private val prefs: SessionPreferences,
     socketClient: JellyfinSocketClient,
     // Honours the per-server self-signed certificate toggle; also handed to ExoPlayer so
     // streams and side-loaded subtitles work against homelab HTTPS servers.
     @MediaClient val mediaHttpClient: OkHttpClient
 ) : ViewModel() {
 
+    val softwareAudioDecodingEnabled: Boolean
+        get() = prefs.cachedSoftwareAudioDecoding
+
     private val initialItemId: String = savedStateHandle.get<String>("itemId").orEmpty()
     private val initialMediaSourceId: String? = savedStateHandle.get<String>("mediaSourceId")?.takeIf { it.isNotBlank() }
+    private val initialAudioStreamIndex: Int? = savedStateHandle.get<String>("audioIndex")?.toIntOrNull()?.takeIf { it >= 0 }
+    private val initialSubtitleStreamIndex: Int? = savedStateHandle.get<String>("subtitleIndex")?.toIntOrNull()?.takeIf { it >= 0 }
     private val trailerYoutubeKey: String? = savedStateHandle.get<String>("youtubeKey")?.takeIf { it.isNotBlank() && it != "none" }
     private val localTrailerId: String? = savedStateHandle.get<String>("localTrailerId")?.takeIf { it.isNotBlank() && it != "none" }
     private val trailerTitle: String? = savedStateHandle.get<String>("title")?.takeIf { it.isNotBlank() }
     /** Start position handed over by "Play on" from another app or by a SyncPlay group. */
-    private val initialStartMs: Long? = savedStateHandle.get<String>("startMs")?.toLongOrNull()?.takeIf { it > 0L }
+    private val initialStartMs: Long? = savedStateHandle.get<String>("startMs")?.toLongOrNull()?.takeIf { it >= 0L }
+    private val startFromBeginning: Boolean = savedStateHandle.get<String>("startMs") == "0" &&
+        savedStateHandle.get<String>("fromStart") == "true"
     private val openedBySyncPlay: Boolean = savedStateHandle.get<String>("syncplay") == "true"
 
     /** Group commands for the player (only while in a SyncPlay group). */
@@ -123,6 +166,7 @@ class PlayerViewModel @Inject constructor(
 
     private var activeUserId: String = ""
     private var activeSeriesTmdbId: Int? = null
+    private var consecutiveAutoplayedEpisodes: Int = 0
 
     /** The in-flight item/trailer load; a newer load cancels it so a stale result can't win. */
     private var loadJob: Job? = null
@@ -145,10 +189,16 @@ class PlayerViewModel @Inject constructor(
         if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
             loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
         } else {
+            val effectiveStartMs = when {
+                startFromBeginning -> 0L
+                initialStartMs != null && initialStartMs > 0L -> initialStartMs
+                else -> null
+            }
             loadItem(
                 initialItemId,
                 mediaSourceIdOverride = initialMediaSourceId,
-                resumeOverrideMs = initialStartMs,
+                audioStreamIndexOverride = initialAudioStreamIndex,
+                resumeOverrideMs = effectiveStartMs,
                 fromSyncPlay = openedBySyncPlay
             )
         }
@@ -207,14 +257,37 @@ class PlayerViewModel @Inject constructor(
         // burned-in subtitle: the previous episode's MediaSourceId / subtitle index don't exist on it.
         mediaSourceIdOverride: String? = KEEP_SOURCE,
         burnInSubtitleOverride: Int? = KEEP_BURN_IN,
+        audioStreamIndexOverride: Int? = KEEP_AUDIO_INDEX,
+        forceHls: Boolean = false,
         /** True when the group asked for this item; otherwise a new item becomes the group's queue. */
-        fromSyncPlay: Boolean = false
+        fromSyncPlay: Boolean = false,
+        /** True when triggered automatically by Up Next countdown / end-of-episode autoplay. */
+        isAutoplayAdvance: Boolean = false,
+        nextTitleForPrompt: String? = null
     ) {
         if (itemId.isBlank()) {
             _uiState.update { it.copy(isLoading = false, errorMessage = "Invalid media item ID") }
             return
         }
         val isSameItem = _uiState.value.session?.itemId == itemId
+        if (!isSameItem) {
+            if (isAutoplayAdvance) {
+                consecutiveAutoplayedEpisodes++
+                val limit = _uiState.value.bingeLimitEpisodes
+                if (limit > 0 && consecutiveAutoplayedEpisodes >= limit) {
+                    _uiState.update {
+                        it.copy(
+                            showStillWatchingPrompt = true,
+                            pendingStillWatchingNextId = itemId,
+                            pendingStillWatchingNextTitle = nextTitleForPrompt ?: it.session?.nextEpisodeTitle
+                        )
+                    }
+                    return
+                }
+            } else {
+                consecutiveAutoplayedEpisodes = 0
+            }
+        }
         requestedItemId = itemId
         if (!isSameItem) assLoadJob?.cancel()
         // A quality forced by a playback error applies to that item only.
@@ -230,7 +303,11 @@ class PlayerViewModel @Inject constructor(
                     errorMessage = null,
                     feedbackMessage = null,
                     autoplayCancelled = false,
+                    showStillWatchingPrompt = false,
+                    pendingStillWatchingNextId = null,
+                    pendingStillWatchingNextTitle = null,
                     subtitleOffsetMs = if (isSameItem) it.subtitleOffsetMs else 0L,
+                    audioOffsetMs = if (isSameItem) it.audioOffsetMs else 0L,
                     remoteSubtitles = if (isSameItem) it.remoteSubtitles else emptyList(),
                     subtitleSearchMessage = if (isSameItem) it.subtitleSearchMessage else null,
                     activeAssCues = if (isSameItem) it.activeAssCues else emptyList(),
@@ -261,9 +338,17 @@ class PlayerViewModel @Inject constructor(
                 isSameItem -> _uiState.value.burnInSubtitleIndex
                 else -> null
             }
+            val resolvedAudioIndex = when {
+                audioStreamIndexOverride != KEEP_AUDIO_INDEX -> audioStreamIndexOverride
+                isSameItem -> _uiState.value.selectedAudioStreamIndex
+                else -> initialAudioStreamIndex?.takeIf { itemId == initialItemId }
+            }
+            val resolvedInitialSubIndex = if (!isSameItem && itemId == initialItemId) initialSubtitleStreamIndex else null
             _uiState.update {
                 it.copy(
                     autoplayNextEpisode = profile.autoplayNextEpisode,
+                    bingeLimitEpisodes = profile.bingeLimitEpisodes,
+                    subtitleSelectionMode = profile.subtitleSelectionMode,
                     subtitleFontScale = profile.subtitleFontScale,
                     subtitleBackgroundAlpha = profile.subtitleBackgroundAlpha,
                     subtitleTextColor = profile.subtitleTextColor,
@@ -292,7 +377,11 @@ class PlayerViewModel @Inject constructor(
                 audioPassthroughEnabled = profile.audioPassthroughEnabled,
                 stereoDownmixEnabled = profile.stereoDownmixEnabled,
                 assSubtitleMode = profile.assSubtitleMode,
-                burnInSubtitleIndex = resolvedBurnIn
+                burnInSubtitleIndex = resolvedBurnIn,
+                audioStreamIndex = resolvedAudioIndex,
+                subtitleStreamIndex = resolvedInitialSubIndex,
+                softwareAudioDecodingEnabled = prefs.cachedSoftwareAudioDecoding,
+                forceHls = forceHls
             )
                 .onSuccess { prepared ->
                     val previousSession = _uiState.value.session
@@ -312,6 +401,8 @@ class PlayerViewModel @Inject constructor(
                             session = adjustedSession,
                             selectedQuality = quality,
                             selectedMediaSourceId = adjustedSession.mediaSourceId,
+                            selectedAudioStreamIndex = resolvedAudioIndex ?: adjustedSession.activeAudioStreamIndex,
+                            selectedSubtitleStreamIndex = resolvedBurnIn ?: resolvedInitialSubIndex,
                             burnInSubtitleIndex = resolvedBurnIn,
                             videoFrameRateHint = prepared.videoFrameRate,
                             isLoading = false
@@ -343,8 +434,30 @@ class PlayerViewModel @Inject constructor(
                     if (!adjustedSession.seriesId.isNullOrBlank()) {
                         scheduleDrawerLoad(adjustedSession.seriesId, adjustedSession.seasonId)
                     }
-                    if (profile.assSubtitleMode == AssSubtitleMode.STYLED && profile.preferredSubtitleLang != "off") {
-                        autoLoadMatchingAssTrack(adjustedSession, profile.preferredSubtitleLang)
+                    if (profile.assSubtitleMode == AssSubtitleMode.STYLED &&
+                        resolvedBurnIn == null &&
+                        profile.subtitleSelectionMode != SubtitleSelectionMode.NONE &&
+                        profile.preferredSubtitleLang != "off"
+                    ) {
+                        val activeAudio = adjustedSession.audioTracks.firstOrNull {
+                            it.index == (resolvedAudioIndex ?: adjustedSession.activeAudioStreamIndex)
+                        } ?: adjustedSession.audioTracks.firstOrNull { it.isDefault } ?: adjustedSession.audioTracks.firstOrNull()
+                        val selectedSub = SubtitleTrackSelector.selectSubtitleTrack(
+                            mode = profile.subtitleSelectionMode,
+                            preferredSubtitleLang = profile.preferredSubtitleLang,
+                            preferredAudioLang = profile.preferredAudioLang,
+                            activeAudioLang = activeAudio?.language,
+                            subtitleTracks = adjustedSession.subtitleTracks
+                        )
+                        if (selectedSub != null &&
+                            (selectedSub.codec.equals("ass", ignoreCase = true) || selectedSub.codec.equals("ssa", ignoreCase = true))
+                        ) {
+                            adjustedSession.externalSubtitleFiles.firstOrNull { it.index == selectedSub.index }?.let { ext ->
+                                loadAssSubtitleFile(ext)
+                            }
+                        } else if (profile.subtitleSelectionMode == SubtitleSelectionMode.DEFAULT) {
+                            autoLoadMatchingAssTrack(adjustedSession, profile.preferredSubtitleLang)
+                        }
                     }
                 }
                 .onFailure { err ->
@@ -699,6 +812,93 @@ class PlayerViewModel @Inject constructor(
         _uiState.update { it.copy(selectedSpeed = speed) }
     }
 
+    fun selectServerAudioTrack(audioStreamIndex: Int, currentPosMs: Long, forceHls: Boolean = false) {
+        val session = _uiState.value.session ?: return
+        if (session.isTrailer) return
+        reportStopped(currentPosMs)
+        loadItem(
+            itemId = session.itemId,
+            resumeOverrideMs = currentPosMs,
+            audioStreamIndexOverride = audioStreamIndex,
+            forceHls = forceHls || session.isHls
+        )
+    }
+
+    fun selectBurnInSubtitleTrack(subtitleIndex: Int?, currentPosMs: Long) {
+        val session = _uiState.value.session ?: return
+        if (session.isTrailer) return
+        assLoadJob?.cancel()
+        _uiState.update { it.copy(activeAssCues = emptyList(), activeAssSubtitleIndex = null) }
+        if (subtitleIndex == _uiState.value.burnInSubtitleIndex) return
+        reportStopped(currentPosMs)
+        loadItem(
+            itemId = session.itemId,
+            resumeOverrideMs = currentPosMs,
+            burnInSubtitleOverride = subtitleIndex
+        )
+    }
+
+    fun updateActiveTrackIndexes(audioIndex: Int?, subtitleIndex: Int?) {
+        _uiState.update {
+            it.copy(
+                selectedAudioStreamIndex = audioIndex ?: it.selectedAudioStreamIndex,
+                selectedSubtitleStreamIndex = subtitleIndex
+            )
+        }
+    }
+
+    fun setVideoResizeMode(mode: VideoResizeMode) {
+        _uiState.update { it.copy(videoResizeMode = mode) }
+    }
+
+    fun adjustAudioOffset(deltaMs: Long) {
+        _uiState.update {
+            val next = (it.audioOffsetMs + deltaMs).coerceIn(-AudioDelayProcessor.MAX_OFFSET_MS, AudioDelayProcessor.MAX_OFFSET_MS)
+            it.copy(audioOffsetMs = next)
+        }
+    }
+
+    fun resetAudioOffset() {
+        _uiState.update { it.copy(audioOffsetMs = 0L) }
+    }
+
+    fun setSleepTimer(option: SleepTimerOption) {
+        val endMs = option.minutes?.takeIf { it > 0 }?.let { mins ->
+            System.currentTimeMillis() + mins * 60_000L
+        }
+        _uiState.update { it.copy(sleepTimerOption = option, sleepTimerEndMs = endMs) }
+    }
+
+    fun clearSleepTimer() {
+        _uiState.update { it.copy(sleepTimerOption = SleepTimerOption.OFF, sleepTimerEndMs = null) }
+    }
+
+    fun confirmStillWatching() {
+        val nextId = _uiState.value.pendingStillWatchingNextId
+        consecutiveAutoplayedEpisodes = 0
+        _uiState.update {
+            it.copy(
+                showStillWatchingPrompt = false,
+                pendingStillWatchingNextId = null,
+                pendingStillWatchingNextTitle = null
+            )
+        }
+        if (!nextId.isNullOrBlank()) {
+            loadItem(nextId)
+        }
+    }
+
+    fun dismissStillWatching() {
+        _uiState.update {
+            it.copy(
+                showStillWatchingPrompt = false,
+                pendingStillWatchingNextId = null,
+                pendingStillWatchingNextTitle = null,
+                autoplayCancelled = true
+            )
+        }
+    }
+
     fun adjustSubtitleOffset(deltaMs: Long) {
         _uiState.update {
             val next = (it.subtitleOffsetMs + deltaMs).coerceIn(-60_000L, 60_000L)
@@ -826,31 +1026,47 @@ class PlayerViewModel @Inject constructor(
         _uiState.update { it.copy(autoplayCancelled = true) }
     }
 
-    fun reportStart(positionMs: Long) {
+    private fun buildDefaultReportState(override: PlaybackReportState?): PlaybackReportState {
+        val state = _uiState.value
+        val session = state.session
+        return PlaybackReportState(
+            playMethod = override?.playMethod ?: session?.playMethod?.jellyfinValue,
+            audioStreamIndex = override?.audioStreamIndex ?: state.selectedAudioStreamIndex ?: session?.activeAudioStreamIndex,
+            subtitleStreamIndex = override?.subtitleStreamIndex ?: state.burnInSubtitleIndex ?: state.activeAssSubtitleIndex ?: state.selectedSubtitleStreamIndex,
+            isMuted = override?.isMuted,
+            volumeLevel = override?.volumeLevel,
+            playbackRate = override?.playbackRate ?: state.selectedSpeed
+        )
+    }
+
+    fun reportStart(positionMs: Long, reportState: PlaybackReportState? = null) {
         val session = _uiState.value.session ?: return
         if (session.isTrailer) return
+        val full = buildDefaultReportState(reportState)
         viewModelScope.launch {
-            playbackManager.reportStart(session, positionMs * 10_000L)
+            playbackManager.reportStart(session, positionMs * 10_000L, full)
         }
     }
 
-    fun reportProgress(positionMs: Long, isPaused: Boolean) {
+    fun reportProgress(positionMs: Long, isPaused: Boolean, reportState: PlaybackReportState? = null) {
         val state = _uiState.value
         val session = state.session ?: return
         // While a new item/version is loading the old session has already been reported as stopped;
         // a late progress report would resurrect it on the server.
         if (session.isTrailer || state.isLoading || state.errorMessage != null) return
+        val full = buildDefaultReportState(reportState)
         viewModelScope.launch {
-            playbackManager.reportProgress(session, positionMs * 10_000L, isPaused)
+            playbackManager.reportProgress(session, positionMs * 10_000L, isPaused, full)
         }
     }
 
-    fun reportStopped(positionMs: Long) {
+    fun reportStopped(positionMs: Long, reportState: PlaybackReportState? = null) {
         val session = _uiState.value.session ?: return
         if (session.isTrailer) return
+        val full = buildDefaultReportState(reportState)
         // Not viewModelScope: this is called from the screen's onDispose right before the
         // ViewModel is cleared, which would cancel the request before it is sent.
-        playbackManager.reportStoppedDetached(session, positionMs.coerceAtLeast(0L) * 10_000L)
+        playbackManager.reportStoppedDetached(session, positionMs.coerceAtLeast(0L) * 10_000L, full)
     }
 
     private companion object {
@@ -859,6 +1075,7 @@ class PlayerViewModel @Inject constructor(
         /** Sentinel: keep the current version (same item only). Compared by identity. */
         val KEEP_SOURCE: String = String(charArrayOf('\u0000'))
         const val KEEP_BURN_IN = Int.MIN_VALUE
+        const val KEEP_AUDIO_INDEX = Int.MIN_VALUE
         const val BLOCKED_FOR_PROFILE_MESSAGE = "This title isn't available on this profile."
     }
 }

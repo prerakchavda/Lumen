@@ -47,7 +47,8 @@ data class DeviceMediaCapabilities(
     val passthroughAc3: Boolean,
     val passthroughEac3: Boolean,
     val passthroughDts: Boolean,
-    val passthroughTrueHd: Boolean
+    val passthroughTrueHd: Boolean,
+    val softwareAudioDecoderAvailable: Boolean = false
 ) {
     /** One-line summary for logs and the "Playback compatibility" screen. */
     fun summary(): String = buildString {
@@ -77,6 +78,7 @@ data class DeviceMediaCapabilities(
         if (eac3Decoder) append(", E-AC3")
         if (dtsDecoder) append(", DTS")
         if (trueHdDecoder) append(", TrueHD")
+        if (softwareAudioDecoderAvailable) append(" (+ FFmpeg PCM)")
         append('.')
     }
 
@@ -171,7 +173,8 @@ class AndroidDeviceCapabilityProvider @Inject constructor(
             passthroughAc3 = pt.ac3,
             passthroughEac3 = pt.eac3,
             passthroughDts = pt.dts,
-            passthroughTrueHd = pt.trueHd
+            passthroughTrueHd = pt.trueHd,
+            softwareAudioDecoderAvailable = FfmpegAudioSupport.isAvailable()
         ).also { Log.i(TAG, it.summary()) }
     }
 

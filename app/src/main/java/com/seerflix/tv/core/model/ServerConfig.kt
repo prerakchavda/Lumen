@@ -77,6 +77,31 @@ enum class AssSubtitleMode(val label: String) {
 }
 
 @Serializable
+enum class SubtitleSelectionMode(val label: String) {
+    DEFAULT("Default"),
+    SMART("Smart"),
+    ONLY_FORCED("Only Forced"),
+    ALWAYS("Always"),
+    NONE("None")
+}
+
+@Serializable
+enum class VideoResizeMode(val label: String) {
+    FIT("Fit"),
+    FILL("Fill / Crop"),
+    STRETCH("Stretch")
+}
+
+enum class SleepTimerOption(val minutes: Int?) {
+    OFF(null),
+    MIN_15(15),
+    MIN_30(30),
+    MIN_45(45),
+    MIN_60(60),
+    END_OF_VIDEO(-1)
+}
+
+@Serializable
 enum class ContentRatingLimit(val label: String, val maxRank: Int, val jellyfinMaxOfficialRating: String?) {
     ALL("All Ages (Unrestricted)", 4, null),
     PG_13("Teen (PG-13 / TV-14)", 3, "PG-13"),
@@ -111,6 +136,9 @@ data class UserProfile(
     val autoplayPreviews: Boolean = false,
     val preferredAudioLang: String? = null,
     val preferredSubtitleLang: String? = null,
+    val subtitleSelectionMode: SubtitleSelectionMode = SubtitleSelectionMode.DEFAULT,
+    val playDefaultAudioTrack: Boolean = true,
+    val hasLocalTrackPreferenceOverride: Boolean = false,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
     val subtitleTextColor: SubtitleTextColor = SubtitleTextColor.WHITE,
@@ -126,6 +154,11 @@ data class UserProfile(
     val audioPassthroughEnabled: Boolean = true,
     val stereoDownmixEnabled: Boolean = false,
     val assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
+    val bingeLimitEpisodes: Int = 0,
+    val mergeNextUpIntoContinueWatching: Boolean = true,
+    val screensaverTimeoutMinutes: Int = 0,
+    val cinemaIntrosEnabled: Boolean = false,
+    val themeSongsEnabled: Boolean = false,
     val defaultStartupTab: HomeTabId = HomeTabId.HOME,
     val pinnedLibraryIds: List<String> = emptyList(),
     val hiddenHomeRowIds: List<String> = emptyList(),

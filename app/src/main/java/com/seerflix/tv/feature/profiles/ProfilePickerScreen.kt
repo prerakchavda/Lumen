@@ -617,6 +617,7 @@ private fun ProfileSettingsDialog(
     var assSubtitleMode by remember(profile.id) { mutableStateOf(profile.assSubtitleMode) }
     var audioLang by remember(profile.id) { mutableStateOf(profile.preferredAudioLang) }
     var subLang by remember(profile.id) { mutableStateOf(profile.preferredSubtitleLang) }
+    var subtitleSelectionMode by remember(profile.id) { mutableStateOf(profile.subtitleSelectionMode) }
 
     var kidsMode by remember(profile.id) { mutableStateOf(profile.kidsMode) }
     var maxContentRating by remember(profile.id) { mutableStateOf(profile.maxContentRating) }
@@ -805,6 +806,18 @@ private fun ProfileSettingsDialog(
                             )
                         }
                     }
+
+                    Text(strings.settingsSubtitleModeTitle, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        com.seerflix.tv.core.model.SubtitleSelectionMode.entries.forEach { mode ->
+                            PrefChip(
+                                label = mode.localized(strings),
+                                selected = subtitleSelectionMode == mode,
+                                onClick = { subtitleSelectionMode = mode },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
 
                 2 -> {
@@ -908,6 +921,9 @@ private fun ProfileSettingsDialog(
                             activeSection = 2
                             return@DialogButton
                         }
+                        val trackPrefsChanged = audioLang != profile.preferredAudioLang ||
+                            subLang != profile.preferredSubtitleLang ||
+                            subtitleSelectionMode != profile.subtitleSelectionMode
                         val updated = profile.copy(
                             autoplayNextEpisode = autoplayNext,
                             autoplayPreviews = autoplayPreviews,
@@ -919,6 +935,8 @@ private fun ProfileSettingsDialog(
                             assSubtitleMode = assSubtitleMode,
                             preferredAudioLang = audioLang,
                             preferredSubtitleLang = subLang,
+                            subtitleSelectionMode = subtitleSelectionMode,
+                            hasLocalTrackPreferenceOverride = profile.hasLocalTrackPreferenceOverride || trackPrefsChanged,
                             uiPreset = selectedPreset,
                             uiLanguage = uiLanguage,
                             metadataLanguage = metadataLanguage,
@@ -1220,4 +1238,12 @@ private fun ContentRatingLimit.localized(s: UiStrings): String = when (this) {
     ContentRatingLimit.PG_13 -> s.ratingTeen
     ContentRatingLimit.PG -> s.ratingFamily
     ContentRatingLimit.G -> s.ratingKids
+}
+
+private fun com.seerflix.tv.core.model.SubtitleSelectionMode.localized(s: UiStrings): String = when (this) {
+    com.seerflix.tv.core.model.SubtitleSelectionMode.DEFAULT -> s.subtitleModeDefault
+    com.seerflix.tv.core.model.SubtitleSelectionMode.SMART -> s.subtitleModeSmart
+    com.seerflix.tv.core.model.SubtitleSelectionMode.ONLY_FORCED -> s.subtitleModeOnlyForced
+    com.seerflix.tv.core.model.SubtitleSelectionMode.ALWAYS -> s.subtitleModeAlways
+    com.seerflix.tv.core.model.SubtitleSelectionMode.NONE -> s.subtitleModeNone
 }

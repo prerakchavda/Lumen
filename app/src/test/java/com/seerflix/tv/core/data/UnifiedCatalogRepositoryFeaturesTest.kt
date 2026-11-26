@@ -211,6 +211,7 @@ class UnifiedCatalogRepositoryFeaturesTest {
 
         override suspend fun getPublicSystemInfo() = JellyfinPublicSystemInfo()
         override suspend fun getPublicUsers(): List<JellyfinUserDto> = emptyList()
+        override suspend fun getUser(userId: String) = JellyfinUserDto(userId, "User")
         override suspend fun authenticateByName(body: JellyfinAuthRequest) =
             JellyfinAuthResult(JellyfinUserDto("u1", "User"), "tok")
         override suspend fun initiateQuickConnect() = JellyfinQuickConnectState("s", "c", false)

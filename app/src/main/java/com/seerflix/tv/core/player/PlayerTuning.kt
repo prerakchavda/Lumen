@@ -69,12 +69,38 @@ object PlayerTuning {
 
     /**
      * Decoder fallback lets ExoPlayer try the next decoder (e.g. a software one) if the primary
-     * hardware decoder fails to initialise, instead of failing playback. No extension decoders are
-     * bundled, so extension mode stays OFF. Tunneling stays off (default): it is flaky on
-     * Amlogic and breaks subtitles/frame stepping.
+     * hardware decoder fails to initialise, instead of failing playback. When software audio
+     * decoding is enabled and the bundled Jellyfin FFmpeg audio decoder is available, extension
+     * mode is ON so hardware/passthrough codecs stay preferred while FFmpeg handles AC3, E-AC3,
+     * DTS, TrueHD, Vorbis, FLAC and Opus locally to PCM. Tunneling stays off (default): it is
+     * flaky on Amlogic and breaks subtitles/frame stepping.
      */
-    fun buildRenderersFactory(context: Context): DefaultRenderersFactory =
-        DefaultRenderersFactory(context)
+    fun buildRenderersFactory(
+        context: Context,
+        enableSoftwareAudioDecoding: Boolean = true,
+        audioDelayProcessor: AudioDelayProcessor? = null
+    ): DefaultRenderersFactory {
+        val extMode = if (enableSoftwareAudioDecoding && FfmpegAudioSupport.isAvailable()) {
+            DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+        } else {
+            DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+        }
+        return object : DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioTrackPlaybackParams: Boolean
+            ): androidx.media3.exoplayer.audio.AudioSink {
+                val builder = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                if (audioDelayProcessor != null) {
+                    builder.setAudioProcessors(arrayOf(audioDelayProcessor))
+                }
+                return builder.build()
+            }
+        }
             .setEnableDecoderFallback(true)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+            .setExtensionRendererMode(extMode)
+    }
 }

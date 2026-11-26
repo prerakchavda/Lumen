@@ -88,9 +88,16 @@ class MainActivity : ComponentActivity() {
             val activePreset = activeProfile?.uiPreset ?: UiPreset.NETFLIX
             val activeLanguage = activeProfile?.uiLanguage ?: "en"
             SeerflixTheme(preset = activePreset, uiLanguage = activeLanguage) {
-                // (Re)connect the live server connection whenever the signed-in profile changes.
+                // (Re)connect the live server connection and sync user defaults whenever the signed-in profile changes.
                 LaunchedEffect(activeProfile?.jellyfinToken) {
-                    if (activeProfile?.jellyfinToken.isNullOrBlank()) socketClient.stop() else socketClient.start()
+                    if (activeProfile?.jellyfinToken.isNullOrBlank()) {
+                        socketClient.stop()
+                    } else {
+                        socketClient.start()
+                        launch(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching { authRepository.syncUserConfigurationFromServer() }
+                        }
+                    }
                 }
                 SeerflixNavGraph(
                     authRepository = authRepository,

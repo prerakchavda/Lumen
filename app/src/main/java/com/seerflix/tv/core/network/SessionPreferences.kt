@@ -94,6 +94,7 @@ class SessionPreferences private constructor(
         val TRACKED_REQUESTS_JSON = stringPreferencesKey("tracked_requests_json")
         val READY_ALERTS_JSON = stringPreferencesKey("ready_alerts_json")
         val MATCH_DEVICE_CAPS = stringPreferencesKey("match_device_capabilities")
+        val SOFTWARE_AUDIO_DECODING = stringPreferencesKey("software_audio_decoding")
         val ALLOW_REMOTE_CONTROL = stringPreferencesKey("allow_remote_control")
         /** Every Jellyfin server (home first). The home entry's URLs live in the keys above. */
         val JELLYFIN_SERVERS_JSON = stringPreferencesKey("jellyfin_servers_json")
@@ -384,6 +385,15 @@ class SessionPreferences private constructor(
         (prefs[Keys.MATCH_DEVICE_CAPS] != "false").also { cachedMatchDeviceCapabilities = it }
     }
 
+    /** Device-wide: decode surround / lossless audio (AC3, E-AC3, DTS, TrueHD) locally via FFmpeg to PCM. */
+    @Volatile
+    var cachedSoftwareAudioDecoding: Boolean = true
+        private set
+
+    val softwareAudioDecodingFlow: Flow<Boolean> = dataStore.data.map { prefs ->
+        (prefs[Keys.SOFTWARE_AUDIO_DECODING] != "false").also { cachedSoftwareAudioDecoding = it }
+    }
+
     /** Device-wide: show up as a "Play on" target for other Jellyfin apps (default on). */
     @Volatile
     var cachedAllowRemoteControl: Boolean = true
@@ -401,6 +411,11 @@ class SessionPreferences private constructor(
     suspend fun setMatchDeviceCapabilities(enabled: Boolean) {
         cachedMatchDeviceCapabilities = enabled
         dataStore.edit { it[Keys.MATCH_DEVICE_CAPS] = enabled.toString() }
+    }
+
+    suspend fun setSoftwareAudioDecoding(enabled: Boolean) {
+        cachedSoftwareAudioDecoding = enabled
+        dataStore.edit { it[Keys.SOFTWARE_AUDIO_DECODING] = enabled.toString() }
     }
 
     @Volatile
@@ -489,6 +504,7 @@ class SessionPreferences private constructor(
         serverConfigFlow.first()
         serversFlow.first()
         matchDeviceCapabilitiesFlow.first()
+        softwareAudioDecodingFlow.first()
         allowRemoteControlFlow.first()
         activeProfileFlow.first()
         dataStore.edit { prefs ->
@@ -542,15 +558,22 @@ class SessionPreferences private constructor(
             val existing = current.firstOrNull { it.id == profile.id }
             val effectiveCookie = profile.seerrCookie ?: cachedSeerrCookie ?: existing?.seerrCookie
             val merged = if (existing != null) {
+                val keepLocalTracks = existing.hasLocalTrackPreferenceOverride
                 profile.copy(
                     seerrCookie = effectiveCookie,
                     pinHash = existing.pinHash,
                     autoplayNextEpisode = existing.autoplayNextEpisode,
                     autoplayPreviews = existing.autoplayPreviews,
-                    preferredAudioLang = existing.preferredAudioLang,
-                    preferredSubtitleLang = existing.preferredSubtitleLang,
+                    preferredAudioLang = if (keepLocalTracks) existing.preferredAudioLang else (profile.preferredAudioLang ?: existing.preferredAudioLang),
+                    preferredSubtitleLang = if (keepLocalTracks) existing.preferredSubtitleLang else (profile.preferredSubtitleLang ?: existing.preferredSubtitleLang),
+                    subtitleSelectionMode = if (keepLocalTracks) existing.subtitleSelectionMode else profile.subtitleSelectionMode,
+                    playDefaultAudioTrack = if (keepLocalTracks) existing.playDefaultAudioTrack else profile.playDefaultAudioTrack,
+                    hasLocalTrackPreferenceOverride = existing.hasLocalTrackPreferenceOverride,
                     subtitleFontScale = existing.subtitleFontScale,
                     subtitleBackgroundAlpha = existing.subtitleBackgroundAlpha,
+                    subtitleTextColor = existing.subtitleTextColor,
+                    subtitleEdgeStyle = existing.subtitleEdgeStyle,
+                    subtitlePosition = existing.subtitlePosition,
                     autoSkipIntro = existing.autoSkipIntro,
                     autoSkipRecap = existing.autoSkipRecap,
                     frameRateMatchMode = existing.frameRateMatchMode,
@@ -561,6 +584,11 @@ class SessionPreferences private constructor(
                     audioPassthroughEnabled = existing.audioPassthroughEnabled,
                     stereoDownmixEnabled = existing.stereoDownmixEnabled,
                     assSubtitleMode = existing.assSubtitleMode,
+                    bingeLimitEpisodes = existing.bingeLimitEpisodes,
+                    mergeNextUpIntoContinueWatching = existing.mergeNextUpIntoContinueWatching,
+                    screensaverTimeoutMinutes = existing.screensaverTimeoutMinutes,
+                    cinemaIntrosEnabled = existing.cinemaIntrosEnabled,
+                    themeSongsEnabled = existing.themeSongsEnabled,
                     defaultStartupTab = existing.defaultStartupTab,
                     pinnedLibraryIds = existing.pinnedLibraryIds,
                     hiddenHomeRowIds = existing.hiddenHomeRowIds,
@@ -648,7 +676,13 @@ class SessionPreferences private constructor(
         frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null,
         audioPassthroughEnabled: Boolean? = null,
         stereoDownmixEnabled: Boolean? = null,
-        assSubtitleMode: com.seerflix.tv.core.model.AssSubtitleMode? = null
+        assSubtitleMode: com.seerflix.tv.core.model.AssSubtitleMode? = null,
+        subtitleSelectionMode: com.seerflix.tv.core.model.SubtitleSelectionMode? = null,
+        bingeLimitEpisodes: Int? = null,
+        mergeNextUpIntoContinueWatching: Boolean? = null,
+        screensaverTimeoutMinutes: Int? = null,
+        cinemaIntrosEnabled: Boolean? = null,
+        themeSongsEnabled: Boolean? = null
     ) {
         dataStore.edit { prefs ->
             val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
@@ -663,7 +697,14 @@ class SessionPreferences private constructor(
                         frameRateMatchMode = frameRateMatchMode ?: it.frameRateMatchMode,
                         audioPassthroughEnabled = audioPassthroughEnabled ?: it.audioPassthroughEnabled,
                         stereoDownmixEnabled = stereoDownmixEnabled ?: it.stereoDownmixEnabled,
-                        assSubtitleMode = assSubtitleMode ?: it.assSubtitleMode
+                        assSubtitleMode = assSubtitleMode ?: it.assSubtitleMode,
+                        subtitleSelectionMode = subtitleSelectionMode ?: it.subtitleSelectionMode,
+                        hasLocalTrackPreferenceOverride = if (subtitleSelectionMode != null) true else it.hasLocalTrackPreferenceOverride,
+                        bingeLimitEpisodes = bingeLimitEpisodes ?: it.bingeLimitEpisodes,
+                        mergeNextUpIntoContinueWatching = mergeNextUpIntoContinueWatching ?: it.mergeNextUpIntoContinueWatching,
+                        screensaverTimeoutMinutes = screensaverTimeoutMinutes ?: it.screensaverTimeoutMinutes,
+                        cinemaIntrosEnabled = cinemaIntrosEnabled ?: it.cinemaIntrosEnabled,
+                        themeSongsEnabled = themeSongsEnabled ?: it.themeSongsEnabled
                     )
                 } else it
             }

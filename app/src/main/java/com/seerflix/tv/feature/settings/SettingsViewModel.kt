@@ -30,6 +30,7 @@ import javax.inject.Inject
 data class SettingsUiState(
     val profile: UserProfile? = null,
     val matchDeviceCapabilities: Boolean = true,
+    val softwareAudioDecoding: Boolean = true,
     val capabilitySummary: String = "",
     val allowRemoteControl: Boolean = true,
     val socketState: SocketState = SocketState.DISCONNECTED,
@@ -37,6 +38,8 @@ data class SettingsUiState(
     val logUploadMessage: String? = null,
     val hasPendingCrash: Boolean = false,
     val appVersion: String = BuildConfig.VERSION_NAME,
+    /** The home Jellyfin server (for configuring its optional streaming bitrate cap). */
+    val homeServer: com.seerflix.tv.core.model.JellyfinServer? = null,
     /** The extra Jellyfin servers merged into the library, with their state for this profile. */
     val servers: List<ServerStatus> = emptyList(),
     /** Server whose "Remove" was pressed once; a second press removes it. */
@@ -62,6 +65,14 @@ class SettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             prefs.matchDeviceCapabilitiesFlow.collect { v -> _uiState.update { it.copy(matchDeviceCapabilities = v) } }
+        }
+        viewModelScope.launch {
+            prefs.softwareAudioDecodingFlow.collect { v -> _uiState.update { it.copy(softwareAudioDecoding = v) } }
+        }
+        viewModelScope.launch {
+            prefs.serversFlow.collect { list ->
+                _uiState.update { it.copy(homeServer = list.firstOrNull { s -> s.isHome }) }
+            }
         }
         viewModelScope.launch {
             prefs.allowRemoteControlFlow.collect { v -> _uiState.update { it.copy(allowRemoteControl = v) } }
@@ -97,6 +108,10 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { prefs.setMatchDeviceCapabilities(enabled) }
     }
 
+    fun setSoftwareAudioDecoding(enabled: Boolean) {
+        viewModelScope.launch { prefs.setSoftwareAudioDecoding(enabled) }
+    }
+
     fun setAllowRemoteControl(enabled: Boolean) {
         viewModelScope.launch {
             prefs.setAllowRemoteControl(enabled)
@@ -130,6 +145,30 @@ class SettingsViewModel @Inject constructor(
     fun setAutoplayNext(enabled: Boolean) = viewModelScope.launch {
         val profile = _uiState.value.profile ?: return@launch
         authRepository.updateProfilePreferences(profile.copy(autoplayNextEpisode = enabled))
+    }
+
+    fun setSubtitleSelectionMode(mode: com.seerflix.tv.core.model.SubtitleSelectionMode) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(subtitleSelectionMode = mode)
+    }
+
+    fun setBingeLimitEpisodes(limit: Int) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(bingeLimitEpisodes = limit)
+    }
+
+    fun setScreensaverTimeoutMinutes(minutes: Int) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(screensaverTimeoutMinutes = minutes)
+    }
+
+    fun setCinemaIntrosEnabled(enabled: Boolean) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(cinemaIntrosEnabled = enabled)
+    }
+
+    fun setThemeSongsEnabled(enabled: Boolean) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(themeSongsEnabled = enabled)
+    }
+
+    fun setMergeNextUpIntoContinueWatching(enabled: Boolean) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(mergeNextUpIntoContinueWatching = enabled)
     }
 
     fun setSubtitleSize(scale: Float) = viewModelScope.launch {

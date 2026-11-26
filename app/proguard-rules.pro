@@ -30,3 +30,7 @@
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
+
+# Media3 FFmpeg audio decoder extension (loaded reflectively by DefaultRenderersFactory & FfmpegAudioSupport).
+-keep class androidx.media3.decoder.ffmpeg.** { *; }
+-dontwarn androidx.media3.decoder.ffmpeg.**

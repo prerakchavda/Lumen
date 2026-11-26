@@ -118,7 +118,7 @@ class ServerAccountRepository @Inject constructor(
     }
 
     suspend fun setBitrateCap(serverId: String, maxBitrateBps: Long?) {
-        val server = prefs.extraServers.firstOrNull { it.id == serverId } ?: return
+        val server = prefs.cachedServers.firstOrNull { it.id == serverId } ?: return
         prefs.upsertServer(server.copy(maxStreamingBitrateBps = maxBitrateBps))
     }
 

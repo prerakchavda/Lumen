@@ -14,6 +14,7 @@ import com.seerflix.tv.core.network.unscoped
 import com.seerflix.tv.core.model.ChapterMarker
 import com.seerflix.tv.core.model.ExternalSubtitleFile
 import com.seerflix.tv.core.model.MediaSourceOption
+import com.seerflix.tv.core.model.PlayMethod
 import com.seerflix.tv.core.model.PlaybackSessionData
 import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.TrickplayInfo
@@ -124,6 +125,16 @@ class PreparedPlayback(
 /** Wrapper so a successful "no next episode" (null [next]) differs from a failed lookup. */
 data class NextEpisodeLookup(val next: NextEpisodeInfo?)
 
+/** Live player state included in Jellyfin `/Sessions/Playing*` progress reports. */
+data class PlaybackReportState(
+    val playMethod: String? = null,
+    val audioStreamIndex: Int? = null,
+    val subtitleStreamIndex: Int? = null,
+    val isMuted: Boolean? = null,
+    val volumeLevel: Int? = null,
+    val playbackRate: Float? = null
+)
+
 @Singleton
 class JellyfinPlaybackManager @Inject constructor(
     private val jellyfinApi: JellyfinApi,
@@ -136,13 +147,14 @@ class JellyfinPlaybackManager @Inject constructor(
     /** What is about to be played: the server it is on and the item with that server's raw ids. */
     private class Target(val session: ServerSession, val item: JellyfinItemDto)
 
-    private fun homeSession(userId: String): ServerSession = ServerSession(HOME_SERVER, jellyfinApi, userId)
+    private fun homeSession(userId: String): ServerSession =
+        ServerSession(prefs.serverById(ServerScopedId.HOME) ?: HOME_SERVER, jellyfinApi, userId)
 
     /** The session of the server that owns [scopedId]; null when the profile has no account there. */
     private fun sessionFor(scopedId: String, userId: String): ServerSession? =
         if (ServerScopedId.isHome(scopedId)) homeSession(userId) else servers?.sessionForItem(scopedId, userId)
 
-    /** Requested quality limited by the server's own streaming cap (none for the home server). */
+    /** Requested quality limited by the server's own streaming cap (home or extra server). */
     private fun cappedBitrate(requested: Long?, session: ServerSession): Long? =
         listOfNotNull(requested, session.server.maxStreamingBitrateBps).minOrNull()
 
@@ -164,7 +176,11 @@ class JellyfinPlaybackManager @Inject constructor(
         audioPassthroughEnabled: Boolean = true,
         stereoDownmixEnabled: Boolean = false,
         assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
-        burnInSubtitleIndex: Int? = null
+        burnInSubtitleIndex: Int? = null,
+        audioStreamIndex: Int? = null,
+        subtitleStreamIndex: Int? = null,
+        softwareAudioDecodingEnabled: Boolean = prefs.cachedSoftwareAudioDecoding,
+        forceHls: Boolean = false
     ): Result<PlaybackSessionData> = prepareInternal(
         extrasScope = null,
         userId = userId,
@@ -174,7 +190,11 @@ class JellyfinPlaybackManager @Inject constructor(
         audioPassthroughEnabled = audioPassthroughEnabled,
         stereoDownmixEnabled = stereoDownmixEnabled,
         assSubtitleMode = assSubtitleMode,
-        burnInSubtitleIndex = burnInSubtitleIndex
+        burnInSubtitleIndex = burnInSubtitleIndex,
+        audioStreamIndex = audioStreamIndex,
+        subtitleStreamIndex = subtitleStreamIndex,
+        softwareAudioDecodingEnabled = softwareAudioDecodingEnabled,
+        forceHls = forceHls
     ).map { it.session }
 
     /**
@@ -192,7 +212,11 @@ class JellyfinPlaybackManager @Inject constructor(
         audioPassthroughEnabled: Boolean = true,
         stereoDownmixEnabled: Boolean = false,
         assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
-        burnInSubtitleIndex: Int? = null
+        burnInSubtitleIndex: Int? = null,
+        audioStreamIndex: Int? = null,
+        subtitleStreamIndex: Int? = null,
+        softwareAudioDecodingEnabled: Boolean = prefs.cachedSoftwareAudioDecoding,
+        forceHls: Boolean = false
     ): Result<PreparedPlayback> = prepareInternal(
         extrasScope = extrasScope,
         userId = userId,
@@ -202,7 +226,11 @@ class JellyfinPlaybackManager @Inject constructor(
         audioPassthroughEnabled = audioPassthroughEnabled,
         stereoDownmixEnabled = stereoDownmixEnabled,
         assSubtitleMode = assSubtitleMode,
-        burnInSubtitleIndex = burnInSubtitleIndex
+        burnInSubtitleIndex = burnInSubtitleIndex,
+        audioStreamIndex = audioStreamIndex,
+        subtitleStreamIndex = subtitleStreamIndex,
+        softwareAudioDecodingEnabled = softwareAudioDecodingEnabled,
+        forceHls = forceHls
     )
 
     private suspend fun prepareInternal(
@@ -214,7 +242,11 @@ class JellyfinPlaybackManager @Inject constructor(
         audioPassthroughEnabled: Boolean,
         stereoDownmixEnabled: Boolean,
         assSubtitleMode: AssSubtitleMode,
-        burnInSubtitleIndex: Int?
+        burnInSubtitleIndex: Int?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?,
+        softwareAudioDecodingEnabled: Boolean,
+        forceHls: Boolean
     ): Result<PreparedPlayback> = runCatchingCancellable {
         coroutineScope {
             // Ids arrive server scoped; from here on each call goes to the owning server with the
@@ -233,13 +265,15 @@ class JellyfinPlaybackManager @Inject constructor(
                 stereoDownmixEnabled = stereoDownmixEnabled,
                 assSubtitleMode = assSubtitleMode,
                 burnInSubtitleIndex = burnInSubtitleIndex,
-                capabilities = capabilities
+                capabilities = capabilities,
+                softwareAudioDecodingEnabled = softwareAudioDecodingEnabled
             )
+            val initialEnableDirectPlay = if (forceHls || burnInSubtitleIndex != null) false else null
             fun playbackInfoAsync(
                 session: ServerSession,
                 id: String,
                 sourceId: String?,
-                enableDirectPlay: Boolean? = null
+                enableDirectPlay: Boolean? = initialEnableDirectPlay
             ): Deferred<JellyfinPlaybackInfoResponse?> = async {
                 runCatchingCancellable {
                     session.api.getPlaybackInfo(
@@ -248,7 +282,8 @@ class JellyfinPlaybackManager @Inject constructor(
                         body = JellyfinPlaybackInfoRequest(
                             userId = session.userId,
                             mediaSourceId = sourceId,
-                            subtitleStreamIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null,
+                            audioStreamIndex = audioStreamIndex,
+                            subtitleStreamIndex = burnInSubtitleIndex ?: subtitleStreamIndex,
                             maxAudioChannels = if (stereoDownmixEnabled) 2 else null,
                             deviceProfile = deviceProfileFor(session),
                             enableDirectPlay = enableDirectPlay
@@ -308,10 +343,10 @@ class JellyfinPlaybackManager @Inject constructor(
             val item = target.item
             var playback = playbackDeferred.await()
 
-            // Server quirk: when a file's audio track isn't flagged default, Jellyfin approves direct
-            // play without checking the audio codec, so e.g. DTS reaches a box that can't play it
-            // (silence). Ask again with direct play off to get a stream with converted audio.
-            if (playback != null && directPlaysUnsupportedAudio(playback, sourceId, deviceProfileFor(session))) {
+            // Server quirk: when a file's audio track isn't flagged default (or user picked a track
+            // whose codec requires server conversion), Jellyfin may approve direct play without
+            // checking the audio codec. Ask again with direct play off to get converted audio.
+            if (playback != null && directPlaysUnsupportedAudio(playback, sourceId, deviceProfileFor(session), audioStreamIndex)) {
                 playback = playbackInfoAsync(session, item.id, sourceId, enableDirectPlay = false).await() ?: playback
             }
 
@@ -332,8 +367,9 @@ class JellyfinPlaybackManager @Inject constructor(
                     mediaSourceId = sourceId,
                     maxBitrateBps = maxBitrateBps,
                     stereoDownmixEnabled = stereoDownmixEnabled,
-                    assSubtitleMode = assSubtitleMode,
-                    burnInSubtitleIndex = burnInSubtitleIndex
+                    burnInSubtitleIndex = burnInSubtitleIndex,
+                    audioStreamIndex = audioStreamIndex,
+                    forceHls = forceHls
                 )
                 PreparedPlayback(prepared, frameRate, segmentsDeferred, nextEpisodeDeferred)
             } catch (t: Throwable) {
@@ -482,8 +518,9 @@ class JellyfinPlaybackManager @Inject constructor(
         mediaSourceId: String?,
         maxBitrateBps: Long?,
         stereoDownmixEnabled: Boolean,
-        assSubtitleMode: AssSubtitleMode,
-        burnInSubtitleIndex: Int?
+        burnInSubtitleIndex: Int?,
+        audioStreamIndex: Int?,
+        forceHls: Boolean = false
     ): Pair<PlaybackSessionData, Float?> {
         val availableSources = playback?.mediaSources?.takeIf { it.isNotEmpty() }
             ?: item.mediaSources.takeIf { it.isNotEmpty() }
@@ -532,7 +569,9 @@ class JellyfinPlaybackManager @Inject constructor(
             playSessionId = playSessionId,
             maxBitrateBps = urlBitrate,
             stereoDownmix = stereoDownmixEnabled,
-            burnInSubtitleIndex = if (assSubtitleMode == AssSubtitleMode.BURN_IN) burnInSubtitleIndex else null
+            burnInSubtitleIndex = burnInSubtitleIndex,
+            audioStreamIndex = audioStreamIndex,
+            forceHls = forceHls
         )
 
         val audioTracks = source.mediaStreams
@@ -542,7 +581,13 @@ class JellyfinPlaybackManager @Inject constructor(
                     index = it.index,
                     label = it.displayTitle ?: it.language?.uppercase() ?: "Audio ${it.index}",
                     language = it.language,
-                    codec = it.codec
+                    codec = it.codec,
+                    isDefault = it.isDefault,
+                    isForced = it.isForced,
+                    isHearingImpaired = it.isHearingImpaired,
+                    channels = it.channels,
+                    bitRate = it.bitRate,
+                    sampleRate = it.sampleRate
                 )
             }
 
@@ -563,7 +608,9 @@ class JellyfinPlaybackManager @Inject constructor(
                     title = stream.displayTitle ?: stream.title ?: stream.language?.uppercase() ?: "Sub ${stream.index}",
                     language = stream.language,
                     codec = stream.codec,
-                    url = delivery
+                    url = delivery,
+                    isDefault = stream.isDefault,
+                    isForced = stream.isForced
                 )
             }
 
@@ -577,7 +624,10 @@ class JellyfinPlaybackManager @Inject constructor(
                     language = stream.language,
                     codec = stream.codec,
                     isExternal = stream.isExternal,
-                    externalUrl = matchingExt?.url
+                    externalUrl = matchingExt?.url,
+                    isDefault = stream.isDefault,
+                    isForced = stream.isForced,
+                    isHearingImpaired = stream.isHearingImpaired
                 )
             }
 
@@ -604,7 +654,14 @@ class JellyfinPlaybackManager @Inject constructor(
         val watchState = CrossServerMerge.mergeUserData(listOf(item.userData) + others.map { it.item.userData })
 
         val primaryVideo = source.mediaStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
-        val primaryAudio = source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
+        val activeAudioIdx = audioStreamIndex
+            ?: source.defaultAudioStreamIndex
+            ?: audioTracks.firstOrNull { it.isDefault }?.index
+            ?: audioTracks.firstOrNull()?.index
+        val primaryAudio = source.mediaStreams.firstOrNull {
+            it.type.equals("Audio", ignoreCase = true) && it.index == activeAudioIdx
+        } ?: source.mediaStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
+
         val resolutionLabel = primaryVideo?.let { v ->
             when {
                 (v.width ?: 0) >= 3800 || (v.height ?: 0) >= 2000 -> "4K UHD"
@@ -637,6 +694,15 @@ class JellyfinPlaybackManager @Inject constructor(
         }
         val videoFrameRate = (primaryVideo?.realFrameRate ?: primaryVideo?.averageFrameRate)
             ?.takeIf { it > 1f && it < 400f }
+
+        val (playMethod, transcodeReasons) = resolvePlayMethodAndReasons(
+            isHls = isHls,
+            source = source,
+            streamUrl = streamUrl,
+            maxBitrateBps = urlBitrate,
+            stereoDownmix = stereoDownmixEnabled,
+            burnInSubtitleIndex = burnInSubtitleIndex
+        )
 
         val trickplay = extractTrickplayInfo(item, source.id, base, token)
 
@@ -673,7 +739,17 @@ class JellyfinPlaybackManager @Inject constructor(
             mediaSources = mediaSourceOptions,
             externalSubtitleFiles = externalSubtitles,
             directPlayUrl = directPlayUrl,
-            isLiveTv = item.type.equals("TvChannel", ignoreCase = true)
+            isLiveTv = item.type.equals("TvChannel", ignoreCase = true),
+            playMethod = playMethod,
+            transcodeReasons = transcodeReasons,
+            videoBitrate = primaryVideo?.bitRate ?: source.bitrate,
+            audioBitrate = primaryAudio?.bitRate,
+            videoFps = videoFrameRate,
+            container = source.container ?: item.container,
+            fileSizeBytes = source.size,
+            filePath = source.path ?: item.path,
+            activeAudioStreamIndex = activeAudioIdx,
+            burnedInSubtitleIndex = burnInSubtitleIndex
         )
         return session to videoFrameRate
     }
@@ -729,6 +805,7 @@ class JellyfinPlaybackManager @Inject constructor(
         session: PlaybackSessionData,
         positionTicks: Long,
         isPaused: Boolean,
+        reportState: PlaybackReportState? = null,
         send: suspend (JellyfinApi, JellyfinPlaybackProgressRequest) -> Unit
     ) {
         val server = sessionFor(session.itemId, prefs.cachedHomeUserId) ?: return
@@ -740,30 +817,59 @@ class JellyfinPlaybackManager @Inject constructor(
                     mediaSourceId = ServerScopedId.rawOf(session.mediaSourceId),
                     playSessionId = session.playSessionId,
                     positionTicks = positionTicks,
-                    isPaused = isPaused
+                    isPaused = isPaused,
+                    playMethod = reportState?.playMethod ?: session.playMethod.jellyfinValue,
+                    audioStreamIndex = reportState?.audioStreamIndex ?: session.activeAudioStreamIndex,
+                    subtitleStreamIndex = reportState?.subtitleStreamIndex ?: session.burnedInSubtitleIndex,
+                    isMuted = reportState?.isMuted,
+                    volumeLevel = reportState?.volumeLevel,
+                    playbackRate = reportState?.playbackRate
                 )
             )
         }
     }
 
-    suspend fun reportStart(session: PlaybackSessionData, positionTicks: Long) {
-        report(session, positionTicks, isPaused = false) { api, body -> api.reportPlaybackStart(body) }
+    suspend fun reportStart(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        reportState: PlaybackReportState? = null
+    ) {
+        report(session, positionTicks, isPaused = false, reportState = reportState) { api, body ->
+            api.reportPlaybackStart(body)
+        }
     }
 
-    suspend fun reportProgress(session: PlaybackSessionData, positionTicks: Long, isPaused: Boolean) {
-        report(session, positionTicks, isPaused) { api, body -> api.reportPlaybackProgress(body) }
+    suspend fun reportProgress(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        isPaused: Boolean,
+        reportState: PlaybackReportState? = null
+    ) {
+        report(session, positionTicks, isPaused, reportState = reportState) { api, body ->
+            api.reportPlaybackProgress(body)
+        }
     }
 
     /**
      * Sends the "stopped" report on a process-lifetime scope so it is not cancelled when the
      * caller's scope (e.g. a ViewModel being cleared on exit) goes away.
      */
-    fun reportStoppedDetached(session: PlaybackSessionData, positionTicks: Long) {
-        reportScope.launch { reportStopped(session, positionTicks) }
+    fun reportStoppedDetached(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        reportState: PlaybackReportState? = null
+    ) {
+        reportScope.launch { reportStopped(session, positionTicks, reportState) }
     }
 
-    suspend fun reportStopped(session: PlaybackSessionData, positionTicks: Long) {
-        report(session, positionTicks, isPaused = false) { api, body -> api.reportPlaybackStopped(body) }
+    suspend fun reportStopped(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        reportState: PlaybackReportState? = null
+    ) {
+        report(session, positionTicks, isPaused = false, reportState = reportState) { api, body ->
+            api.reportPlaybackStopped(body)
+        }
     }
 
     companion object {
@@ -831,14 +937,17 @@ class JellyfinPlaybackManager @Inject constructor(
             stereoDownmixEnabled: Boolean = false,
             assSubtitleMode: AssSubtitleMode = AssSubtitleMode.STYLED,
             burnInSubtitleIndex: Int? = null,
-            capabilities: DeviceMediaCapabilities = DeviceMediaCapabilities.PERMISSIVE
+            capabilities: DeviceMediaCapabilities = DeviceMediaCapabilities.PERMISSIVE,
+            softwareAudioDecodingEnabled: Boolean = false
         ): JellyfinDeviceProfileDto {
             val caps = capabilities
             val baseAudio = listOf("aac", "mp3", "opus", "flac", "vorbis")
+            val swAudioActive = softwareAudioDecodingEnabled &&
+                (caps.softwareAudioDecoderAvailable || FfmpegAudioSupport.isAvailable())
             // Passthrough needs both the user's toggle and a sink (TV / AVR) that accepts the format;
-            // otherwise the box has to decode it, which only works with a platform decoder.
+            // otherwise the box has to decode it, via platform MediaCodec or bundled FFmpeg PCM.
             fun audioOk(passthrough: Boolean, decoder: Boolean) =
-                (audioPassthroughEnabled && passthrough) || decoder
+                (audioPassthroughEnabled && passthrough) || decoder || swAudioActive
             val surroundAudio = buildList {
                 if (audioOk(caps.passthroughAc3, caps.ac3Decoder)) add("ac3")
                 if (audioOk(caps.passthroughEac3, caps.eac3Decoder)) add("eac3")
@@ -928,6 +1037,7 @@ class JellyfinPlaybackManager @Inject constructor(
             } else {
                 "External"
             }
+            val bitmapSubMethod = if (burnInSubtitleIndex != null) "Encode" else "Embed"
             return JellyfinDeviceProfileDto(
                 maxStreamingBitrate = maxBitrateBps ?: 120_000_000L,
                 directPlayProfiles = listOf(
@@ -952,20 +1062,27 @@ class JellyfinPlaybackManager @Inject constructor(
                     JellyfinSubtitleProfileDto("ssa", assMethod),
                     JellyfinSubtitleProfileDto("srt", "External"),
                     JellyfinSubtitleProfileDto("vtt", "External"),
-                    JellyfinSubtitleProfileDto("subrip", "External")
+                    JellyfinSubtitleProfileDto("subrip", "External"),
+                    JellyfinSubtitleProfileDto("pgssub", bitmapSubMethod),
+                    JellyfinSubtitleProfileDto("pgs", bitmapSubMethod),
+                    JellyfinSubtitleProfileDto("dvdsub", bitmapSubMethod),
+                    JellyfinSubtitleProfileDto("vobsub", bitmapSubMethod),
+                    JellyfinSubtitleProfileDto("dvbsub", bitmapSubMethod)
                 ),
                 codecProfiles = codecProfiles
             )
         }
 
         /**
-         * True when the server approved direct play although the source's audio (default track, else
-         * the first) is not in the profile's direct-play audio codecs.
+         * True when the server approved direct play although the source's audio ([audioStreamIndex]
+         * if explicitly requested, else the default track, else the first) is not in the profile's
+         * direct-play audio codecs.
          */
         fun directPlaysUnsupportedAudio(
             playback: JellyfinPlaybackInfoResponse,
             mediaSourceId: String?,
-            profile: JellyfinDeviceProfileDto
+            profile: JellyfinDeviceProfileDto,
+            audioStreamIndex: Int? = null
         ): Boolean {
             val source = playback.mediaSources.firstOrNull { it.id == mediaSourceId }
                 ?: playback.mediaSources.firstOrNull() ?: return false
@@ -977,7 +1094,10 @@ class JellyfinPlaybackManager @Inject constructor(
                 .toSet()
             if (allowed.isEmpty()) return false
             val audio = source.mediaStreams.filter { it.type.equals("Audio", ignoreCase = true) }
-            val chosen = audio.firstOrNull { it.isDefault } ?: audio.firstOrNull() ?: return false
+            val chosen = audioStreamIndex?.let { idx -> audio.firstOrNull { it.index == idx } }
+                ?: audio.firstOrNull { it.isDefault }
+                ?: audio.firstOrNull()
+                ?: return false
             val codec = chosen.codec?.trim()?.lowercase() ?: return false
             return codec !in allowed
         }
@@ -1055,17 +1175,21 @@ class JellyfinPlaybackManager @Inject constructor(
             playSessionId: String,
             maxBitrateBps: Long?,
             stereoDownmix: Boolean = false,
-            burnInSubtitleIndex: Int? = null
+            burnInSubtitleIndex: Int? = null,
+            audioStreamIndex: Int? = null,
+            forceHls: Boolean = false
         ): Pair<String, Boolean> {
             val cleanBase = base.trim().trimEnd('/')
             val audioParam = if (stereoDownmix) "&MaxAudioChannels=2" else ""
+            val audioIdxParam = audioStreamIndex?.let { "&AudioStreamIndex=$it" }.orEmpty()
+            val bitrateParam = maxBitrateBps?.let { "&MaxStreamingBitrate=$it" }.orEmpty()
             if (burnInSubtitleIndex != null) {
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$bitrateParam$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
-            if (maxBitrateBps != null || stereoDownmix) {
+            if (maxBitrateBps != null || stereoDownmix || forceHls) {
                 val br = maxBitrateBps ?: 120_000_000L
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioIdxParam$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
             // DirectStream-only sources need the server's remux/transcode URL: serving the raw file
@@ -1076,12 +1200,64 @@ class JellyfinPlaybackManager @Inject constructor(
                 val url = "$cleanBase/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
                 url to false
             } else if (!source.transcodingUrl.isNullOrBlank()) {
-                val url = resolveRelativeJellyfinUrl(cleanBase, source.transcodingUrl, token)
+                var url = resolveRelativeJellyfinUrl(cleanBase, source.transcodingUrl, token)
+                if (audioStreamIndex != null && !url.contains("AudioStreamIndex=", ignoreCase = true)) {
+                    val sep = if ('?' in url) "&" else "?"
+                    url = "${url}${sep}AudioStreamIndex=$audioStreamIndex"
+                }
                 url to true
             } else {
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&api_key=$token"
                 url to true
             }
+        }
+
+        /**
+         * Determines the actual Jellyfin [PlayMethod] (`DirectPlay`, `DirectStream`, `Transcode`)
+         * and human-readable transcode reasons from the media source and stream URL.
+         */
+        fun resolvePlayMethodAndReasons(
+            isHls: Boolean,
+            source: JellyfinMediaSourceDto,
+            streamUrl: String,
+            maxBitrateBps: Long? = null,
+            stereoDownmix: Boolean = false,
+            burnInSubtitleIndex: Int? = null
+        ): Pair<PlayMethod, List<String>> {
+            if (!isHls) return PlayMethod.DIRECT_PLAY to emptyList()
+            val reasons = mutableListOf<String>()
+            val query = streamUrl.substringAfter('?', "")
+            if (query.isNotBlank()) {
+                query.split('&').forEach { part ->
+                    val (k, v) = part.split('=', limit = 2).let { it[0] to it.getOrElse(1) { "" } }
+                    if (k.equals("TranscodeReasons", ignoreCase = true) && v.isNotBlank()) {
+                        v.split(',', ';')
+                            .map { it.replace("%2C", ",", ignoreCase = true).trim() }
+                            .flatMap { it.split(',') }
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .forEach { reasons += it }
+                    }
+                }
+            }
+            if (burnInSubtitleIndex != null && reasons.none { it.contains("Subtitle", ignoreCase = true) }) {
+                reasons += "SubtitleCodecNotSupported"
+            }
+            if (maxBitrateBps != null && reasons.none { it.contains("Bitrate", ignoreCase = true) }) {
+                reasons += "ContainerBitrateExceedsLimit"
+            }
+            if (stereoDownmix && reasons.none { it.contains("Audio", ignoreCase = true) }) {
+                reasons += "AudioChannelsNotSupported"
+            }
+            val distinctReasons = reasons.distinct()
+            val isRemuxOnly = burnInSubtitleIndex == null &&
+                maxBitrateBps == null &&
+                !stereoDownmix &&
+                source.supportsDirectStream &&
+                !streamUrl.contains("VideoBitrate=", ignoreCase = true) &&
+                (distinctReasons.isEmpty() || distinctReasons.all { it.contains("Container", ignoreCase = true) })
+            val method = if (isRemuxOnly) PlayMethod.DIRECT_STREAM else PlayMethod.TRANSCODE
+            return method to distinctReasons
         }
 
         fun extractTrickplayInfo(

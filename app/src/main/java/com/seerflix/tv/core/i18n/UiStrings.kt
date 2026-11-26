@@ -916,6 +916,90 @@ data class UiStrings(
         internal set
     var homeNothingForProfileHint: String = "Nothing here is rated for this profile. Titles without a rating are hidden on Kids and rating-limited profiles."
         internal set
+
+    // ---- Phase 1: Playback, Track Parity & Diagnostics (0.9.3) ----
+    var playerBurnInBadge: String = "Burn-in"
+        internal set
+    var playerForcedBadge: String = "Forced"
+        internal set
+    var playerBitmapBurnInSection: String = "Image Subtitles (Server Burn-In)"
+        internal set
+    var playerAudioSync: String = "Audio Sync (%s)"
+        internal set
+    var playerAudioSyncHud: String = "Audio Sync: %s"
+        internal set
+    var playerAudioSyncHint: String = "Applies to decoded PCM audio (bypassed in HDMI passthrough)."
+        internal set
+    var playerAspectRatio: String = "Aspect Ratio / Zoom"
+        internal set
+    var resizeModeFit: String = "Fit"
+        internal set
+    var resizeModeFill: String = "Fill / Crop"
+        internal set
+    var resizeModeStretch: String = "Stretch"
+        internal set
+    var playerSleepTimer: String = "Sleep Timer"
+        internal set
+    var sleepTimerEndOfVideo: String = "End of video"
+        internal set
+    var sleepTimerHudSet: String = "Sleep timer set: %s"
+        internal set
+    var sleepTimerHudCancelled: String = "Sleep timer cancelled"
+        internal set
+    var sleepTimerHudTriggered: String = "Sleep timer reached — playback paused"
+        internal set
+    var sleepTimerMinutesShort: String = "%dm"
+        internal set
+    var playerStillWatchingTitle: String = "Are you still watching?"
+        internal set
+    var playerStillWatchingBody: String = "Up next: %s"
+        internal set
+    var playerStillWatchingContinue: String = "Continue Watching"
+        internal set
+    var playerStillWatchingExit: String = "Exit Player"
+        internal set
+    var statsPlayMethod: String = "Play Method: %s"
+        internal set
+    var statsPlayMethodDirectPlay: String = "Direct Play"
+        internal set
+    var statsPlayMethodDirectStream: String = "Direct Stream / Remux"
+        internal set
+    var statsPlayMethodTranscode: String = "Transcode"
+        internal set
+    var statsTranscodeReasons: String = "Reason: %s"
+        internal set
+    var statsVideoLine: String = "Video: %s"
+        internal set
+    var statsAudioLine: String = "Audio: %s"
+        internal set
+    var statsDecoderLine: String = "Decoder: %s"
+        internal set
+    var statsBufferDroppedLine: String = "Buffer: %.1fs • Dropped: %d"
+        internal set
+    var settingsSoftwareAudioTitle: String = "Software audio decoding"
+        internal set
+    var settingsSoftwareAudioDesc: String = "Decode AC3, E-AC3, DTS and TrueHD locally to PCM using FFmpeg so video can direct play without HDMI passthrough."
+        internal set
+    var settingsSubtitleModeTitle: String = "Subtitle mode"
+        internal set
+    var subtitleModeDefault: String = "Default"
+        internal set
+    var subtitleModeSmart: String = "Smart"
+        internal set
+    var subtitleModeOnlyForced: String = "Only Forced"
+        internal set
+    var subtitleModeAlways: String = "Always"
+        internal set
+    var subtitleModeNone: String = "None"
+        internal set
+    var settingsBingeLimitTitle: String = "\"Still Watching?\" prompt"
+        internal set
+    var settingsBingeLimitDesc: String = "Pause and ask after this many autoplayed episodes in a row."
+        internal set
+    var settingsBingeEpisodes: String = "%d episodes"
+        internal set
+    var settingsHomeBitrateTitle: String = "Home server streaming limit"
+        internal set
 }
 
 val SupportedLanguages = listOf(
@@ -1398,6 +1482,47 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         detailsTabCollection = "Colección"
         profileParentPinName = "un perfil de adulto"
         homeNothingForProfileHint = "No hay nada clasificado para este perfil. Los títulos sin clasificación se ocultan en perfiles infantiles o con límite de edad."
+        playerBurnInBadge = "Incrustados"
+        playerForcedBadge = "Forzados"
+        playerBitmapBurnInSection = "Subtítulos de imagen (Incrustar en servidor)"
+        playerAudioSync = "Sincronización de audio (%s)"
+        playerAudioSyncHud = "Sincronización de audio: %s"
+        playerAudioSyncHint = "Se aplica al audio PCM decodificado (se omite con passthrough HDMI)."
+        playerAspectRatio = "Relación de aspecto / Zoom"
+        resizeModeFit = "Ajustar"
+        resizeModeFill = "Rellenar / Recortar"
+        resizeModeStretch = "Estirar"
+        playerSleepTimer = "Temporizador de apagado"
+        sleepTimerEndOfVideo = "Al terminar el video"
+        sleepTimerHudSet = "Temporizador activado: %s"
+        sleepTimerHudCancelled = "Temporizador cancelado"
+        sleepTimerHudTriggered = "Temporizador finalizado — reproducción pausada"
+        sleepTimerMinutesShort = "%dm"
+        playerStillWatchingTitle = "¿Sigues viendo?"
+        playerStillWatchingBody = "A continuación: %s"
+        playerStillWatchingContinue = "Seguir viendo"
+        playerStillWatchingExit = "Salir del reproductor"
+        statsPlayMethod = "Método: %s"
+        statsPlayMethodDirectPlay = "Reproducción directa"
+        statsPlayMethodDirectStream = "Transmisión directa / Remux"
+        statsPlayMethodTranscode = "Transcodificación"
+        statsTranscodeReasons = "Motivo: %s"
+        statsVideoLine = "Video: %s"
+        statsAudioLine = "Audio: %s"
+        statsDecoderLine = "Decodificador: %s"
+        statsBufferDroppedLine = "Búfer: %.1fs • Perdidos: %d"
+        settingsSoftwareAudioTitle = "Decodificación de audio por software"
+        settingsSoftwareAudioDesc = "Decodifica AC3, E-AC3, DTS y TrueHD localmente a PCM con FFmpeg para reproducir video directamente sin passthrough HDMI."
+        settingsSubtitleModeTitle = "Modo de subtítulos"
+        subtitleModeDefault = "Predeterminado"
+        subtitleModeSmart = "Inteligente"
+        subtitleModeOnlyForced = "Solo forzados"
+        subtitleModeAlways = "Siempre"
+        subtitleModeNone = "Ninguno"
+        settingsBingeLimitTitle = "Aviso \"¿Sigues viendo?\""
+        settingsBingeLimitDesc = "Pausa y pregunta tras esta cantidad de episodios reproducidos automáticamente seguidos."
+        settingsBingeEpisodes = "%d episodios"
+        settingsHomeBitrateTitle = "Límite de bitrate del servidor principal"
     }
     "fr" -> UiStrings(
         languageCode = "fr",
@@ -1873,6 +1998,47 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         detailsTabCollection = "Collection"
         profileParentPinName = "un profil parent"
         homeNothingForProfileHint = "Rien ici n'est classé pour ce profil. Les titres sans classification sont masqués sur les profils Enfants ou limités."
+        playerBurnInBadge = "Incrusté"
+        playerForcedBadge = "Forcé"
+        playerBitmapBurnInSection = "Sous-titres image (Incrustation serveur)"
+        playerAudioSync = "Synchro audio (%s)"
+        playerAudioSyncHud = "Synchro audio : %s"
+        playerAudioSyncHint = "S'applique à l'audio PCM décodé (ignoré en passthrough HDMI)."
+        playerAspectRatio = "Format d'image / Zoom"
+        resizeModeFit = "Ajuster"
+        resizeModeFill = "Remplir / Rogner"
+        resizeModeStretch = "Étirer"
+        playerSleepTimer = "Minuterie de veille"
+        sleepTimerEndOfVideo = "Fin de la vidéo"
+        sleepTimerHudSet = "Minuterie activée : %s"
+        sleepTimerHudCancelled = "Minuterie annulée"
+        sleepTimerHudTriggered = "Minuterie atteinte — lecture mise en pause"
+        sleepTimerMinutesShort = "%d min"
+        playerStillWatchingTitle = "Vous regardez toujours ?"
+        playerStillWatchingBody = "À suivre : %s"
+        playerStillWatchingContinue = "Continuer à regarder"
+        playerStillWatchingExit = "Quitter le lecteur"
+        statsPlayMethod = "Méthode : %s"
+        statsPlayMethodDirectPlay = "Lecture directe"
+        statsPlayMethodDirectStream = "Flux direct / Remux"
+        statsPlayMethodTranscode = "Transcodage"
+        statsTranscodeReasons = "Raison : %s"
+        statsVideoLine = "Vidéo : %s"
+        statsAudioLine = "Audio : %s"
+        statsDecoderLine = "Décodeur : %s"
+        statsBufferDroppedLine = "Tampon : %.1fs • Perdues : %d"
+        settingsSoftwareAudioTitle = "Décodage audio logiciel"
+        settingsSoftwareAudioDesc = "Décode AC3, E-AC3, DTS et TrueHD localement en PCM via FFmpeg pour lire la vidéo directement sans passthrough HDMI."
+        settingsSubtitleModeTitle = "Mode de sous-titres"
+        subtitleModeDefault = "Par défaut"
+        subtitleModeSmart = "Intelligent"
+        subtitleModeOnlyForced = "Forcés uniquement"
+        subtitleModeAlways = "Toujours"
+        subtitleModeNone = "Aucun"
+        settingsBingeLimitTitle = "Alerte « Vous regardez toujours ? »"
+        settingsBingeLimitDesc = "Met en pause après ce nombre d'épisodes lancés automatiquement."
+        settingsBingeEpisodes = "%d épisodes"
+        settingsHomeBitrateTitle = "Limite de débit du serveur principal"
     }
     "de" -> UiStrings(
         languageCode = "de",
@@ -2345,6 +2511,47 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         detailsTabCollection = "Sammlung"
         profileParentPinName = "ein Elternprofil"
         homeNothingForProfileHint = "Hier ist nichts für dieses Profil freigegeben. Titel ohne Altersfreigabe werden in Kinder- und eingeschränkten Profilen ausgeblendet."
+        playerBurnInBadge = "Eingebrannt"
+        playerForcedBadge = "Erzwungen"
+        playerBitmapBurnInSection = "Bild-Untertitel (Server-Einbrennen)"
+        playerAudioSync = "Audio-Sync (%s)"
+        playerAudioSyncHud = "Audio-Sync: %s"
+        playerAudioSyncHint = "Gilt für decodiertes PCM-Audio (bei HDMI-Passthrough umgangen)."
+        playerAspectRatio = "Seitenverhältnis / Zoom"
+        resizeModeFit = "Anpassen"
+        resizeModeFill = "Ausfüllen / Zuschneiden"
+        resizeModeStretch = "Strecken"
+        playerSleepTimer = "Sleep-Timer"
+        sleepTimerEndOfVideo = "Ende des Videos"
+        sleepTimerHudSet = "Sleep-Timer gesetzt: %s"
+        sleepTimerHudCancelled = "Sleep-Timer abgebrochen"
+        sleepTimerHudTriggered = "Sleep-Timer abgelaufen — Wiedergabe pausiert"
+        sleepTimerMinutesShort = "%d Min."
+        playerStillWatchingTitle = "Schaust du noch zu?"
+        playerStillWatchingBody = "Als Nächstes: %s"
+        playerStillWatchingContinue = "Weiterschauen"
+        playerStillWatchingExit = "Player beenden"
+        statsPlayMethod = "Wiedergabemethode: %s"
+        statsPlayMethodDirectPlay = "Direktwiedergabe"
+        statsPlayMethodDirectStream = "Direct Stream / Remux"
+        statsPlayMethodTranscode = "Transkodierung"
+        statsTranscodeReasons = "Grund: %s"
+        statsVideoLine = "Video: %s"
+        statsAudioLine = "Audio: %s"
+        statsDecoderLine = "Decoder: %s"
+        statsBufferDroppedLine = "Puffer: %.1fs • Verworfen: %d"
+        settingsSoftwareAudioTitle = "Software-Audiodecodierung"
+        settingsSoftwareAudioDesc = "Decodiert AC3, E-AC3, DTS und TrueHD lokal mit FFmpeg zu PCM, damit Video ohne HDMI-Passthrough direkt abgespielt werden kann."
+        settingsSubtitleModeTitle = "Untertitelmodus"
+        subtitleModeDefault = "Standard"
+        subtitleModeSmart = "Intelligent"
+        subtitleModeOnlyForced = "Nur erzwungene"
+        subtitleModeAlways = "Immer"
+        subtitleModeNone = "Aus"
+        settingsBingeLimitTitle = "„Schaust du noch zu?“-Abfrage"
+        settingsBingeLimitDesc = "Pausiert nach dieser Anzahl automatisch gestarteter Episoden in Folge."
+        settingsBingeEpisodes = "%d Episoden"
+        settingsHomeBitrateTitle = "Streaming-Limit des Heimservers"
     }
     "ja" -> UiStrings(
         languageCode = "ja",
@@ -2822,6 +3029,47 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         detailsTabCollection = "コレクション"
         profileParentPinName = "保護者のプロフィール"
         homeNothingForProfileHint = "このプロフィールで視聴できる作品はありません。年齢区分のない作品はキッズ・制限付きプロフィールでは表示されません。"
+        playerBurnInBadge = "焼き込み"
+        playerForcedBadge = "強制"
+        playerBitmapBurnInSection = "画像字幕（サーバー焼き込み）"
+        playerAudioSync = "音声同期 (%s)"
+        playerAudioSyncHud = "音声同期: %s"
+        playerAudioSyncHint = "PCMデコード音声に適用されます（HDMIパススルー時は無効）。"
+        playerAspectRatio = "アスペクト比 / ズーム"
+        resizeModeFit = "フィット"
+        resizeModeFill = "画面に合わせる / クロップ"
+        resizeModeStretch = "引き伸ばし"
+        playerSleepTimer = "スリープタイマー"
+        sleepTimerEndOfVideo = "動画の終了時"
+        sleepTimerHudSet = "スリープタイマー設定: %s"
+        sleepTimerHudCancelled = "スリープタイマー解除"
+        sleepTimerHudTriggered = "スリープタイマー終了 — 一時停止しました"
+        sleepTimerMinutesShort = "%d分"
+        playerStillWatchingTitle = "視聴を続けますか？"
+        playerStillWatchingBody = "次のエピソード: %s"
+        playerStillWatchingContinue = "視聴を続ける"
+        playerStillWatchingExit = "プレーヤーを終了"
+        statsPlayMethod = "再生方式: %s"
+        statsPlayMethodDirectPlay = "ダイレクト再生"
+        statsPlayMethodDirectStream = "ダイレクトストリーム / リマックス"
+        statsPlayMethodTranscode = "トランスコード"
+        statsTranscodeReasons = "理由: %s"
+        statsVideoLine = "映像: %s"
+        statsAudioLine = "音声: %s"
+        statsDecoderLine = "デコーダー: %s"
+        statsBufferDroppedLine = "バッファ: %.1f秒 • ドロップ: %d"
+        settingsSoftwareAudioTitle = "ソフトウェア音声デコード"
+        settingsSoftwareAudioDesc = "FFmpegでAC3、E-AC3、DTS、TrueHDをローカルPCMデコードし、HDMIパススルーなしでも映像をダイレクト再生します。"
+        settingsSubtitleModeTitle = "字幕モード"
+        subtitleModeDefault = "デフォルト"
+        subtitleModeSmart = "スマート"
+        subtitleModeOnlyForced = "強制のみ"
+        subtitleModeAlways = "常に表示"
+        subtitleModeNone = "なし"
+        settingsBingeLimitTitle = "「視聴を続けますか？」確認"
+        settingsBingeLimitDesc = "連続自動再生がこの話数に達すると一時停止して確認します。"
+        settingsBingeEpisodes = "%d話"
+        settingsHomeBitrateTitle = "ホームサーバーのビットレート上限"
     }
     else -> UiStrings()
 }

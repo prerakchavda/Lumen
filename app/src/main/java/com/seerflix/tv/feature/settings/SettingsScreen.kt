@@ -101,6 +101,15 @@ fun SettingsScreen(
                 modifier = Modifier.focusRequester(firstFocus)
             )
         }
+        item {
+            ToggleRow(
+                title = strings.settingsSoftwareAudioTitle,
+                description = strings.settingsSoftwareAudioDesc,
+                checked = state.softwareAudioDecoding,
+                onToggle = { viewModel.setSoftwareAudioDecoding(!state.softwareAudioDecoding) },
+                strings = strings
+            )
+        }
         if (profile != null) {
             item {
                 ToggleRow(
@@ -129,6 +138,16 @@ fun SettingsScreen(
                 )
             }
             item {
+                ChoiceRow(
+                    title = strings.settingsBingeLimitTitle,
+                    options = BINGE_LIMIT_CHOICES.map { count ->
+                        if (count == 0) strings.optionOff else strings.settingsBingeEpisodes.format(count)
+                    },
+                    selectedIndex = BINGE_LIMIT_CHOICES.indexOf(profile.bingeLimitEpisodes).coerceAtLeast(0),
+                    onSelect = { viewModel.setBingeLimitEpisodes(BINGE_LIMIT_CHOICES[it]) }
+                )
+            }
+            item {
                 ToggleRow(
                     strings.settingsAutoSkipIntroTitle, null,
                     profile.autoSkipIntro, { viewModel.setAutoSkipIntro(!profile.autoSkipIntro) }, strings
@@ -143,6 +162,14 @@ fun SettingsScreen(
 
             // ---- Subtitles ----
             item { SectionHeader(strings.settingsSubtitlesSection) }
+            item {
+                ChoiceRow(
+                    title = strings.settingsSubtitleModeTitle,
+                    options = com.seerflix.tv.core.model.SubtitleSelectionMode.entries.map { it.localized(strings) },
+                    selectedIndex = com.seerflix.tv.core.model.SubtitleSelectionMode.entries.indexOf(profile.subtitleSelectionMode),
+                    onSelect = { viewModel.setSubtitleSelectionMode(com.seerflix.tv.core.model.SubtitleSelectionMode.entries[it]) }
+                )
+            }
             item { SubtitlePreview(profile.subtitleFontScale, profile.subtitleBackgroundAlpha, profile.subtitleTextColor, profile.subtitleEdgeStyle, strings) }
             item {
                 ChoiceRow(
@@ -224,6 +251,18 @@ fun SettingsScreen(
         if (state.profile?.isRestricted != true) {
             item { SectionHeader(strings.settingsServerSection) }
             item { ActionRow(strings.settingsServerTitle, strings.settingsServerDesc, onClick = onOpenServerSettings) }
+            state.homeServer?.let { home ->
+                item(key = "home_server_bitrate") {
+                    ChoiceRow(
+                        title = strings.settingsHomeBitrateTitle,
+                        options = JellyfinServer.BITRATE_CHOICES.map { bps ->
+                            if (bps == null) strings.serverBitrateNoLimit else JellyfinServer.bitrateLabel(bps)
+                        },
+                        selectedIndex = JellyfinServer.BITRATE_CHOICES.indexOf(home.maxStreamingBitrateBps),
+                        onSelect = { viewModel.setServerBitrateCap(com.seerflix.tv.core.model.ServerScopedId.HOME, JellyfinServer.BITRATE_CHOICES[it]) }
+                    )
+                }
+            }
 
             // ---- Other servers (merged into the same library) ----
             item { SectionHeader(strings.serversSection) }
@@ -280,6 +319,15 @@ fun SettingsScreen(
 
 private val SUBTITLE_SIZES = listOf(0.8f, 1.0f, 1.25f, 1.5f)
 private val SUBTITLE_BACKGROUNDS = listOf(0f, 0.3f, 0.6f, 0.9f)
+private val BINGE_LIMIT_CHOICES = listOf(0, 3, 5, 8)
+
+fun com.seerflix.tv.core.model.SubtitleSelectionMode.localized(s: UiStrings) = when (this) {
+    com.seerflix.tv.core.model.SubtitleSelectionMode.DEFAULT -> s.subtitleModeDefault
+    com.seerflix.tv.core.model.SubtitleSelectionMode.SMART -> s.subtitleModeSmart
+    com.seerflix.tv.core.model.SubtitleSelectionMode.ONLY_FORCED -> s.subtitleModeOnlyForced
+    com.seerflix.tv.core.model.SubtitleSelectionMode.ALWAYS -> s.subtitleModeAlways
+    com.seerflix.tv.core.model.SubtitleSelectionMode.NONE -> s.subtitleModeNone
+}
 
 fun SubtitleTextColor.localized(s: UiStrings) = when (this) {
     SubtitleTextColor.WHITE -> s.colorWhite

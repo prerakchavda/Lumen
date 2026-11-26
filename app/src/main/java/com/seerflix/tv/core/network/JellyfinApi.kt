@@ -14,6 +14,11 @@ interface JellyfinApi {
     @GET("Users/Public")
     suspend fun getPublicUsers(): List<JellyfinUserDto>
 
+    @GET("Users/{userId}")
+    suspend fun getUser(
+        @Path("userId") userId: String
+    ): JellyfinUserDto
+
     @POST("Users/AuthenticateByName")
     suspend fun authenticateByName(
         @Body body: JellyfinAuthRequest

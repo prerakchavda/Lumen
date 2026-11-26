@@ -121,6 +121,9 @@ class AuthRepository @Inject constructor(
                 }
             }
         }
+        val serverCfg = jfAuth.user.configuration ?: runCatchingCancellable {
+            jellyfinApi.getUser(jfAuth.user.id).configuration
+        }.getOrNull()
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
@@ -131,7 +134,11 @@ class AuthRepository @Inject constructor(
             },
             avatarColorHex = pickNetflixAvatarColor(jfAuth.user.name),
             seerrCookie = prefs.cachedSeerrCookie,
-            isAdmin = jfAuth.user.policy?.isAdministrator == true
+            isAdmin = jfAuth.user.policy?.isAdministrator == true,
+            preferredAudioLang = serverCfg?.audioLanguagePreference?.takeIf { it.isNotBlank() },
+            preferredSubtitleLang = serverCfg?.subtitleLanguagePreference?.takeIf { it.isNotBlank() },
+            subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(serverCfg?.subtitleMode),
+            playDefaultAudioTrack = serverCfg?.playDefaultAudioTrack ?: true
         )
         prefs.upsertAndActivateProfile(profile)
         profile
@@ -176,6 +183,9 @@ class AuthRepository @Inject constructor(
         }
 
         val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
+        val serverCfg = jfAuth.user.configuration ?: runCatchingCancellable {
+            jellyfinApi.getUser(jfAuth.user.id).configuration
+        }.getOrNull()
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
@@ -186,14 +196,41 @@ class AuthRepository @Inject constructor(
             },
             avatarColorHex = pickNetflixAvatarColor(jfAuth.user.name),
             seerrCookie = prefs.cachedSeerrCookie,
-            isAdmin = jfAuth.user.policy?.isAdministrator == true
+            isAdmin = jfAuth.user.policy?.isAdministrator == true,
+            preferredAudioLang = serverCfg?.audioLanguagePreference?.takeIf { it.isNotBlank() },
+            preferredSubtitleLang = serverCfg?.subtitleLanguagePreference?.takeIf { it.isNotBlank() },
+            subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(serverCfg?.subtitleMode),
+            playDefaultAudioTrack = serverCfg?.playDefaultAudioTrack ?: true
         )
         prefs.upsertAndActivateProfile(profile)
         profile
     }
 
+    /**
+     * Pulls Jellyfin's `/Users/{userId}` configuration (AudioLanguagePreference,
+     * SubtitleLanguagePreference, SubtitleMode, PlayDefaultAudioTrack) as defaults whenever the
+     * active local profile has not explicitly overridden track preferences.
+     */
+    suspend fun syncUserConfigurationFromServer() {
+        val profile = prefs.activeProfileFlow.first() ?: return
+        if (profile.jellyfinUserId.isBlank() || profile.hasLocalTrackPreferenceOverride) return
+        val cfg = runCatchingCancellable {
+            jellyfinApi.getUser(profile.jellyfinUserId).configuration
+        }.getOrNull() ?: return
+        val synced = profile.copy(
+            preferredAudioLang = cfg.audioLanguagePreference?.takeIf { it.isNotBlank() } ?: profile.preferredAudioLang,
+            preferredSubtitleLang = cfg.subtitleLanguagePreference?.takeIf { it.isNotBlank() } ?: profile.preferredSubtitleLang,
+            subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(cfg.subtitleMode),
+            playDefaultAudioTrack = cfg.playDefaultAudioTrack
+        )
+        if (synced != profile) {
+            prefs.updateProfilePreferences(synced)
+        }
+    }
+
     suspend fun switchProfile(profileId: String) {
         prefs.setActiveProfile(profileId)
+        runCatchingCancellable { syncUserConfigurationFromServer() }
     }
 
     suspend fun clearActiveProfile() {
@@ -226,7 +263,13 @@ class AuthRepository @Inject constructor(
         frameRateMatchMode: com.seerflix.tv.core.model.FrameRateMatchMode? = null,
         audioPassthroughEnabled: Boolean? = null,
         stereoDownmixEnabled: Boolean? = null,
-        assSubtitleMode: com.seerflix.tv.core.model.AssSubtitleMode? = null
+        assSubtitleMode: com.seerflix.tv.core.model.AssSubtitleMode? = null,
+        subtitleSelectionMode: com.seerflix.tv.core.model.SubtitleSelectionMode? = null,
+        bingeLimitEpisodes: Int? = null,
+        mergeNextUpIntoContinueWatching: Boolean? = null,
+        screensaverTimeoutMinutes: Int? = null,
+        cinemaIntrosEnabled: Boolean? = null,
+        themeSongsEnabled: Boolean? = null
     ) {
         prefs.updatePlaybackPreferences(
             autoSkipIntro = autoSkipIntro,
@@ -234,7 +277,13 @@ class AuthRepository @Inject constructor(
             frameRateMatchMode = frameRateMatchMode,
             audioPassthroughEnabled = audioPassthroughEnabled,
             stereoDownmixEnabled = stereoDownmixEnabled,
-            assSubtitleMode = assSubtitleMode
+            assSubtitleMode = assSubtitleMode,
+            subtitleSelectionMode = subtitleSelectionMode,
+            bingeLimitEpisodes = bingeLimitEpisodes,
+            mergeNextUpIntoContinueWatching = mergeNextUpIntoContinueWatching,
+            screensaverTimeoutMinutes = screensaverTimeoutMinutes,
+            cinemaIntrosEnabled = cinemaIntrosEnabled,
+            themeSongsEnabled = themeSongsEnabled
         )
     }
 

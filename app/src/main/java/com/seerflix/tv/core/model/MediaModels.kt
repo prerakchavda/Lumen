@@ -216,7 +216,15 @@ enum class QualityPreset(val label: String, val maxBitrateBps: Long?) {
     AUTO("Auto (Direct Play)", null),
     UHD_4K("4K (40 Mbps)", 40_000_000L),
     HD_1080P("1080p (15 Mbps)", 15_000_000L),
-    HD_720P("720p (6 Mbps)", 6_000_000L)
+    HD_1080P_8M("1080p (8 Mbps)", 8_000_000L),
+    HD_720P("720p (4 Mbps)", 4_000_000L),
+    SD_480P("480p (1.5 Mbps)", 1_500_000L)
+}
+
+enum class PlayMethod(val jellyfinValue: String, val displayLabel: String) {
+    DIRECT_PLAY("DirectPlay", "Direct Play"),
+    DIRECT_STREAM("DirectStream", "Direct Stream / Remux"),
+    TRANSCODE("Transcode", "Transcode")
 }
 
 @Immutable
@@ -398,7 +406,13 @@ data class TrackOption(
     val language: String?,
     val codec: String?,
     val isExternal: Boolean = false,
-    val externalUrl: String? = null
+    val externalUrl: String? = null,
+    val isDefault: Boolean = false,
+    val isForced: Boolean = false,
+    val isHearingImpaired: Boolean = false,
+    val channels: Int? = null,
+    val bitRate: Long? = null,
+    val sampleRate: Int? = null
 )
 
 @Immutable
@@ -441,7 +455,9 @@ data class ExternalSubtitleFile(
     val title: String,
     val language: String?,
     val codec: String?,
-    val url: String
+    val url: String,
+    val isDefault: Boolean = false,
+    val isForced: Boolean = false
 )
 
 @Immutable
@@ -458,7 +474,8 @@ data class ExtrasItem(
 data class JellyfinLibraryView(
     val id: String,
     val name: String,
-    val collectionType: String? = null
+    val collectionType: String? = null,
+    val serverName: String? = null
 )
 
 @Immutable
@@ -473,7 +490,11 @@ data class LiveTvProgram(
     /** Set when this programme is scheduled to record. */
     val timerId: String? = null,
     /** Set when the whole series is scheduled to record. */
-    val seriesTimerId: String? = null
+    val seriesTimerId: String? = null,
+    val isMovie: Boolean = false,
+    val isSports: Boolean = false,
+    val isNews: Boolean = false,
+    val isKids: Boolean = false
 ) {
     val isRecording: Boolean get() = !timerId.isNullOrBlank() || !seriesTimerId.isNullOrBlank()
 
@@ -490,7 +511,9 @@ data class LiveTvChannel(
     val name: String,
     val logoUrl: String?,
     val currentProgram: LiveTvProgram? = null,
-    val nextProgram: LiveTvProgram? = null
+    val nextProgram: LiveTvProgram? = null,
+    val programs: List<LiveTvProgram> = emptyList(),
+    val isFavorite: Boolean = false
 )
 
 /** A recording scheduled on the server's DVR (one programme, or a whole series rule). */
@@ -605,6 +628,17 @@ data class PlaybackSessionData(
     val mediaSources: List<MediaSourceOption> = emptyList(),
     val externalSubtitleFiles: List<ExternalSubtitleFile> = emptyList(),
     val directPlayUrl: String? = null,
-    val isLiveTv: Boolean = false
+    val isLiveTv: Boolean = false,
+    val playMethod: PlayMethod = if (isHls) PlayMethod.TRANSCODE else PlayMethod.DIRECT_PLAY,
+    val transcodeReasons: List<String> = emptyList(),
+    val videoBitrate: Long? = null,
+    val audioBitrate: Long? = null,
+    val videoFps: Float? = null,
+    val container: String? = null,
+    val fileSizeBytes: Long? = null,
+    val filePath: String? = null,
+    val activeAudioStreamIndex: Int? = null,
+    val burnedInSubtitleIndex: Int? = null,
+    val isCinemaIntro: Boolean = false
 )
 

@@ -123,6 +123,7 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.session)
     implementation(libs.androidx.media3.datasource.okhttp)
+    implementation(libs.jellyfin.media3.ffmpeg.decoder)
 
     implementation(libs.retrofit)
     implementation(libs.retrofit.kotlinx.serialization)
