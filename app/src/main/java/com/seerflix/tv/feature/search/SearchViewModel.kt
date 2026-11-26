@@ -46,6 +46,7 @@ class SearchViewModel @Inject constructor(
 
     private val initialQuery: String = savedStateHandle.get<String>("query").orEmpty()
     private val initialPersonId: Int? = savedStateHandle.get<String>("personId")?.toIntOrNull()?.takeIf { it > 0 }
+    private val initialJfPersonId: String? = savedStateHandle.get<String>("jfPersonId")?.takeIf { it.isNotBlank() }
     private val initialPersonName: String? = savedStateHandle.get<String>("personName")?.takeIf { it.isNotBlank() }
 
     private val _uiState = MutableStateFlow(
@@ -61,7 +62,11 @@ class SearchViewModel @Inject constructor(
     init {
         loadTrendingSuggestions()
         when {
-            initialPersonId != null -> selectPerson(initialPersonId, initialPersonName ?: initialQuery.ifBlank { "Filmography" })
+            initialPersonId != null || initialJfPersonId != null -> selectPerson(
+                personId = initialPersonId,
+                jellyfinPersonId = initialJfPersonId,
+                name = initialPersonName ?: initialQuery.ifBlank { "Filmography" }
+            )
             initialQuery.trim().length >= 2 -> onQueryChange(initialQuery)
         }
     }
@@ -147,10 +152,18 @@ class SearchViewModel @Inject constructor(
     }
 
     fun selectPerson(person: PersonSearchResult) {
-        selectPerson(person.id, person.name)
+        selectPerson(
+            personId = person.id.takeIf { it > 0 && person.jellyfinPersonId == null },
+            jellyfinPersonId = person.jellyfinPersonId,
+            name = person.name
+        )
     }
 
-    fun selectPerson(personId: Int, name: String) {
+    fun selectPerson(
+        personId: Int? = null,
+        jellyfinPersonId: String? = null,
+        name: String
+    ) {
         searchJob?.cancel()
         // Set synchronously (not inside the IO coroutine) so the very first frame already knows a
         // filmography is shown — the screen uses that to decide where initial focus goes.
@@ -165,7 +178,13 @@ class SearchViewModel @Inject constructor(
         searchJob = viewModelScope.launch(Dispatchers.IO) {
             val profile = authRepository.activeProfileFlow.first()
             val userId = profile?.jellyfinUserId.orEmpty()
-            val items = catalogRepository.loadPersonCredits(userId, personId, activeProfile = profile)
+            val items = catalogRepository.loadPersonCredits(
+                userId = userId,
+                personId = personId,
+                jellyfinPersonId = jellyfinPersonId,
+                personName = name,
+                activeProfile = profile
+            )
             ensureActive()
             _uiState.update { it.copy(results = items.distinctBy { r -> r.id }, isSearching = false) }
         }

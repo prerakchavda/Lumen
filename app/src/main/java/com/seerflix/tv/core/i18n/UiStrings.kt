@@ -1000,6 +1000,94 @@ data class UiStrings(
         internal set
     var settingsHomeBitrateTitle: String = "Home server streaming limit"
         internal set
+
+    // ---- Phase 2: Next Up, Libraries, Playlists, Queues & Details Parity (0.9.3) ----
+    var rowNextUp: String = "Next Up"
+        internal set
+    var cardUpNext: String = "Up Next"
+        internal set
+    var settingsMergeNextUpTitle: String = "Merge Next Up into Continue Watching"
+        internal set
+    var settingsMergeNextUpDesc: String = "Show upcoming episodes alongside in-progress titles instead of a separate Next Up row."
+        internal set
+    var actionLibraries: String = "Libraries"
+        internal set
+    var librariesDialogTitle: String = "Your Libraries"
+        internal set
+    var librariesEmpty: String = "No video libraries found."
+        internal set
+    var libraryFolderView: String = "Folder View"
+        internal set
+    var libraryGridView: String = "All Titles"
+        internal set
+    var libraryFolderBadge: String = "FOLDER"
+        internal set
+    var playlistsSectionTitle: String = "Playlists"
+        internal set
+    var playlistsEmpty: String = "No playlists yet."
+        internal set
+    var playlistItemCount: String = "%d items"
+        internal set
+    var playlistCreateNew: String = "Create New Playlist"
+        internal set
+    var playlistNameHint: String = "Playlist name"
+        internal set
+    var playlistAddedFeedback: String = "Added to %s"
+        internal set
+    var playlistCreatedFeedback: String = "Created playlist %s"
+        internal set
+    var playlistRemovedFeedback: String = "Removed from playlist"
+        internal set
+    var actionAddToPlaylist: String = "Add to Playlist"
+        internal set
+    var actionRemoveFromPlaylist: String = "Remove from Playlist"
+        internal set
+    var actionPlayAll: String = "Play All"
+        internal set
+    var actionShuffle: String = "Shuffle"
+        internal set
+    var playerQueuePosition: String = "Queue %s"
+        internal set
+    var playerPreviousTrack: String = "Previous"
+        internal set
+    var actionPlayFromBeginning: String = "Play from Beginning"
+        internal set
+    var actionMarkSeasonWatched: String = "Mark Season Watched"
+        internal set
+    var actionMarkSeasonUnwatched: String = "Mark Season Unwatched"
+        internal set
+    var actionMediaInfo: String = "Media Info"
+        internal set
+    var mediaInfoDialogTitle: String = "Media Info"
+        internal set
+    var mediaInfoFile: String = "File"
+        internal set
+    var mediaInfoContainer: String = "Container"
+        internal set
+    var mediaInfoSize: String = "Size"
+        internal set
+    var mediaInfoBitrate: String = "Bitrate"
+        internal set
+    var mediaInfoStreams: String = "Streams"
+        internal set
+    var actionTrackPicker: String = "Audio & Subtitles"
+        internal set
+    var trackPickerTitle: String = "Select Audio & Subtitles"
+        internal set
+    var trackPickerPlayWithSelection: String = "Play with Selected Tracks"
+        internal set
+    var actionDeleteItem: String = "Delete from Server"
+        internal set
+    var deleteConfirmTitle: String = "Delete \"%s\"?"
+        internal set
+    var deleteConfirmBody: String = "This permanently deletes the media file from your Jellyfin server. This cannot be undone."
+        internal set
+    var deleteConfirmStep1: String = "Yes, I want to delete this"
+        internal set
+    var deleteConfirmStep2: String = "Confirm Permanent Delete"
+        internal set
+    var deleteSuccessFeedback: String = "Deleted from server"
+        internal set
 }
 
 val SupportedLanguages = listOf(
@@ -1523,6 +1611,50 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsBingeLimitDesc = "Pausa y pregunta tras esta cantidad de episodios reproducidos automáticamente seguidos."
         settingsBingeEpisodes = "%d episodios"
         settingsHomeBitrateTitle = "Límite de bitrate del servidor principal"
+        // Phase 2
+        rowNextUp = "A continuación"
+        cardUpNext = "Siguiente"
+        settingsMergeNextUpTitle = "Combinar A continuación en Seguir viendo"
+        settingsMergeNextUpDesc = "Muestra los próximos episodios junto a los títulos en progreso en lugar de una fila separada."
+        actionLibraries = "Bibliotecas"
+        librariesDialogTitle = "Tus bibliotecas"
+        librariesEmpty = "No se encontraron bibliotecas de video."
+        libraryFolderView = "Vista de carpetas"
+        libraryGridView = "Todos los títulos"
+        libraryFolderBadge = "CARPETA"
+        playlistsSectionTitle = "Listas de reproducción"
+        playlistsEmpty = "Aún no hay listas de reproducción."
+        playlistItemCount = "%d elementos"
+        playlistCreateNew = "Crear nueva lista"
+        playlistNameHint = "Nombre de la lista"
+        playlistAddedFeedback = "Añadido a %s"
+        playlistCreatedFeedback = "Lista creada: %s"
+        playlistRemovedFeedback = "Eliminado de la lista"
+        actionAddToPlaylist = "Añadir a lista"
+        actionRemoveFromPlaylist = "Quitar de la lista"
+        actionPlayAll = "Reproducir todo"
+        actionShuffle = "Aleatorio"
+        playerQueuePosition = "Cola %s"
+        playerPreviousTrack = "Anterior"
+        actionPlayFromBeginning = "Reproducir desde el principio"
+        actionMarkSeasonWatched = "Marcar temporada como vista"
+        actionMarkSeasonUnwatched = "Marcar temporada como no vista"
+        actionMediaInfo = "Información multimedia"
+        mediaInfoDialogTitle = "Información multimedia"
+        mediaInfoFile = "Archivo"
+        mediaInfoContainer = "Contenedor"
+        mediaInfoSize = "Tamaño"
+        mediaInfoBitrate = "Bitrate"
+        mediaInfoStreams = "Pistas"
+        actionTrackPicker = "Audio y subtítulos"
+        trackPickerTitle = "Seleccionar audio y subtítulos"
+        trackPickerPlayWithSelection = "Reproducir con pistas seleccionadas"
+        actionDeleteItem = "Eliminar del servidor"
+        deleteConfirmTitle = "¿Eliminar \"%s\"?"
+        deleteConfirmBody = "Esto elimina permanentemente el archivo multimedia de tu servidor Jellyfin. No se puede deshacer."
+        deleteConfirmStep1 = "Sí, quiero eliminar esto"
+        deleteConfirmStep2 = "Confirmar eliminación permanente"
+        deleteSuccessFeedback = "Eliminado del servidor"
     }
     "fr" -> UiStrings(
         languageCode = "fr",
@@ -2039,6 +2171,50 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsBingeLimitDesc = "Met en pause après ce nombre d'épisodes lancés automatiquement."
         settingsBingeEpisodes = "%d épisodes"
         settingsHomeBitrateTitle = "Limite de débit du serveur principal"
+        // Phase 2
+        rowNextUp = "À suivre"
+        cardUpNext = "À suivre"
+        settingsMergeNextUpTitle = "Fusionner À suivre dans Reprendre"
+        settingsMergeNextUpDesc = "Afficher les prochains épisodes avec les titres en cours au lieu d'une ligne À suivre séparée."
+        actionLibraries = "Bibliothèques"
+        librariesDialogTitle = "Vos bibliothèques"
+        librariesEmpty = "Aucune bibliothèque vidéo trouvée."
+        libraryFolderView = "Vue dossiers"
+        libraryGridView = "Tous les titres"
+        libraryFolderBadge = "DOSSIER"
+        playlistsSectionTitle = "Playlists"
+        playlistsEmpty = "Aucune playlist pour le moment."
+        playlistItemCount = "%d éléments"
+        playlistCreateNew = "Créer une playlist"
+        playlistNameHint = "Nom de la playlist"
+        playlistAddedFeedback = "Ajouté à %s"
+        playlistCreatedFeedback = "Playlist créée : %s"
+        playlistRemovedFeedback = "Retiré de la playlist"
+        actionAddToPlaylist = "Ajouter à une playlist"
+        actionRemoveFromPlaylist = "Retirer de la playlist"
+        actionPlayAll = "Tout lire"
+        actionShuffle = "Aléatoire"
+        playerQueuePosition = "File %s"
+        playerPreviousTrack = "Précédent"
+        actionPlayFromBeginning = "Lire depuis le début"
+        actionMarkSeasonWatched = "Marquer la saison comme vue"
+        actionMarkSeasonUnwatched = "Marquer la saison comme non vue"
+        actionMediaInfo = "Infos média"
+        mediaInfoDialogTitle = "Infos média"
+        mediaInfoFile = "Fichier"
+        mediaInfoContainer = "Conteneur"
+        mediaInfoSize = "Taille"
+        mediaInfoBitrate = "Débit"
+        mediaInfoStreams = "Pistes"
+        actionTrackPicker = "Audio et sous-titres"
+        trackPickerTitle = "Choisir l'audio et les sous-titres"
+        trackPickerPlayWithSelection = "Lire avec les pistes choisies"
+        actionDeleteItem = "Supprimer du serveur"
+        deleteConfirmTitle = "Supprimer « %s » ?"
+        deleteConfirmBody = "Cette action supprime définitivement le fichier média de votre serveur Jellyfin. Elle est irréversible."
+        deleteConfirmStep1 = "Oui, je veux supprimer ceci"
+        deleteConfirmStep2 = "Confirmer la suppression définitive"
+        deleteSuccessFeedback = "Supprimé du serveur"
     }
     "de" -> UiStrings(
         languageCode = "de",
@@ -2552,6 +2728,50 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsBingeLimitDesc = "Pausiert nach dieser Anzahl automatisch gestarteter Episoden in Folge."
         settingsBingeEpisodes = "%d Episoden"
         settingsHomeBitrateTitle = "Streaming-Limit des Heimservers"
+        // Phase 2
+        rowNextUp = "Als Nächstes"
+        cardUpNext = "Als Nächstes"
+        settingsMergeNextUpTitle = "Als Nächstes in Weiterschauen einbinden"
+        settingsMergeNextUpDesc = "Kommende Episoden zusammen mit laufenden Titeln statt in einer separaten Zeile anzeigen."
+        actionLibraries = "Mediatheken"
+        librariesDialogTitle = "Deine Mediatheken"
+        librariesEmpty = "Keine Videomediatheken gefunden."
+        libraryFolderView = "Ordneransicht"
+        libraryGridView = "Alle Titel"
+        libraryFolderBadge = "ORDNER"
+        playlistsSectionTitle = "Wiedergabelisten"
+        playlistsEmpty = "Noch keine Wiedergabelisten."
+        playlistItemCount = "%d Einträge"
+        playlistCreateNew = "Neue Wiedergabeliste erstellen"
+        playlistNameHint = "Name der Wiedergabeliste"
+        playlistAddedFeedback = "Zu %s hinzugefügt"
+        playlistCreatedFeedback = "Wiedergabeliste %s erstellt"
+        playlistRemovedFeedback = "Aus Wiedergabeliste entfernt"
+        actionAddToPlaylist = "Zur Wiedergabeliste"
+        actionRemoveFromPlaylist = "Aus Wiedergabeliste entfernen"
+        actionPlayAll = "Alle abspielen"
+        actionShuffle = "Zufallswiedergabe"
+        playerQueuePosition = "Warteschlange %s"
+        playerPreviousTrack = "Zurück"
+        actionPlayFromBeginning = "Von Anfang an abspielen"
+        actionMarkSeasonWatched = "Staffel als gesehen markieren"
+        actionMarkSeasonUnwatched = "Staffel als ungesehen markieren"
+        actionMediaInfo = "Medieninfos"
+        mediaInfoDialogTitle = "Medieninfos"
+        mediaInfoFile = "Datei"
+        mediaInfoContainer = "Container"
+        mediaInfoSize = "Größe"
+        mediaInfoBitrate = "Bitrate"
+        mediaInfoStreams = "Spuren"
+        actionTrackPicker = "Audio & Untertitel"
+        trackPickerTitle = "Audio & Untertitel wählen"
+        trackPickerPlayWithSelection = "Mit gewählten Spuren abspielen"
+        actionDeleteItem = "Vom Server löschen"
+        deleteConfirmTitle = "„%s“ löschen?"
+        deleteConfirmBody = "Dadurch wird die Mediendatei dauerhaft von deinem Jellyfin-Server gelöscht. Dies kann nicht rückgängig gemacht werden."
+        deleteConfirmStep1 = "Ja, ich möchte dies löschen"
+        deleteConfirmStep2 = "Dauerhaftes Löschen bestätigen"
+        deleteSuccessFeedback = "Vom Server gelöscht"
     }
     "ja" -> UiStrings(
         languageCode = "ja",
@@ -3070,6 +3290,50 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsBingeLimitDesc = "連続自動再生がこの話数に達すると一時停止して確認します。"
         settingsBingeEpisodes = "%d話"
         settingsHomeBitrateTitle = "ホームサーバーのビットレート上限"
+        // Phase 2
+        rowNextUp = "次のエピソード"
+        cardUpNext = "次へ"
+        settingsMergeNextUpTitle = "次のエピソードを視聴中に統合"
+        settingsMergeNextUpDesc = "別の「次のエピソード」行ではなく、視聴中のタイトルと一緒に次のエピソードを表示します。"
+        actionLibraries = "ライブラリ"
+        librariesDialogTitle = "ライブラリ一覧"
+        librariesEmpty = "ビデオライブラリが見つかりません。"
+        libraryFolderView = "フォルダ表示"
+        libraryGridView = "すべてのタイトル"
+        libraryFolderBadge = "フォルダ"
+        playlistsSectionTitle = "プレイリスト"
+        playlistsEmpty = "プレイリストはまだありません。"
+        playlistItemCount = "%d件"
+        playlistCreateNew = "新しいプレイリストを作成"
+        playlistNameHint = "プレイリスト名"
+        playlistAddedFeedback = "%sに追加しました"
+        playlistCreatedFeedback = "プレイリスト「%s」を作成しました"
+        playlistRemovedFeedback = "プレイリストから削除しました"
+        actionAddToPlaylist = "プレイリストに追加"
+        actionRemoveFromPlaylist = "プレイリストから削除"
+        actionPlayAll = "すべて再生"
+        actionShuffle = "シャッフル"
+        playerQueuePosition = "キュー %s"
+        playerPreviousTrack = "前へ"
+        actionPlayFromBeginning = "最初から再生"
+        actionMarkSeasonWatched = "シーズンを視聴済みにする"
+        actionMarkSeasonUnwatched = "シーズンを未視聴にする"
+        actionMediaInfo = "メディア情報"
+        mediaInfoDialogTitle = "メディア情報"
+        mediaInfoFile = "ファイル"
+        mediaInfoContainer = "コンテナ"
+        mediaInfoSize = "サイズ"
+        mediaInfoBitrate = "ビットレート"
+        mediaInfoStreams = "ストリーム"
+        actionTrackPicker = "音声と字幕"
+        trackPickerTitle = "音声と字幕を選択"
+        trackPickerPlayWithSelection = "選択したトラックで再生"
+        actionDeleteItem = "サーバーから削除"
+        deleteConfirmTitle = "「%s」を削除しますか？"
+        deleteConfirmBody = "Jellyfinサーバーからメディアファイルが完全に削除されます。この操作は元に戻せません。"
+        deleteConfirmStep1 = "はい、削除を続行します"
+        deleteConfirmStep2 = "完全削除を確定"
+        deleteSuccessFeedback = "サーバーから削除しました"
     }
     else -> UiStrings()
 }

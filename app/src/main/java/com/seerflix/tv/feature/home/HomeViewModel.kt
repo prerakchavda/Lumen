@@ -110,6 +110,10 @@ data class HomeUiState(
     /** "single" / "series" / "cancelled" / "error:<msg>" after a DVR change, shown briefly. */
     val dvrFeedback: String? = null,
     val libraryViews: List<JellyfinLibraryView> = emptyList(),
+    val playlists: List<com.seerflix.tv.core.model.PlaylistSummary> = emptyList(),
+    val activePlaylistDetails: com.seerflix.tv.core.model.PlaylistSummary? = null,
+    val playlistDetailsLoading: Boolean = false,
+    val showLibrariesDialog: Boolean = false,
     val readyAlerts: List<ReadyRequestAlert> = emptyList(),
     val syncPlayGroups: List<SyncPlayGroup> = emptyList(),
     val activeSyncPlayGroup: SyncPlayGroup? = null,
@@ -288,6 +292,63 @@ class HomeViewModel @Inject constructor(
 
     fun dismissCustomizeHomeDialog() {
         _uiState.update { it.copy(showCustomizeHomeDialog = false) }
+    }
+
+    fun openLibrariesDialog() {
+        _uiState.update { it.copy(showLibrariesDialog = true) }
+        val userId = _uiState.value.profile?.jellyfinUserId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val views = catalogRepository.loadUserLibraryViews(userId)
+            _uiState.update { it.copy(libraryViews = views) }
+        }
+    }
+
+    fun dismissLibrariesDialog() {
+        _uiState.update { it.copy(showLibrariesDialog = false) }
+    }
+
+    private var playlistJob: Job? = null
+
+    fun openPlaylist(playlist: com.seerflix.tv.core.model.PlaylistSummary) {
+        val profile = _uiState.value.profile ?: return
+        playlistJob?.cancel()
+        _uiState.update { it.copy(activePlaylistDetails = playlist, playlistDetailsLoading = true) }
+        playlistJob = viewModelScope.launch(Dispatchers.IO) {
+            val items = catalogRepository.loadPlaylistItems(profile.jellyfinUserId, playlist.id, profile)
+            _uiState.update {
+                it.copy(
+                    activePlaylistDetails = playlist.copy(items = items, itemCount = items.size),
+                    playlistDetailsLoading = false
+                )
+            }
+        }
+    }
+
+    fun dismissPlaylistDetails() {
+        playlistJob?.cancel()
+        _uiState.update { it.copy(activePlaylistDetails = null, playlistDetailsLoading = false) }
+    }
+
+    fun removePlaylistItem(playlistId: String, entryId: String) {
+        val profile = _uiState.value.profile ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.removeFromPlaylist(profile.jellyfinUserId, playlistId, listOf(entryId))
+                .onSuccess {
+                    val active = _uiState.value.activePlaylistDetails
+                    if (active?.id == playlistId) {
+                        val updatedItems = active.items.filterNot { it.playlistItemId == entryId }
+                        _uiState.update { s ->
+                            s.copy(
+                                activePlaylistDetails = active.copy(items = updatedItems, itemCount = updatedItems.size),
+                                playlists = s.playlists.map {
+                                    if (it.id == playlistId) it.copy(itemCount = updatedItems.size) else it
+                                }
+                            )
+                        }
+                    }
+                    showActionFeedback("Removed from playlist")
+                }
+        }
     }
 
     fun saveHomeCustomization(
@@ -590,46 +651,62 @@ class HomeViewModel @Inject constructor(
         if (continueWatchingJob?.isActive == true) return
         val profile = state.profile ?: return
         continueWatchingJob = viewModelScope.launch(Dispatchers.IO) {
-            val allItems = try {
-                catalogRepository.loadContinueWatchingItems(profile.jellyfinUserId, profile)
+            val (allCw, allNextUp) = try {
+                catalogRepository.loadContinueWatchingAndNextUp(profile.jellyfinUserId, profile)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 return@launch
             }
-            val items = when (tab) {
-                HomeTab.MOVIES -> allItems.filter { it.mediaType == MediaType.MOVIE }
-                HomeTab.SHOWS -> allItems.filter { it.mediaType != MediaType.MOVIE }
-                else -> allItems
+            val cwItems = when (tab) {
+                HomeTab.MOVIES -> allCw.filter { it.mediaType == MediaType.MOVIE }
+                HomeTab.SHOWS -> allCw.filter { it.mediaType != MediaType.MOVIE }
+                else -> allCw
             }
+            val nextUpItems = if (tab == HomeTab.MOVIES) emptyList() else allNextUp
             val cwTitle = profile.name.trim().takeIf { it.isNotEmpty() }
                 ?.let { "Continue Watching for $it" }
                 ?: "Continue Watching"
+            val hiddenRows = profile.hiddenHomeRowIds.toSet()
             _uiState.update { s ->
                 if (s.activeTab != tab || s.isLoading) return@update s
-                val idx = s.rows.indexOfFirst { it.id == "continue_watching" }
-                val newRows = when {
-                    idx >= 0 && items.isEmpty() -> s.rows.filterIndexed { i, _ -> i != idx }
-                    idx >= 0 -> s.rows.toMutableList().also {
-                        it[idx] = it[idx].copy(title = cwTitle, items = items)
-                    }
-                    items.isNotEmpty() -> {
-                        val insertAt = if (s.rows.firstOrNull()?.id == "ready_to_watch") 1 else 0
-                        s.rows.toMutableList().also {
-                            it.add(
-                                insertAt,
-                                CatalogRow(
-                                    id = "continue_watching",
-                                    title = cwTitle,
-                                    style = RowStyle.CONTINUE_WATCHING,
-                                    items = items
-                                )
+                var updated = s.rows.toMutableList()
+                val cwIdx = updated.indexOfFirst { it.id == "continue_watching" }
+                when {
+                    cwIdx >= 0 && (cwItems.isEmpty() || "continue_watching" in hiddenRows) -> updated.removeAt(cwIdx)
+                    cwIdx >= 0 -> updated[cwIdx] = updated[cwIdx].copy(title = cwTitle, items = cwItems)
+                    cwItems.isNotEmpty() && "continue_watching" !in hiddenRows -> {
+                        val insertAt = if (updated.firstOrNull()?.id == "ready_to_watch") 1 else 0
+                        updated.add(
+                            insertAt,
+                            CatalogRow(
+                                id = "continue_watching",
+                                title = cwTitle,
+                                style = RowStyle.CONTINUE_WATCHING,
+                                items = cwItems
                             )
-                        }
+                        )
                     }
-                    else -> s.rows
                 }
-                if (newRows == s.rows) s else s.copy(rows = newRows)
+                val nuIdx = updated.indexOfFirst { it.id == "next_up" }
+                when {
+                    nuIdx >= 0 && (nextUpItems.isEmpty() || "next_up" in hiddenRows) -> updated.removeAt(nuIdx)
+                    nuIdx >= 0 -> updated[nuIdx] = updated[nuIdx].copy(items = nextUpItems)
+                    nextUpItems.isNotEmpty() && "next_up" !in hiddenRows -> {
+                        val afterCw = updated.indexOfFirst { it.id == "continue_watching" }
+                        val insertAt = if (afterCw >= 0) afterCw + 1 else if (updated.firstOrNull()?.id == "ready_to_watch") 1 else 0
+                        updated.add(
+                            insertAt,
+                            CatalogRow(
+                                id = "next_up",
+                                title = "Next Up",
+                                style = RowStyle.CONTINUE_WATCHING,
+                                items = nextUpItems
+                            )
+                        )
+                    }
+                }
+                if (updated == s.rows) s else s.copy(rows = updated)
             }
         }
     }
@@ -1105,6 +1182,11 @@ class HomeViewModel @Inject constructor(
                             catalogRepository.loadLiveTvRecordings(profile.jellyfinUserId)
                         } else emptyList()
                     }
+                    val playlistsDeferred = async {
+                        if (tab == HomeTab.MY_LIST) {
+                            catalogRepository.loadPlaylists(profile.jellyfinUserId)
+                        } else emptyList()
+                    }
                     val rowsDeferred = async {
                         when (tab) {
                             HomeTab.COLLECTIONS, HomeTab.LIVE_TV -> emptyList()
@@ -1155,6 +1237,7 @@ class HomeViewModel @Inject constructor(
                     CatalogLoadBundle(
                         rows = rows,
                         collections = collectionsDeferred.await(),
+                        playlists = playlistsDeferred.await(),
                         liveChannels = liveTvChannelsDeferred.await(),
                         liveRecordings = liveTvRecordingsDeferred.await(),
                         liveScheduled = liveTvScheduledDeferred.await(),
@@ -1184,6 +1267,7 @@ class HomeViewModel @Inject constructor(
                     it.copy(
                         rows = bundle.rows,
                         collections = bundle.collections,
+                        playlists = if (tab == HomeTab.MY_LIST) bundle.playlists else it.playlists,
                         liveTvChannels = bundle.liveChannels,
                         liveTvRecordings = bundle.liveRecordings,
                         liveTvScheduled = bundle.liveScheduled,
@@ -1325,6 +1409,7 @@ class HomeViewModel @Inject constructor(
     private data class CatalogLoadBundle(
         val rows: List<CatalogRow>,
         val collections: List<CollectionSummary>,
+        val playlists: List<com.seerflix.tv.core.model.PlaylistSummary> = emptyList(),
         val liveChannels: List<LiveTvChannel>,
         val liveRecordings: List<UnifiedMediaItem>,
         val liveScheduled: List<com.seerflix.tv.core.model.ScheduledRecording> = emptyList(),

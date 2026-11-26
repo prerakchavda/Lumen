@@ -101,7 +101,8 @@ data class CastMember(
     val name: String,
     val role: String,
     val imageUrl: String?,
-    val personId: Int? = null
+    val personId: Int? = null,
+    val jellyfinPersonId: String? = null
 )
 
 @Immutable
@@ -109,7 +110,8 @@ data class PersonSearchResult(
     val id: Int,
     val name: String,
     val department: String? = null,
-    val imageUrl: String? = null
+    val imageUrl: String? = null,
+    val jellyfinPersonId: String? = null
 )
 
 @Immutable
@@ -305,7 +307,18 @@ data class UnifiedMediaItem(
     val cast: List<CastMember> = emptyList(),
     val mediaVersions: List<MediaSourceOption> = emptyList(),
     val extras: List<ExtrasItem> = emptyList(),
-    val isAdult: Boolean = false
+    val isAdult: Boolean = false,
+    val isNextUp: Boolean = false,
+    val isFolder: Boolean = false,
+    val playlistItemId: String? = null,
+    val canDelete: Boolean = false,
+    val mediaFilePath: String? = null,
+    val mediaContainer: String? = null,
+    val mediaFileSizeBytes: Long? = null,
+    val mediaBitrate: Long? = null,
+    val mediaStreamSpecs: List<MediaStreamSpec> = emptyList(),
+    val availableAudioTracks: List<TrackOption> = emptyList(),
+    val availableSubtitleTracks: List<TrackOption> = emptyList()
 ) {
     val isPlayable: Boolean
         get() = jellyfinId != null
@@ -471,12 +484,41 @@ data class ExtrasItem(
 )
 
 @Immutable
+data class MediaStreamSpec(
+    val type: String,
+    val title: String,
+    val codec: String? = null,
+    val language: String? = null,
+    val channels: Int? = null,
+    val resolution: String? = null,
+    val hdrFormat: String? = null,
+    val bitrate: Long? = null,
+    val bitDepth: Int? = null,
+    val isDefault: Boolean = false,
+    val isForced: Boolean = false
+)
+
+@Immutable
+data class PlaylistSummary(
+    val id: String,
+    val name: String,
+    val itemCount: Int = 0,
+    val posterUrl: String? = null,
+    val backdropUrl: String? = null,
+    val overview: String = "",
+    val items: List<UnifiedMediaItem> = emptyList()
+)
+
+@Immutable
 data class JellyfinLibraryView(
     val id: String,
     val name: String,
     val collectionType: String? = null,
     val serverName: String? = null
-)
+) {
+    val displayName: String
+        get() = if (!serverName.isNullOrBlank()) "$name · $serverName" else name
+}
 
 @Immutable
 data class LiveTvProgram(

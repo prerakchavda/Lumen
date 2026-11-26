@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -390,21 +391,26 @@ fun PlayerScreen(
                         }
                     viewModel.updateActiveTrackIndexes(matchedAudioIdx, matchedSubIdx)
 
-                    // Apply Jellyfin SubtitleSelectionMode (Smart / Only Forced / Default / Always / None) once per playSession.
+                    // Apply pre-playback picked subtitle or Jellyfin SubtitleSelectionMode once per playSession.
                     if (initialSubtitleAppliedForPlaySession != activeSession.playSessionId &&
                         state.burnInSubtitleIndex == null &&
                         activeSession.subtitleTracks.isNotEmpty()
                     ) {
                         initialSubtitleAppliedForPlaySession = activeSession.playSessionId
+                        val preselectedIdx = viewModel.consumePreselectedSubtitle()
                         val activeAudioLang = selectedAudioFmt?.language
                             ?: activeSession.audioTracks.firstOrNull { it.index == matchedAudioIdx }?.language
-                        val chosen = SubtitleTrackSelector.selectSubtitleTrack(
-                            mode = state.subtitleSelectionMode,
-                            preferredSubtitleLang = state.preferredSubtitleLang,
-                            preferredAudioLang = state.preferredAudioLang,
-                            activeAudioLang = activeAudioLang,
-                            subtitleTracks = activeSession.subtitleTracks
-                        )
+                        val chosen = if (preselectedIdx != null) {
+                            activeSession.subtitleTracks.firstOrNull { it.index == preselectedIdx }
+                        } else {
+                            SubtitleTrackSelector.selectSubtitleTrack(
+                                mode = state.subtitleSelectionMode,
+                                preferredSubtitleLang = state.preferredSubtitleLang,
+                                preferredAudioLang = state.preferredAudioLang,
+                                activeAudioLang = activeAudioLang,
+                                subtitleTracks = activeSession.subtitleTracks
+                            )
+                        }
                         val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
                         if (chosen == null) {
                             if (state.activeAssSubtitleIndex == null) {
@@ -966,8 +972,17 @@ fun PlayerScreen(
             sleepTimerHudText = null
             return@LaunchedEffect
         }
+        val hasQueueNext = state.hasQueueNext
         val nextId = s.nextEpisodeId
-        if (nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
+        if (hasQueueNext) {
+            delay(400L)
+            if (state.isLoading || state.showStillWatchingPrompt) return@LaunchedEffect
+            viewModel.playNextInQueueOrEpisode(
+                currentPosMs = durationMs.coerceAtLeast(currentPosMs),
+                reportState = buildLiveReportState(),
+                fromAutoplay = true
+            )
+        } else if (nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
             delay(400L) // let an in-flight Up Next countdown win if it's about to fire
             if (state.isLoading || state.showStillWatchingPrompt) return@LaunchedEffect
             viewModel.reportStopped(durationMs.coerceAtLeast(currentPosMs), buildLiveReportState())
@@ -1079,11 +1094,21 @@ fun PlayerScreen(
                 }
                 "Rewind" -> seekBy(-10_000L)
                 "FastForward" -> seekBy(10_000L)
-                "NextTrack" -> state.session?.nextEpisodeId?.let { nextId ->
-                    viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L))
-                    viewModel.loadItem(nextId)
+                "NextTrack" -> {
+                    viewModel.playNextInQueueOrEpisode(
+                        currentPosMs = player.currentPosition.coerceAtLeast(0L),
+                        reportState = buildLiveReportState()
+                    )
                 }
-                "PreviousTrack" -> seekExact(0L)
+                "PreviousTrack" -> {
+                    if (player.currentPosition > 5_000L || !viewModel.playPreviousInQueue(
+                            currentPosMs = player.currentPosition.coerceAtLeast(0L),
+                            reportState = buildLiveReportState()
+                        )
+                    ) {
+                        seekExact(0L)
+                    }
+                }
             }
             osdVisible = true
         }
@@ -1631,17 +1656,32 @@ fun PlayerScreen(
                                             else if (focusedOsdActionLabel == strings.playerPlaybackSettings) focusedOsdActionLabel = null
                                         }
                                     )
-                                    session?.nextEpisodeId?.let { nextId ->
+                                    if (state.hasQueuePrevious) {
                                         PlayerControlIcon(
-                                            icon = Icons.Filled.SkipNext,
-                                            label = strings.playerNextEpisode,
+                                            icon = Icons.Filled.SkipPrevious,
+                                            label = strings.playerPreviousTrack,
                                             onClick = {
-                                                viewModel.reportStopped(currentPosMs, buildLiveReportState())
-                                                viewModel.loadItem(nextId)
+                                                viewModel.playPreviousInQueue(currentPosMs, buildLiveReportState())
                                             },
                                             onFocusChange = { focused ->
-                                                if (focused) focusedOsdActionLabel = strings.playerNextEpisode
-                                                else if (focusedOsdActionLabel == strings.playerNextEpisode) focusedOsdActionLabel = null
+                                                if (focused) focusedOsdActionLabel = strings.playerPreviousTrack
+                                                else if (focusedOsdActionLabel == strings.playerPreviousTrack) focusedOsdActionLabel = null
+                                            }
+                                        )
+                                    }
+                                    if (state.hasQueueNext || session?.nextEpisodeId != null) {
+                                        val nextLabel = state.queuePositionLabel?.let {
+                                            "${strings.playerNextEpisode} (${strings.playerQueuePosition.format(it)})"
+                                        } ?: strings.playerNextEpisode
+                                        PlayerControlIcon(
+                                            icon = Icons.Filled.SkipNext,
+                                            label = nextLabel,
+                                            onClick = {
+                                                viewModel.playNextInQueueOrEpisode(currentPosMs, buildLiveReportState())
+                                            },
+                                            onFocusChange = { focused ->
+                                                if (focused) focusedOsdActionLabel = nextLabel
+                                                else if (focusedOsdActionLabel == nextLabel) focusedOsdActionLabel = null
                                             }
                                         )
                                     }

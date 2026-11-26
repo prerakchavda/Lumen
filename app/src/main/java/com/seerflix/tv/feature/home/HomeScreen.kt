@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Hd
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -58,9 +59,11 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Tv
@@ -199,6 +202,8 @@ fun HomeScreen(
     onSwitchProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLibrary: (MediaType) -> Unit = {},
+    onOpenLibraryView: (JellyfinLibraryView) -> Unit = {},
+    onPlayQueue: (List<com.seerflix.tv.core.player.QueueEntry>, Boolean) -> Unit = { _, _ -> },
     viewModel: HomeViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -271,6 +276,13 @@ fun HomeScreen(
         previewHttpClient = viewModel.previewHttpClient,
         extraActions = HomeExtraActions(
             onBrowseAll = onOpenLibrary,
+            onOpenLibraryView = onOpenLibraryView,
+            onOpenLibraries = viewModel::openLibrariesDialog,
+            onDismissLibraries = viewModel::dismissLibrariesDialog,
+            onOpenPlaylist = viewModel::openPlaylist,
+            onDismissPlaylist = viewModel::dismissPlaylistDetails,
+            onRemovePlaylistItem = viewModel::removePlaylistItem,
+            onPlayQueue = onPlayQueue,
             onOpenLiveTvMenu = viewModel::openLiveTvMenu,
             onDismissLiveTvMenu = viewModel::dismissLiveTvMenu,
             onRecordProgram = viewModel::recordProgram,
@@ -283,10 +295,17 @@ fun HomeScreen(
     )
 }
 
-/** Library grid, DVR, and in-app updater callbacks, bundled so they don't have to be threaded one by one. */
+/** Library grid, playlists, queue, DVR, and in-app updater callbacks, bundled so they don't have to be threaded one by one. */
 @androidx.compose.runtime.Immutable
 data class HomeExtraActions(
     val onBrowseAll: (MediaType) -> Unit = {},
+    val onOpenLibraryView: (JellyfinLibraryView) -> Unit = {},
+    val onOpenLibraries: () -> Unit = {},
+    val onDismissLibraries: () -> Unit = {},
+    val onOpenPlaylist: (com.seerflix.tv.core.model.PlaylistSummary) -> Unit = {},
+    val onDismissPlaylist: () -> Unit = {},
+    val onRemovePlaylistItem: (playlistId: String, entryId: String) -> Unit = { _, _ -> },
+    val onPlayQueue: (entries: List<com.seerflix.tv.core.player.QueueEntry>, shuffle: Boolean) -> Unit = { _, _ -> },
     val onOpenLiveTvMenu: (LiveTvChannel) -> Unit = {},
     val onDismissLiveTvMenu: () -> Unit = {},
     val onRecordProgram: (programId: String, series: Boolean) -> Unit = { _, _ -> },
@@ -522,6 +541,7 @@ fun HomeContent(
             isKidsMode = state.profile?.kidsMode == true,
             activeSyncPlayName = state.activeSyncPlayGroup?.groupName,
             hasUpdate = state.updateInfo != null,
+            onOpenLibraries = extraActions.onOpenLibraries,
             onOpenSettings = onOpenSettings,
             onSwitchProfile = onSwitchProfile,
             onOpenSyncPlay = onOpenSyncPlay,
@@ -583,6 +603,10 @@ fun HomeContent(
                 onDismissCollectionDetails()
                 item.jellyfinId?.let(onPlayDirect)
             },
+            onPlayQueue = { entries, shuffle ->
+                onDismissCollectionDetails()
+                extraActions.onPlayQueue(entries, shuffle)
+            },
             onOpenItemDetails = { item ->
                 onDismissCollectionDetails()
                 onOpenDetails(item)
@@ -590,6 +614,36 @@ fun HomeContent(
             onRequestItem = onRequestCollectionItem,
             onRequestAllMissing = onRequestAllMissingInCollection,
             onDismiss = onDismissCollectionDetails
+        )
+    }
+
+    state.activePlaylistDetails?.let { playlist ->
+        PlaylistDetailsDialog(
+            playlist = playlist,
+            isLoading = state.playlistDetailsLoading,
+            onPlayItem = { item ->
+                extraActions.onDismissPlaylist()
+                item.jellyfinId?.let(onPlayDirect)
+            },
+            onPlayQueue = { entries, shuffle ->
+                extraActions.onDismissPlaylist()
+                extraActions.onPlayQueue(entries, shuffle)
+            },
+            onRemoveItem = { entryId ->
+                extraActions.onRemovePlaylistItem(playlist.id, entryId)
+            },
+            onDismiss = extraActions.onDismissPlaylist
+        )
+    }
+
+    if (state.showLibrariesDialog) {
+        LibrariesPickerDialog(
+            libraries = state.libraryViews,
+            onSelectLibrary = { lib ->
+                extraActions.onDismissLibraries()
+                extraActions.onOpenLibraryView(lib)
+            },
+            onDismiss = extraActions.onDismissLibraries
         )
     }
 
@@ -887,7 +941,7 @@ private fun HomeMainCanvas(
                     }
                 )
             }
-            state.activeTab == HomeTab.MY_LIST && state.rows.isEmpty() -> {
+            state.activeTab == HomeTab.MY_LIST && state.rows.isEmpty() && state.playlists.isEmpty() -> {
                 Column(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -973,8 +1027,18 @@ private fun HomeMainCanvas(
                         }
                     }
 
+                    if (state.activeTab == HomeTab.MY_LIST && state.playlists.isNotEmpty()) {
+                        item(key = "playlists_row", contentType = "playlists") {
+                            PlaylistsRowSection(
+                                playlists = state.playlists,
+                                rowBringIntoViewSpec = rowBringIntoViewSpec,
+                                onOpenPlaylist = extraActions.onOpenPlaylist
+                            )
+                        }
+                    }
+
                     if (isMoviesOrShows) {
-                        // Clean Netflix-style control row: Categories picker pill + browse-all, Collections, availability filter.
+                        // Clean Netflix-style control row: Categories picker pill + browse-all, Libraries, Collections, availability filter.
                         item(key = "genre_filter_bar", contentType = "genre_bar") {
                             val tabMediaType = if (state.activeTab == HomeTab.MOVIES) MediaType.MOVIE else MediaType.SERIES
                             GenreFilterBar(
@@ -988,6 +1052,7 @@ private fun HomeMainCanvas(
                                     strings.libraryAllShows
                                 },
                                 onBrowseAll = { extraActions.onBrowseAll(tabMediaType) },
+                                onOpenLibraries = if (state.libraryViews.isNotEmpty()) extraActions.onOpenLibraries else null,
                                 onOpenCollections = if (state.activeTab == HomeTab.MOVIES && state.profile?.isRestricted != true) {
                                     { onSelectTab(HomeTab.COLLECTIONS) }
                                 } else null,
@@ -1609,6 +1674,7 @@ private fun GenreFilterBar(
     bringIntoViewSpec: BringIntoViewSpec? = null,
     browseAllLabel: String? = null,
     onBrowseAll: (() -> Unit)? = null,
+    onOpenLibraries: (() -> Unit)? = null,
     onOpenCollections: (() -> Unit)? = null,
     selectedFilter: AvailabilityFilter = AvailabilityFilter.ALL,
     isSeerrConfigured: Boolean = false,
@@ -1642,6 +1708,16 @@ private fun GenreFilterBar(
                     emphasized = true,
                     icon = Icons.Filled.GridView,
                     onClick = onBrowseAll
+                )
+            }
+        }
+        if (onOpenLibraries != null) {
+            item(key = "libraries", contentType = "action_chip") {
+                FilterChip(
+                    label = strings.actionLibraries,
+                    selected = false,
+                    icon = Icons.Filled.Folder,
+                    onClick = onOpenLibraries
                 )
             }
         }
@@ -2025,8 +2101,9 @@ private fun CatalogRowSection(
             .fillMaxWidth()
             .padding(top = 14.dp)
     ) {
+        val strings = AppStrings.current
         Text(
-            text = row.title,
+            text = if (row.id == "next_up") strings.rowNextUp else row.title,
             color = colors.textPrimary,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
@@ -2280,6 +2357,7 @@ private fun ProfileMenuDialog(
     isKidsMode: Boolean,
     activeSyncPlayName: String?,
     hasUpdate: Boolean,
+    onOpenLibraries: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onSwitchProfile: () -> Unit,
     onOpenSyncPlay: () -> Unit,
@@ -2349,6 +2427,7 @@ private fun ProfileMenuDialog(
                 run(onSwitchProfile),
                 modifier = if (hasUpdate) Modifier else Modifier.focusRequester(firstActionFocusRequester)
             )
+            ContextActionRow(Icons.Filled.Folder, strings.actionLibraries, run(onOpenLibraries))
             ContextActionRow(
                 Icons.Filled.Groups,
                 activeSyncPlayName?.let { strings.homeSyncPlayChip.format(it) } ?: strings.actionWatchTogether,
@@ -2613,11 +2692,296 @@ private fun CollectionsHubContent(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PlaylistsRowSection(
+    playlists: List<com.seerflix.tv.core.model.PlaylistSummary>,
+    rowBringIntoViewSpec: BringIntoViewSpec?,
+    onOpenPlaylist: (com.seerflix.tv.core.model.PlaylistSummary) -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val corner = RoundedCornerShape(spec.cardCornerRadiusDp.dp)
+    val horizontalPad = spec.contentStartPaddingDp.dp
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 14.dp)
+    ) {
+        Text(
+            text = strings.playlistsSectionTitle,
+            color = colors.textPrimary,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = horizontalPad, end = horizontalPad, bottom = 8.dp)
+        )
+        WithBringIntoViewSpec(rowBringIntoViewSpec) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = horizontalPad),
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                items(playlists, key = { it.id }) { pl ->
+                    var focused by remember { mutableStateOf(false) }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .width(240.dp)
+                            .clip(corner)
+                            .background(if (focused) colors.surfaceElevated else colors.surface)
+                            .border(
+                                if (focused) 2.dp else 1.dp,
+                                if (focused) colors.focusBorder else colors.badgeBorder,
+                                corner
+                            )
+                            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+                            .clickable { onOpenPlaylist(pl) }
+                            .padding(14.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.accent.copy(alpha = 0.22f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PlaylistPlay,
+                                contentDescription = null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = pl.name,
+                                color = colors.white,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                text = strings.playlistItemCount.format(pl.itemCount),
+                                color = colors.textSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetailsDialog(
+    playlist: com.seerflix.tv.core.model.PlaylistSummary,
+    isLoading: Boolean,
+    onPlayItem: (UnifiedMediaItem) -> Unit,
+    onPlayQueue: (List<com.seerflix.tv.core.player.QueueEntry>, Boolean) -> Unit,
+    onRemoveItem: (entryId: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val closeFocusRequester = remember { FocusRequester() }
+    val playableEntries = remember(playlist.items) {
+        playlist.items.mapNotNull { item ->
+            item.jellyfinId?.let { com.seerflix.tv.core.player.QueueEntry(itemId = it, title = item.title) }
+        }
+    }
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            runCatching { closeFocusRequester.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(680.dp)
+                .clip(dialogCorner)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogCorner)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = playlist.name,
+                        color = colors.white,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = strings.playlistItemCount.format(playlist.items.size.coerceAtLeast(playlist.itemCount)),
+                        color = colors.textSecondary,
+                        fontSize = 13.sp
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (playableEntries.isNotEmpty()) {
+                        SmallTextButton(
+                            text = strings.actionPlayAll,
+                            isPrimary = true,
+                            onClick = { onPlayQueue(playableEntries, false) }
+                        )
+                        SmallTextButton(
+                            text = strings.actionShuffle,
+                            isPrimary = false,
+                            onClick = { onPlayQueue(playableEntries, true) }
+                        )
+                    }
+                    var closeFocused by remember { mutableStateOf(false) }
+                    Box(
+                        modifier = Modifier
+                            .focusRequester(closeFocusRequester)
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .background(if (closeFocused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
+                            .then(if (closeFocused) Modifier.border(2.dp, colors.focusBorder, CircleShape) else Modifier)
+                            .onFocusChanged { closeFocused = it.isFocused || it.hasFocus }
+                            .clickable(onClick = onDismiss),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Filled.Close, contentDescription = strings.commonClose, tint = colors.white, modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            if (isLoading && playlist.items.isEmpty()) {
+                Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = colors.accent)
+                }
+            } else if (playlist.items.isEmpty()) {
+                Box(modifier = Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    Text(strings.playlistsEmpty, color = colors.textSecondary, fontSize = 14.sp)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().height(340.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(playlist.items, key = { idx, item -> "${item.playlistItemId ?: item.id}_$idx" }) { _, item ->
+                        var rowFocused by remember { mutableStateOf(false) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (rowFocused) colors.surfaceElevated else colors.surface)
+                                .border(
+                                    if (rowFocused) 2.dp else 1.dp,
+                                    if (rowFocused) colors.focusBorder else colors.badgeBorder,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .onFocusChanged { rowFocused = it.isFocused || it.hasFocus }
+                                .clickable { onPlayItem(item) }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.title,
+                                    color = colors.white,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val sub = listOfNotNull(item.releaseYear, item.formattedRuntime).joinToString(" · ")
+                                if (sub.isNotBlank()) {
+                                    Text(sub, color = colors.textSecondary, fontSize = 11.sp)
+                                }
+                            }
+                            item.playlistItemId?.takeIf { it.isNotBlank() }?.let { entryId ->
+                                Spacer(Modifier.width(8.dp))
+                                SmallIconAction(
+                                    icon = Icons.Filled.DeleteOutline,
+                                    label = strings.actionRemoveFromPlaylist,
+                                    onClick = { onRemoveItem(entryId) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LibrariesPickerDialog(
+    libraries: List<JellyfinLibraryView>,
+    onSelectLibrary: (JellyfinLibraryView) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val dialogShape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val firstFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(libraries.isNotEmpty()) {
+            withFrameNanos { }
+            runCatching { firstFocus.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(460.dp)
+                .clip(dialogShape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, dialogShape)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = strings.librariesDialogTitle,
+                color = colors.white,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (libraries.isEmpty()) {
+                Text(strings.librariesEmpty, color = colors.textSecondary, fontSize = 14.sp)
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 380.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(libraries, key = { _, lib -> lib.id }) { idx, lib ->
+                        val icon = when (lib.collectionType?.lowercase()) {
+                            "movies" -> Icons.Filled.Movie
+                            "tvshows" -> Icons.Filled.Tv
+                            else -> Icons.Filled.Folder
+                        }
+                        ContextActionRow(
+                            icon = icon,
+                            label = lib.displayName,
+                            onClick = { onSelectLibrary(lib) },
+                            modifier = if (idx == 0) Modifier.focusRequester(firstFocus) else Modifier
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun CollectionDetailsDialog(
     collection: CollectionSummary,
     isLoading: Boolean,
     onPlayItem: (UnifiedMediaItem) -> Unit,
+    onPlayQueue: (List<com.seerflix.tv.core.player.QueueEntry>, Boolean) -> Unit = { _, _ -> },
     onOpenItemDetails: (UnifiedMediaItem) -> Unit,
     onRequestItem: (UnifiedMediaItem) -> Unit,
     onRequestAllMissing: () -> Unit,
@@ -2629,6 +2993,11 @@ private fun CollectionDetailsDialog(
     val dialogCorner = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
     val buttonCorner = RoundedCornerShape(spec.buttonCornerRadiusDp.dp)
     val parts = remember(collection.items) { collection.items.distinctBy { it.id } }
+    val playableEntries = remember(parts) {
+        parts.mapNotNull { item ->
+            item.jellyfinId?.let { com.seerflix.tv.core.player.QueueEntry(itemId = it, title = item.title) }
+        }
+    }
     val missingCount = remember(parts) {
         parts.count { !it.isPlayable && it.canRequestHd }
     }
@@ -2670,6 +3039,18 @@ private fun CollectionDetailsDialog(
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (playableEntries.size > 1) {
+                        SmallTextButton(
+                            text = strings.actionPlayAll,
+                            isPrimary = true,
+                            onClick = { onPlayQueue(playableEntries, false) }
+                        )
+                        SmallTextButton(
+                            text = strings.actionShuffle,
+                            isPrimary = false,
+                            onClick = { onPlayQueue(playableEntries, true) }
+                        )
+                    }
                     if (missingCount > 0) {
                         var reqAllFocused by remember { mutableStateOf(false) }
                         Row(

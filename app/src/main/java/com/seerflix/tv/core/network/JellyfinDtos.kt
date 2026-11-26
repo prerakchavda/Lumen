@@ -154,7 +154,8 @@ data class JellyfinItemDto(
     @SerialName("IsMovie") val isMovie: Boolean = false,
     @SerialName("IsSports") val isSports: Boolean = false,
     @SerialName("IsNews") val isNews: Boolean = false,
-    @SerialName("IsKids") val isKids: Boolean = false
+    @SerialName("IsKids") val isKids: Boolean = false,
+    @SerialName("PlaylistItemId") val playlistItemId: String? = null
 )
 
 @Serializable
@@ -435,4 +436,17 @@ data class JellyfinTimerDto(
     @SerialName("Status") val status: String? = null,
     @SerialName("RecordAnyChannel") val recordAnyChannel: Boolean? = null,
     @SerialName("RecordNewOnly") val recordNewOnly: Boolean? = null
+)
+
+@Serializable
+data class JellyfinCreatePlaylistRequest(
+    @SerialName("Name") val name: String,
+    @SerialName("Ids") val ids: List<String> = emptyList(),
+    @SerialName("UserId") val userId: String,
+    @SerialName("MediaType") val mediaType: String = "Video"
+)
+
+@Serializable
+data class JellyfinCreatePlaylistResponse(
+    @SerialName("Id") val id: String = ""
 )

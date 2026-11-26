@@ -275,5 +275,42 @@ internal object CrossServerMerge {
         return if (descending) base.reversed() else base
     }
 
+    /**
+     * Deduplicates Next Up episodes against in-progress Resume items across all connected servers:
+     * any Next Up episode whose exact item OR parent series already appears in [resumeItems] is
+     * dropped so a show never shows up twice in Continue Watching / Next Up.
+     */
+    fun dedupeNextUpAgainstResume(
+        resumeItems: List<JellyfinItemDto>,
+        nextUpItems: List<JellyfinItemDto>,
+        links: CrossServerLinks = CrossServerLinks.EMPTY
+    ): List<JellyfinItemDto> {
+        if (nextUpItems.isEmpty()) return emptyList()
+        val resumeItemKeys = HashSet<String>(resumeItems.size * 2)
+        val resumeSeriesKeys = HashSet<String>(resumeItems.size)
+        for (dto in resumeItems) {
+            resumeItemKeys += "id:${links.canonical(dto.id)}"
+            matchKeys(dto, links).forEach { resumeItemKeys += it }
+            dto.seriesId?.takeIf { it.isNotBlank() }?.let { sid ->
+                resumeSeriesKeys += links.canonical(sid)
+            }
+            if (isSeries(dto)) {
+                resumeSeriesKeys += links.canonical(dto.id)
+            }
+        }
+        val seenSeries = HashSet<String>(nextUpItems.size)
+        return nextUpItems.filter { candidate ->
+            val idKey = "id:${links.canonical(candidate.id)}"
+            if (idKey in resumeItemKeys) return@filter false
+            if (matchKeys(candidate, links).any { it in resumeItemKeys }) return@filter false
+            val canonicalSeries = candidate.seriesId?.takeIf { it.isNotBlank() }?.let { links.canonical(it) }
+            if (canonicalSeries != null) {
+                if (canonicalSeries in resumeSeriesKeys) return@filter false
+                if (!seenSeries.add(canonicalSeries)) return@filter false
+            }
+            true
+        }
+    }
+
     private const val YEAR_MS = 31_556_952_000L
 }

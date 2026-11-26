@@ -43,6 +43,9 @@ data class LibraryUiState(
     val genre: String? = null,
     /** "A".."Z", "#" for titles starting with a digit or symbol, null for everything. */
     val letter: String? = null,
+    val folderMode: Boolean = false,
+    val canToggleFolderMode: Boolean = false,
+    val folderBreadcrumbs: List<String> = emptyList(),
     val isLoading: Boolean = true,
     val isLoadingMore: Boolean = false,
     val errorMessage: String? = null,
@@ -52,11 +55,14 @@ data class LibraryUiState(
     val nextServerIndex: Int = 0
 ) {
     val canLoadMore: Boolean get() = nextServerIndex < totalCount
+    val displayTitle: String
+        get() = if (folderBreadcrumbs.isEmpty()) title else (listOf(title) + folderBreadcrumbs).joinToString(" › ")
 }
 
 /**
  * The full A-Z grid for a library (Movies, TV Shows or one Jellyfin library), paged from the
  * server with its own sort and filters, so even a few thousand titles stay quick on a stick.
+ * Supports optional Folder View (`Recursive=false`) with subfolder drill-down inside any library.
  */
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -65,21 +71,79 @@ class LibraryViewModel @Inject constructor(
     private val catalogRepository: UnifiedCatalogRepository
 ) : ViewModel() {
 
-    private val parentId: String? = savedStateHandle.get<String>("parentId")?.takeIf { it.isNotBlank() }
-    private val includeTypes: String = savedStateHandle.get<String>("types")?.takeIf { it.isNotBlank() } ?: "Movie,Series"
+    private val rootParentId: String? = savedStateHandle.get<String>("parentId")?.takeIf { it.isNotBlank() }
+    private val collectionType: String? = savedStateHandle.get<String>("collectionType")?.takeIf { it.isNotBlank() }
+    private val baseIncludeTypes: String = savedStateHandle.get<String>("types")?.takeIf { it.isNotBlank() }
+        ?: UnifiedCatalogRepository.includeTypesForCollectionType(collectionType, folderMode = false)
+    private val initialFolderMode: Boolean = savedStateHandle.get<Boolean>("folderMode") == true
 
-    private val _uiState = MutableStateFlow(LibraryUiState(title = savedStateHandle.get<String>("title").orEmpty()))
+    private val folderStack = mutableListOf<Pair<String, String>>()
+
+    private val _uiState = MutableStateFlow(
+        LibraryUiState(
+            title = savedStateHandle.get<String>("title").orEmpty(),
+            folderMode = initialFolderMode && rootParentId != null,
+            canToggleFolderMode = rootParentId != null
+        )
+    )
     val uiState: StateFlow<LibraryUiState> = _uiState.asStateFlow()
 
     private var loadJob: Job? = null
 
+    private fun currentParentId(): String? = folderStack.lastOrNull()?.first ?: rootParentId
+
+    private fun currentIncludeTypes(): String {
+        return if (_uiState.value.folderMode) {
+            UnifiedCatalogRepository.includeTypesForCollectionType(collectionType, folderMode = true)
+        } else {
+            baseIncludeTypes
+        }
+    }
+
     init {
         viewModelScope.launch {
             val profile = authRepository.activeProfileFlow.first() ?: return@launch
-            val genres = catalogRepository.loadGenres(profile.jellyfinUserId, parentId, includeTypes)
+            val genres = catalogRepository.loadGenres(profile.jellyfinUserId, rootParentId, baseIncludeTypes)
             _uiState.update { it.copy(genres = genres) }
         }
         reload()
+    }
+
+    fun toggleFolderMode() {
+        if (!_uiState.value.canToggleFolderMode) return
+        val next = !_uiState.value.folderMode
+        folderStack.clear()
+        _uiState.update {
+            it.copy(
+                folderMode = next,
+                folderBreadcrumbs = emptyList(),
+                genre = if (next) null else it.genre,
+                letter = if (next) null else it.letter
+            )
+        }
+        reload()
+    }
+
+    fun enterFolder(folderId: String, folderName: String) {
+        folderStack += folderId to folderName
+        _uiState.update {
+            it.copy(
+                folderMode = true,
+                folderBreadcrumbs = folderStack.map { f -> f.second }
+            )
+        }
+        reload()
+    }
+
+    /** Navigates up one subfolder level; returns true if handled, false if already at library root. */
+    fun navigateUpFolder(): Boolean {
+        if (folderStack.isEmpty()) return false
+        folderStack.removeAt(folderStack.lastIndex)
+        _uiState.update {
+            it.copy(folderBreadcrumbs = folderStack.map { f -> f.second })
+        }
+        reload()
+        return true
     }
 
     fun setSort(sort: LibrarySort) {
@@ -144,8 +208,8 @@ class LibraryViewModel @Inject constructor(
         try {
             val page = catalogRepository.browseLibrary(
                 userId = profile.jellyfinUserId,
-                parentId = parentId,
-                includeItemTypes = includeTypes,
+                parentId = currentParentId(),
+                includeItemTypes = currentIncludeTypes(),
                 sortBy = state.sort.sortBy,
                 sortOrder = state.sort.defaultOrder,
                 filters = state.filter.jellyfinFilter,
@@ -154,11 +218,13 @@ class LibraryViewModel @Inject constructor(
                 nameLessThan = lessThan,
                 maxOfficialRating = profile.effectiveRatingLimit.jellyfinMaxOfficialRating,
                 startIndex = startIndex,
-                limit = PAGE_SIZE
+                limit = PAGE_SIZE,
+                recursive = !state.folderMode
             )
             // The server's MaxOfficialRating lets unrated titles through and knows nothing about
             // the Kids-Mode genre exclusions, so apply the same profile filter as every other row.
-            val allowed = ContentRatingHelper.filterForProfile(page.items, profile)
+            // Folders themselves have no content rating so keep them navigable in folder view.
+            val allowed = page.items.filter { it.isFolder || ContentRatingHelper.isAllowed(it, profile) }
             _uiState.update {
                 val merged = if (startIndex == 0) allowed else (it.items + allowed).distinctBy { item -> item.id }
                 it.copy(

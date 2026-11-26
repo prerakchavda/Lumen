@@ -68,7 +68,14 @@ data class DetailsUiState(
     val isRefining: Boolean = false,
     val errorMessage: String? = null,
     /** The active profile's parental limit disallows this title (search/cast/recs/deep link). */
-    val isBlockedByParentalControls: Boolean = false
+    val isBlockedByParentalControls: Boolean = false,
+    val playlists: List<com.seerflix.tv.core.model.PlaylistSummary> = emptyList(),
+    val showPlaylistDialog: Boolean = false,
+    val showMediaInfoDialog: Boolean = false,
+    val showTrackPickerDialog: Boolean = false,
+    val showDeleteConfirmDialog: Boolean = false,
+    val episodeMenuTarget: EpisodeSummary? = null,
+    val itemDeleted: Boolean = false
 )
 
 @HiltViewModel
@@ -736,6 +743,156 @@ class DetailsViewModel @Inject constructor(
                         )
                     }
                 }
+        }
+    }
+
+    // ---- Phase 2: Playlists, Media Info, Pre-Playback Tracks, Delete & Season/Episode Watched ----
+
+    fun openPlaylistDialog() {
+        _uiState.update { it.copy(showPlaylistDialog = true) }
+        if (activeUserId.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val playlists = catalogRepository.loadPlaylists(activeUserId)
+            _uiState.update { it.copy(playlists = playlists) }
+        }
+    }
+
+    fun dismissPlaylistDialog() {
+        _uiState.update { it.copy(showPlaylistDialog = false) }
+    }
+
+    fun addToExistingPlaylist(playlistId: String, playlistName: String) {
+        val jfId = _uiState.value.item?.jellyfinId ?: return
+        if (activeUserId.isBlank()) return
+        _uiState.update { it.copy(showPlaylistDialog = false) }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.addToPlaylist(activeUserId, playlistId, listOf(jfId))
+                .onSuccess {
+                    _uiState.update { it.copy(feedbackBanner = "Added to $playlistName") }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = err.message ?: "Failed to add to playlist") }
+                }
+        }
+    }
+
+    fun createAndAddToPlaylist(name: String) {
+        val clean = name.trim()
+        if (clean.isBlank() || activeUserId.isBlank()) return
+        val jfId = _uiState.value.item?.jellyfinId
+        _uiState.update { it.copy(showPlaylistDialog = false) }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.createPlaylist(activeUserId, clean, listOfNotNull(jfId))
+                .onSuccess {
+                    _uiState.update { it.copy(feedbackBanner = "Created playlist $clean") }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = err.message ?: "Failed to create playlist") }
+                }
+        }
+    }
+
+    fun openMediaInfoDialog() {
+        _uiState.update { it.copy(showMediaInfoDialog = true) }
+    }
+
+    fun dismissMediaInfoDialog() {
+        _uiState.update { it.copy(showMediaInfoDialog = false) }
+    }
+
+    fun openTrackPickerDialog() {
+        _uiState.update { it.copy(showTrackPickerDialog = true) }
+    }
+
+    fun dismissTrackPickerDialog() {
+        _uiState.update { it.copy(showTrackPickerDialog = false) }
+    }
+
+    fun openDeleteConfirmDialog() {
+        if (_uiState.value.item?.canDelete != true) return
+        _uiState.update { it.copy(showDeleteConfirmDialog = true) }
+    }
+
+    fun dismissDeleteConfirmDialog() {
+        _uiState.update { it.copy(showDeleteConfirmDialog = false) }
+    }
+
+    fun confirmDeleteItem() {
+        val item = _uiState.value.item ?: return
+        val jfId = item.jellyfinId ?: return
+        if (!item.canDelete || activeUserId.isBlank()) return
+        _uiState.update { it.copy(showDeleteConfirmDialog = false) }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.deleteItem(activeUserId, jfId)
+                .onSuccess {
+                    _uiState.update { it.copy(itemDeleted = true, feedbackBanner = "Deleted from server") }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = err.message ?: "Failed to delete item") }
+                }
+        }
+    }
+
+    fun openEpisodeMenu(episode: EpisodeSummary) {
+        if (!episode.isAvailableInJellyfin) return
+        _uiState.update { it.copy(episodeMenuTarget = episode) }
+    }
+
+    fun dismissEpisodeMenu() {
+        _uiState.update { it.copy(episodeMenuTarget = null) }
+    }
+
+    fun toggleEpisodeWatched(episode: EpisodeSummary) {
+        if (!episode.isAvailableInJellyfin || activeUserId.isBlank()) return
+        val nextWatched = !episode.isWatched
+        _uiState.update { it.copy(episodeMenuTarget = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.markWatched(activeUserId, episode.id, nextWatched)
+                .onSuccess {
+                    _uiState.update { state ->
+                        state.copy(
+                            episodes = state.episodes.map { ep ->
+                                if (ep.id == episode.id) {
+                                    ep.copy(
+                                        isWatched = nextWatched,
+                                        resumePositionTicks = if (nextWatched) 0L else ep.resumePositionTicks
+                                    )
+                                } else ep
+                            }
+                        )
+                    }
+                }
+        }
+    }
+
+    fun toggleCurrentSeasonWatched() {
+        val state = _uiState.value
+        val item = state.item ?: return
+        if (activeUserId.isBlank()) return
+        val playableEps = state.episodes.filter { it.isAvailableInJellyfin }
+        if (playableEps.isEmpty()) return
+        val nextWatched = !playableEps.all { it.isWatched }
+        val season = item.seasons.firstOrNull { it.seasonNumber == state.selectedSeasonNumber }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.markSeasonWatched(
+                userId = activeUserId,
+                jellyfinSeasonId = season?.jellyfinSeasonId,
+                episodeIds = playableEps.map { it.id },
+                watched = nextWatched
+            ).onSuccess {
+                _uiState.update { cur ->
+                    cur.copy(
+                        episodes = cur.episodes.map { ep ->
+                            if (ep.isAvailableInJellyfin) {
+                                ep.copy(
+                                    isWatched = nextWatched,
+                                    resumePositionTicks = if (nextWatched) 0L else ep.resumePositionTicks
+                                )
+                            } else ep
+                        }
+                    )
+                }
+            }
         }
     }
 

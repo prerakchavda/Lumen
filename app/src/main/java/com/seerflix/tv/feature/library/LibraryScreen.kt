@@ -78,7 +78,9 @@ fun LibraryScreen(
     val filterButtonFocus = remember { FocusRequester() }
     val selectedLetterFocus = remember { FocusRequester() }
     var showFilterPanel by remember { mutableStateOf(false) }
-    BackHandler(onBack = onBack)
+    BackHandler {
+        if (!viewModel.navigateUpFolder()) onBack()
+    }
 
     // Land in the grid as soon as the first page is in; until then the Sort & Filter button holds focus.
     var focusedFirstPage by remember { mutableStateOf(false) }
@@ -127,8 +129,16 @@ fun LibraryScreen(
                 .fillMaxWidth()
                 .padding(start = 48.dp, end = 48.dp)
         ) {
-            Text(state.title, color = colors.textPrimary, fontSize = 30.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.width(16.dp))
+            Text(
+                text = state.displayTitle,
+                color = colors.textPrimary,
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 520.dp)
+            )
+            Spacer(Modifier.width(14.dp))
             if (!state.isLoading) {
                 Text(
                     strings.libraryTitleCount.format(state.totalCount),
@@ -138,6 +148,14 @@ fun LibraryScreen(
                 )
             }
             Spacer(Modifier.weight(1f))
+            if (state.canToggleFolderMode) {
+                SortFilterButton(
+                    label = if (state.folderMode) strings.libraryFolderView else strings.libraryGridView,
+                    summary = "",
+                    onClick = viewModel::toggleFolderMode
+                )
+                Spacer(Modifier.width(10.dp))
+            }
             SortFilterButton(
                 label = strings.librarySortFilter,
                 summary = summary,
@@ -191,7 +209,13 @@ fun LibraryScreen(
                                 onFocus = {
                                     if (index >= state.items.size - LOAD_MORE_THRESHOLD) viewModel.loadMore()
                                 },
-                                onClick = { onOpenDetails(item) },
+                                onClick = {
+                                    if (item.isFolder && !item.jellyfinId.isNullOrBlank()) {
+                                        viewModel.enterFolder(item.jellyfinId, item.title)
+                                    } else {
+                                        onOpenDetails(item)
+                                    }
+                                },
                                 forcePortrait = true,
                                 modifier = if (index == 0) Modifier.focusRequester(firstItemFocus) else Modifier
                             )

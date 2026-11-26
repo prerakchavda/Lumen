@@ -1,8 +1,10 @@
 package com.seerflix.tv.feature.details
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,16 +31,21 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.Theaters
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -86,9 +94,12 @@ import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExtrasItem
 import com.seerflix.tv.core.model.MediaSourceOption
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.PlaylistSummary
 import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.SeerrIssueType
+import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.UnifiedMediaItem
+import com.seerflix.tv.core.player.QueueEntry
 import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.TitleMetaLine
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -99,6 +110,28 @@ import com.seerflix.tv.ui.theme.SeerflixTokens
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 
+@androidx.compose.runtime.Immutable
+data class DetailsExtraActions(
+    val onPlayWithOptions: (itemId: String, mediaSourceId: String?, fromStart: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit = { _, _, _, _, _ -> },
+    val onPlayQueue: (entries: List<QueueEntry>, shuffle: Boolean) -> Unit = { _, _ -> },
+    val onSearchPerson: (name: String, personId: Int?, jellyfinPersonId: String?) -> Unit = { _, _, _ -> },
+    val onOpenPlaylistDialog: () -> Unit = {},
+    val onDismissPlaylistDialog: () -> Unit = {},
+    val onAddToPlaylist: (playlistId: String, playlistName: String) -> Unit = { _, _ -> },
+    val onCreatePlaylist: (name: String) -> Unit = {},
+    val onOpenMediaInfo: () -> Unit = {},
+    val onDismissMediaInfo: () -> Unit = {},
+    val onOpenTrackPicker: () -> Unit = {},
+    val onDismissTrackPicker: () -> Unit = {},
+    val onOpenDeleteConfirm: () -> Unit = {},
+    val onDismissDeleteConfirm: () -> Unit = {},
+    val onConfirmDelete: () -> Unit = {},
+    val onOpenEpisodeMenu: (EpisodeSummary) -> Unit = {},
+    val onDismissEpisodeMenu: () -> Unit = {},
+    val onToggleEpisodeWatched: (EpisodeSummary) -> Unit = {},
+    val onToggleSeasonWatched: () -> Unit = {}
+)
+
 @Composable
 fun DetailsScreen(
     onBack: () -> Unit,
@@ -106,12 +139,22 @@ fun DetailsScreen(
     onPlayTrailer: (title: String, youtubeKey: String?, localTrailerId: String?) -> Unit,
     onOpenDetails: (UnifiedMediaItem) -> Unit,
     onSearchActor: (name: String, personId: Int?) -> Unit,
+    onPlayWithOptions: (itemId: String, mediaSourceId: String?, fromStart: Boolean, audioIndex: Int?, subtitleIndex: Int?) -> Unit = { id, src, _, _, _ ->
+        onPlayItem(id, src)
+    },
+    onPlayQueue: (List<QueueEntry>, Boolean) -> Unit = { _, _ -> },
+    onSearchPerson: (name: String, personId: Int?, jellyfinPersonId: String?) -> Unit = { name, pid, _ ->
+        onSearchActor(name, pid)
+    },
     viewModel: DetailsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val strings = AppStrings.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(state.itemDeleted) {
+        if (state.itemDeleted) onBack()
+    }
     LaunchedEffect(lifecycleOwner, viewModel) {
         // Pause the 15s request/download polling while the player (or anything else) covers this
         // screen, and refresh resume/watched state when coming back.
@@ -154,7 +197,27 @@ fun DetailsScreen(
         onRemoveFromContinueWatching = viewModel::removeFromContinueWatching,
         onSearchActor = onSearchActor,
         onRequestCollectionItem = { part -> viewModel.requestCollectionItem(part) },
-        onRequestAllMissingInCollection = { viewModel.requestAllMissingInCollection() }
+        onRequestAllMissingInCollection = { viewModel.requestAllMissingInCollection() },
+        extraActions = DetailsExtraActions(
+            onPlayWithOptions = onPlayWithOptions,
+            onPlayQueue = onPlayQueue,
+            onSearchPerson = onSearchPerson,
+            onOpenPlaylistDialog = viewModel::openPlaylistDialog,
+            onDismissPlaylistDialog = viewModel::dismissPlaylistDialog,
+            onAddToPlaylist = viewModel::addToExistingPlaylist,
+            onCreatePlaylist = viewModel::createAndAddToPlaylist,
+            onOpenMediaInfo = viewModel::openMediaInfoDialog,
+            onDismissMediaInfo = viewModel::dismissMediaInfoDialog,
+            onOpenTrackPicker = viewModel::openTrackPickerDialog,
+            onDismissTrackPicker = viewModel::dismissTrackPickerDialog,
+            onOpenDeleteConfirm = viewModel::openDeleteConfirmDialog,
+            onDismissDeleteConfirm = viewModel::dismissDeleteConfirmDialog,
+            onConfirmDelete = viewModel::confirmDeleteItem,
+            onOpenEpisodeMenu = viewModel::openEpisodeMenu,
+            onDismissEpisodeMenu = viewModel::dismissEpisodeMenu,
+            onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
+            onToggleSeasonWatched = viewModel::toggleCurrentSeasonWatched
+        )
     )
 }
 
@@ -193,7 +256,11 @@ fun DetailsContent(
     onSearchActor: (name: String, personId: Int?) -> Unit = { _, _ -> },
     onRequestCollectionItem: (UnifiedMediaItem) -> Unit = {},
     onRequestAllMissingInCollection: () -> Unit = {},
-    onRetry: () -> Unit = {}
+    onRetry: () -> Unit = {},
+    extraActions: DetailsExtraActions = DetailsExtraActions(
+        onPlayWithOptions = { id, src, _, _, _ -> onPlayItem(id, src) },
+        onSearchPerson = { name, pid, _ -> onSearchActor(name, pid) }
+    )
 ) {
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
@@ -260,6 +327,18 @@ fun DetailsContent(
                 ) {
                     // Header Backdrop + Metadata + Actions + Live Download Progress
                     item(key = "details_header") {
+                        val resolvePlayTarget: () -> Pair<String, String?>? = {
+                            val playableId = if (item.mediaType == MediaType.SERIES) {
+                                item.jellyfinId ?: episodes.firstOrNull { it.isAvailableInJellyfin }?.id
+                            } else {
+                                item.jellyfinId
+                            }
+                            val sourceId = if (item.mediaType == MediaType.SERIES) null else selectedSourceId
+                            val versionItemId = sourceId?.let { id ->
+                                item.mediaVersions.firstOrNull { it.id == id }?.itemId
+                            }
+                            (versionItemId ?: playableId)?.let { id -> id to sourceId }
+                        }
                         DetailsHeaderSection(
                             item = item,
                             hasPlayableEpisode = hasPlayableEpisode,
@@ -270,21 +349,12 @@ fun DetailsContent(
                             feedbackBanner = state.feedbackBanner,
                             onBack = onBack,
                             onPlay = {
-                                // Series: pass the series id so the playback manager resumes the
-                                // in-progress / next-up episode. The old code played the first
-                                // episode of whichever season tab happened to be selected (S1E1 by
-                                // default), ignoring where the viewer actually left off.
-                                val playableId = if (item.mediaType == MediaType.SERIES) {
-                                    item.jellyfinId ?: episodes.firstOrNull { it.isAvailableInJellyfin }?.id
-                                } else {
-                                    item.jellyfinId
+                                resolvePlayTarget()?.let { (id, src) -> onPlayItem(id, src) }
+                            },
+                            onPlayFromBeginning = {
+                                resolvePlayTarget()?.let { (id, src) ->
+                                    extraActions.onPlayWithOptions(id, src, true, null, null)
                                 }
-                                val sourceId = if (item.mediaType == MediaType.SERIES) null else selectedSourceId
-                                // A version that lives on another server is played as that server's copy.
-                                val versionItemId = sourceId?.let { id ->
-                                    item.mediaVersions.firstOrNull { it.id == id }?.itemId
-                                }
-                                (versionItemId ?: playableId)?.let { id -> onPlayItem(id, sourceId) }
                             },
                             onRequestClick = onOpenRequestModal,
                             onWatchTrailer = {
@@ -296,7 +366,11 @@ fun DetailsContent(
                             onOpenExternalPlayer = onOpenExternalPlayer,
                             onOpenReportIssue = onOpenReportIssue,
                             onRemoveFromContinueWatching = onRemoveFromContinueWatching,
-                            onCancelRequest = onCancelRequest
+                            onCancelRequest = onCancelRequest,
+                            onOpenPlaylistDialog = extraActions.onOpenPlaylistDialog,
+                            onOpenMediaInfo = extraActions.onOpenMediaInfo,
+                            onOpenTrackPicker = extraActions.onOpenTrackPicker,
+                            onOpenDeleteConfirm = extraActions.onOpenDeleteConfirm
                         )
                     }
 
@@ -356,6 +430,42 @@ fun DetailsContent(
                                 }
                             }
 
+                            val playableSeasonEps = episodes.filter { it.isAvailableInJellyfin }
+                            if (!state.episodesLoading && playableSeasonEps.isNotEmpty()) {
+                                item(key = "season_actions") {
+                                    val allWatched = playableSeasonEps.all { it.isWatched }
+                                    val seasonQueue = remember(playableSeasonEps) {
+                                        playableSeasonEps.map { ep ->
+                                            QueueEntry(itemId = ep.id, title = "S${ep.seasonNumber} E${ep.episodeNumber} · ${ep.name}")
+                                        }
+                                    }
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 48.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        HeroPillButton(
+                                            text = strings.actionPlayAll,
+                                            icon = Icons.Filled.PlayArrow,
+                                            isPrimary = false,
+                                            onClick = { extraActions.onPlayQueue(seasonQueue, false) }
+                                        )
+                                        HeroPillButton(
+                                            text = strings.actionShuffle,
+                                            icon = Icons.Filled.Shuffle,
+                                            isPrimary = false,
+                                            onClick = { extraActions.onPlayQueue(seasonQueue, true) }
+                                        )
+                                        HeroPillButton(
+                                            text = if (allWatched) strings.actionMarkSeasonUnwatched else strings.actionMarkSeasonWatched,
+                                            icon = if (allWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                            isPrimary = false,
+                                            onClick = extraActions.onToggleSeasonWatched
+                                        )
+                                    }
+                                }
+                            }
+
                             if (state.episodesLoading) {
                                 // Static placeholders (no endlessly spinning indicator on a weak SoC).
                                 items(EPISODE_SKELETON_KEYS, key = { it }) {
@@ -372,6 +482,9 @@ fun DetailsContent(
                                                 onOpenRequestModal()
                                             }
                                         },
+                                        onLongClick = if (ep.isAvailableInJellyfin) {
+                                            { extraActions.onOpenEpisodeMenu(ep) }
+                                        } else null,
                                         modifier = Modifier.padding(horizontal = 48.dp, vertical = 6.dp)
                                     )
                                 }
@@ -392,7 +505,10 @@ fun DetailsContent(
                             )
                         }
                         DetailsSection.CAST -> item(key = "cast_section") {
-                            CastSection(cast = item.cast, onSearchActor = onSearchActor)
+                            CastSection(
+                                cast = item.cast,
+                                onSearchPerson = extraActions.onSearchPerson
+                            )
                         }
                         DetailsSection.COLLECTION -> state.collectionSaga?.let { saga ->
                             item(key = "collection_saga") {
@@ -518,6 +634,67 @@ fun DetailsContent(
             onSubmit = onSubmitIssue
         )
     }
+
+    if (state.showPlaylistDialog && state.item != null) {
+        AddToPlaylistDialog(
+            itemTitle = state.item!!.title,
+            playlists = state.playlists,
+            onSelectPlaylist = extraActions.onAddToPlaylist,
+            onCreatePlaylist = extraActions.onCreatePlaylist,
+            onDismiss = extraActions.onDismissPlaylistDialog
+        )
+    }
+
+    if (state.showMediaInfoDialog && state.item != null) {
+        MediaInfoDialog(
+            item = state.item!!,
+            onDismiss = extraActions.onDismissMediaInfo
+        )
+    }
+
+    if (state.showTrackPickerDialog && state.item != null) {
+        val currentItem = state.item!!
+        TrackPickerDialog(
+            title = currentItem.title,
+            audioTracks = currentItem.availableAudioTracks,
+            subtitleTracks = currentItem.availableSubtitleTracks,
+            onPlayWithSelection = { audioIdx, subIdx ->
+                extraActions.onDismissTrackPicker()
+                val sourceId = if (currentItem.mediaType == MediaType.SERIES) null else state.selectedMediaSourceId
+                val versionItemId = sourceId?.let { id ->
+                    currentItem.mediaVersions.firstOrNull { it.id == id }?.itemId
+                }
+                (versionItemId ?: currentItem.jellyfinId)?.let { id ->
+                    extraActions.onPlayWithOptions(id, sourceId, false, audioIdx, subIdx)
+                }
+            },
+            onDismiss = extraActions.onDismissTrackPicker
+        )
+    }
+
+    if (state.showDeleteConfirmDialog && state.item != null && state.item!!.canDelete) {
+        DeleteConfirmDialog(
+            title = state.item!!.title,
+            onConfirmDelete = extraActions.onConfirmDelete,
+            onDismiss = extraActions.onDismissDeleteConfirm
+        )
+    }
+
+    state.episodeMenuTarget?.let { ep ->
+        EpisodeActionDialog(
+            episode = ep,
+            onPlay = {
+                extraActions.onDismissEpisodeMenu()
+                onPlayItem(ep.id, null)
+            },
+            onPlayFromBeginning = {
+                extraActions.onDismissEpisodeMenu()
+                extraActions.onPlayWithOptions(ep.id, null, true, null, null)
+            },
+            onToggleWatched = { extraActions.onToggleEpisodeWatched(ep) },
+            onDismiss = extraActions.onDismissEpisodeMenu
+        )
+    }
 }
 
 // Sections below take only their own slice of the item. DetailsViewModel reuses unchanged list
@@ -595,7 +772,7 @@ private fun RelatedVideosSection(
 @Composable
 private fun CastSection(
     cast: List<CastMember>,
-    onSearchActor: (name: String, personId: Int?) -> Unit
+    onSearchPerson: (name: String, personId: Int?, jellyfinPersonId: String?) -> Unit
 ) {
     val colors = SeerflixTokens.colors
     Column(modifier = Modifier.padding(top = 10.dp)) {
@@ -616,7 +793,7 @@ private fun CastSection(
                             else Modifier
                         )
                         .onFocusChanged { castFocused = it.isFocused }
-                        .clickable { onSearchActor(member.name, member.personId) }
+                        .clickable { onSearchPerson(member.name, member.personId, member.jellyfinPersonId) }
                         .padding(6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -923,6 +1100,7 @@ private fun DetailsHeaderSection(
     feedbackBanner: String?,
     onBack: () -> Unit,
     onPlay: () -> Unit,
+    onPlayFromBeginning: () -> Unit = {},
     onRequestClick: () -> Unit,
     onWatchTrailer: () -> Unit,
     onToggleMyList: () -> Unit,
@@ -931,7 +1109,11 @@ private fun DetailsHeaderSection(
     onOpenExternalPlayer: () -> Unit,
     onOpenReportIssue: () -> Unit,
     onRemoveFromContinueWatching: () -> Unit,
-    onCancelRequest: (Int) -> Unit
+    onCancelRequest: (Int) -> Unit,
+    onOpenPlaylistDialog: () -> Unit = {},
+    onOpenMediaInfo: () -> Unit = {},
+    onOpenTrackPicker: () -> Unit = {},
+    onOpenDeleteConfirm: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
@@ -1229,11 +1411,23 @@ private fun DetailsHeaderSection(
                         action()
                     }
                 }
+                val showTrackPicker = canPlay && (item.availableAudioTracks.size > 1 || item.availableSubtitleTracks.isNotEmpty())
+                val showMediaInfo = item.jellyfinId != null && (item.mediaStreamSpecs.isNotEmpty() || !item.mediaFilePath.isNullOrBlank() || !item.mediaContainer.isNullOrBlank())
+                val showAddToPlaylist = item.jellyfinId != null
                 DetailsMoreMenu(
                     title = item.title,
                     actions = buildList {
+                        if (canPlay && item.resumePositionTicks > 0L) {
+                            add(MoreAction(Icons.Filled.Replay, strings.actionPlayFromBeginning, close(onPlayFromBeginning)))
+                        }
+                        if (showTrackPicker) {
+                            add(MoreAction(Icons.Filled.Subtitles, strings.actionTrackPicker, close(onOpenTrackPicker)))
+                        }
                         if (showTrailer) add(MoreAction(Icons.Filled.Theaters, strings.actionTrailer, close(onWatchTrailer)))
                         if (canPlay) add(MoreAction(Icons.AutoMirrored.Filled.OpenInNew, strings.actionExternalPlayer, close(onOpenExternalPlayer)))
+                        if (showAddToPlaylist) {
+                            add(MoreAction(Icons.AutoMirrored.Filled.PlaylistAdd, strings.actionAddToPlaylist, close(onOpenPlaylistDialog)))
+                        }
                         if (showWatched) add(
                             MoreAction(
                                 if (item.isWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
@@ -1249,9 +1443,15 @@ private fun DetailsHeaderSection(
                             )
                         )
                         if (showRmProgress) add(MoreAction(Icons.Filled.DeleteOutline, strings.detailsRemoveProgress, close(onRemoveFromContinueWatching)))
+                        if (showMediaInfo) {
+                            add(MoreAction(Icons.Filled.Info, strings.actionMediaInfo, close(onOpenMediaInfo)))
+                        }
                         if (showIssue) add(MoreAction(Icons.Filled.Flag, strings.actionReportIssue, close(onOpenReportIssue)))
                         if (showCancelReq && pendingReqId != null) {
                             add(MoreAction(Icons.Filled.Close, strings.detailsCancelRequest, close { onCancelRequest(pendingReqId) }))
+                        }
+                        if (item.canDelete && item.jellyfinId != null) {
+                            add(MoreAction(Icons.Filled.DeleteOutline, strings.actionDeleteItem, close(onOpenDeleteConfirm)))
                         }
                     },
                     onDismiss = {
@@ -1284,11 +1484,13 @@ private fun DetailsMoreMenu(
         }
         Column(
             modifier = Modifier
-                .width(380.dp)
+                .width(400.dp)
+                .heightIn(max = 520.dp)
                 .clip(shape)
                 .background(colors.dialogSurface)
                 .border(1.dp, colors.badgeBorder, shape)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
@@ -1446,10 +1648,12 @@ private fun SeasonTabChip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EpisodeRowCard(
     episode: EpisodeSummary,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = SeerflixTokens.colors
@@ -1469,7 +1673,10 @@ private fun EpisodeRowCard(
                 else Modifier.border(1.dp, colors.badgeBorder.copy(alpha = 0.4f), corner)
             )
             .onFocusChanged { focused = it.isFocused }
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            )
             .padding(12.dp)
     ) {
         Text(
@@ -1504,6 +1711,20 @@ private fun EpisodeRowCard(
                         .clip(RoundedCornerShape(17.dp))
                         .background(colors.deepBlack.copy(alpha = 0.65f))
                         .padding(4.dp)
+                )
+            }
+            if (episode.isWatched) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = strings.actionMarkWatched,
+                    tint = colors.matchGreen,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .size(20.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.deepBlack.copy(alpha = 0.8f))
+                        .padding(3.dp)
                 )
             }
             if (episode.progressFraction > 0f) {
@@ -1555,6 +1776,12 @@ private fun EpisodeRowCard(
                     ) {
                         Text(strings.detailsNotOnServer, color = colors.pendingAmber, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     }
+                } else if (focused && onLongClick != null) {
+                    Text(
+                        text = strings.cardHoldOk,
+                        color = colors.textMuted,
+                        fontSize = 11.sp
+                    )
                 }
             }
             if (episode.overview.isNotBlank()) {
@@ -2072,4 +2299,405 @@ private fun DetailsSectionTabs(
             }
         }
     }
+}
+
+@Composable
+private fun AddToPlaylistDialog(
+    itemTitle: String,
+    playlists: List<PlaylistSummary>,
+    onSelectPlaylist: (playlistId: String, playlistName: String) -> Unit,
+    onCreatePlaylist: (name: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val shape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    var newName by remember { mutableStateOf("") }
+    val firstFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            delay(40L)
+            runCatching { firstFocus.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(460.dp)
+                .heightIn(max = 520.dp)
+                .clip(shape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, shape)
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(strings.actionAddToPlaylist, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(itemTitle, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            playlists.forEachIndexed { idx, pl ->
+                var focused by remember { mutableStateOf(false) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = (if (idx == 0) Modifier.focusRequester(firstFocus) else Modifier)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (focused) colors.white else colors.surface)
+                        .onFocusChanged { focused = it.isFocused }
+                        .clickable { onSelectPlaylist(pl.id, pl.name) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                ) {
+                    Text(
+                        text = pl.name,
+                        color = if (focused) colors.deepBlack else colors.white,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = strings.playlistItemCount.format(pl.itemCount),
+                        color = if (focused) colors.deepBlack.copy(alpha = 0.7f) else colors.textSecondary,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(strings.playlistCreateNew, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            OutlinedTextField(
+                value = newName,
+                onValueChange = { newName = it },
+                placeholder = { Text(strings.playlistNameHint, color = colors.textMuted) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = colors.white,
+                    unfocusedTextColor = colors.white,
+                    focusedBorderColor = colors.accent,
+                    unfocusedBorderColor = colors.badgeBorder
+                ),
+                modifier = (if (playlists.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier).fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                HeroPillButton(
+                    text = strings.playlistCreateNew,
+                    icon = Icons.Filled.Add,
+                    isPrimary = true,
+                    onClick = { if (newName.isNotBlank()) onCreatePlaylist(newName) }
+                )
+                HeroPillButton(
+                    text = strings.actionCancel,
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MediaInfoDialog(
+    item: UnifiedMediaItem,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val shape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    val closeFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            delay(40L)
+            runCatching { closeFocus.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(620.dp)
+                .heightIn(max = 540.dp)
+                .clip(shape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, shape)
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(strings.mediaInfoDialogTitle, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(item.title, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(4.dp))
+            item.mediaFilePath?.takeIf { it.isNotBlank() }?.let { path ->
+                MediaInfoRow(strings.mediaInfoFile, path)
+            }
+            item.mediaContainer?.takeIf { it.isNotBlank() }?.let { container ->
+                MediaInfoRow(strings.mediaInfoContainer, container.uppercase())
+            }
+            item.mediaFileSizeBytes?.takeIf { it > 0L }?.let { bytes ->
+                val gb = bytes / (1024.0 * 1024.0 * 1024.0)
+                val formatted = if (gb >= 1.0) String.format(java.util.Locale.US, "%.2f GB", gb)
+                else String.format(java.util.Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0))
+                MediaInfoRow(strings.mediaInfoSize, formatted)
+            }
+            item.mediaBitrate?.takeIf { it > 0L }?.let { bps ->
+                MediaInfoRow(strings.mediaInfoBitrate, String.format(java.util.Locale.US, "%.1f Mbps", bps / 1_000_000.0))
+            }
+            if (item.mediaStreamSpecs.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(strings.mediaInfoStreams, color = colors.accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                item.mediaStreamSpecs.forEach { s ->
+                    val details = listOfNotNull(
+                        s.codec,
+                        s.resolution,
+                        s.hdrFormat,
+                        s.bitDepth?.let { "${it}-bit" },
+                        s.channels?.let {
+                            when (it) {
+                                8 -> "7.1"
+                                6 -> "5.1"
+                                2 -> "2.0"
+                                else -> "${it}ch"
+                            }
+                        },
+                        s.language,
+                        s.bitrate?.takeIf { it > 0L }?.let {
+                            if (it >= 1_000_000L) String.format(java.util.Locale.US, "%.1f Mbps", it / 1_000_000.0)
+                            else "${it / 1000L} kbps"
+                        },
+                        if (s.isForced) strings.playerForcedBadge else null
+                    ).distinct().joinToString(" • ")
+                    MediaInfoRow(s.type, details.ifBlank { s.title })
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            HeroPillButton(
+                text = strings.commonClose,
+                icon = Icons.Filled.Close,
+                isPrimary = true,
+                onClick = onDismiss,
+                modifier = Modifier.focusRequester(closeFocus)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MediaInfoRow(label: String, value: String) {
+    val colors = SeerflixTokens.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(colors.surface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = label,
+            color = colors.textSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(90.dp)
+        )
+        Text(
+            text = value,
+            color = colors.white,
+            fontSize = 12.sp,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun TrackPickerDialog(
+    title: String,
+    audioTracks: List<TrackOption>,
+    subtitleTracks: List<TrackOption>,
+    onPlayWithSelection: (audioIndex: Int?, subtitleIndex: Int?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val shape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    var selectedAudio by remember { mutableStateOf(audioTracks.firstOrNull { it.isDefault }?.index ?: audioTracks.firstOrNull()?.index) }
+    var selectedSub by remember { mutableStateOf<Int?>(subtitleTracks.firstOrNull { it.isDefault }?.index) }
+    val playFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            delay(40L)
+            runCatching { playFocus.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(520.dp)
+                .heightIn(max = 540.dp)
+                .clip(shape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.badgeBorder, shape)
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(strings.trackPickerTitle, color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(title, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+
+            if (audioTracks.isNotEmpty()) {
+                Text(strings.playerAudioTracks, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                audioTracks.forEach { track ->
+                    TrackPickerOptionRow(
+                        label = listOfNotNull(
+                            track.language?.uppercase(),
+                            track.label.takeIf { it.isNotBlank() },
+                            track.codec?.uppercase()
+                        ).distinct().joinToString(" • "),
+                        selected = selectedAudio == track.index,
+                        onClick = { selectedAudio = track.index }
+                    )
+                }
+            }
+
+            if (subtitleTracks.isNotEmpty()) {
+                Text(strings.settingsSubtitlesSection, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                TrackPickerOptionRow(
+                    label = strings.optionOff,
+                    selected = selectedSub == null,
+                    onClick = { selectedSub = null }
+                )
+                subtitleTracks.forEach { track ->
+                    TrackPickerOptionRow(
+                        label = listOfNotNull(
+                            track.language?.uppercase(),
+                            track.label.takeIf { it.isNotBlank() },
+                            track.codec?.uppercase(),
+                            if (track.isForced) strings.playerForcedBadge else null
+                        ).distinct().joinToString(" • "),
+                        selected = selectedSub == track.index,
+                        onClick = { selectedSub = track.index }
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                HeroPillButton(
+                    text = strings.trackPickerPlayWithSelection,
+                    icon = Icons.Filled.PlayArrow,
+                    isPrimary = true,
+                    onClick = { onPlayWithSelection(selectedAudio, selectedSub) },
+                    modifier = Modifier.focusRequester(playFocus)
+                )
+                HeroPillButton(
+                    text = strings.actionCancel,
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackPickerOptionRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = SeerflixTokens.colors
+    var focused by remember { mutableStateOf(false) }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (focused) colors.white else if (selected) colors.surfaceElevated else colors.surface)
+            .border(1.dp, if (selected) colors.accent else Color.Transparent, RoundedCornerShape(6.dp))
+            .onFocusChanged { focused = it.isFocused }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 9.dp)
+    ) {
+        Text(
+            text = label,
+            color = if (focused) colors.deepBlack else colors.white,
+            fontSize = 13.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (selected) {
+            Icon(Icons.Filled.Check, contentDescription = null, tint = if (focused) colors.deepBlack else colors.accent, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun DeleteConfirmDialog(
+    title: String,
+    onConfirmDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = SeerflixTokens.colors
+    val spec = SeerflixTokens.spec
+    val strings = AppStrings.current
+    val shape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
+    var stepTwo by remember { mutableStateOf(false) }
+    val cancelFocus = remember { FocusRequester() }
+    Dialog(onDismissRequest = onDismiss) {
+        LaunchedEffect(Unit) {
+            delay(40L)
+            runCatching { cancelFocus.requestFocus() }
+        }
+        Column(
+            modifier = Modifier
+                .width(480.dp)
+                .clip(shape)
+                .background(colors.dialogSurface)
+                .border(1.dp, colors.accent, shape)
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(strings.deleteConfirmTitle.format(title), color = colors.white, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text(strings.deleteConfirmBody, color = colors.textSecondary, fontSize = 14.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                HeroPillButton(
+                    text = strings.actionCancel,
+                    icon = Icons.Filled.Close,
+                    isPrimary = false,
+                    onClick = onDismiss,
+                    modifier = Modifier.focusRequester(cancelFocus)
+                )
+                HeroPillButton(
+                    text = if (stepTwo) strings.deleteConfirmStep2 else strings.deleteConfirmStep1,
+                    icon = Icons.Filled.DeleteOutline,
+                    isPrimary = true,
+                    onClick = {
+                        if (!stepTwo) stepTwo = true else onConfirmDelete()
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EpisodeActionDialog(
+    episode: EpisodeSummary,
+    onPlay: () -> Unit,
+    onPlayFromBeginning: () -> Unit,
+    onToggleWatched: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val strings = AppStrings.current
+    DetailsMoreMenu(
+        title = "S${episode.seasonNumber} E${episode.episodeNumber} · ${episode.name}",
+        actions = buildList {
+            add(MoreAction(Icons.Filled.PlayArrow, if (episode.resumePositionTicks > 0L) strings.actionResume else strings.actionPlay, onPlay))
+            if (episode.resumePositionTicks > 0L) {
+                add(MoreAction(Icons.Filled.Replay, strings.actionPlayFromBeginning, onPlayFromBeginning))
+            }
+            add(
+                MoreAction(
+                    if (episode.isWatched) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                    if (episode.isWatched) strings.actionMarkUnwatched else strings.actionMarkWatched,
+                    onToggleWatched
+                )
+            )
+        },
+        onDismiss = onDismiss
+    )
 }

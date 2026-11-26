@@ -441,4 +441,77 @@ interface JellyfinApi {
         @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
         @Query("SortBy") sortBy: String = "SortName"
     ): JellyfinItemsResponse
+
+    // ---- Phase 2: Next Up, Playlists, People & Item Deletion (0.9.3) ----
+
+    @GET("Shows/NextUp")
+    suspend fun getNextUp(
+        @Query("UserId") userId: String,
+        @Query("Limit") limit: Int = 20,
+        @Query("Fields") fields: String = "PrimaryImageAspectRatio,BasicSyncInfo,Overview,Genres,ProviderIds,UserData,RunTimeTicks,MediaStreams",
+        @Query("EnableRewatching") enableRewatching: Boolean = false,
+        @Query("DisableFirstEpisode") disableFirstEpisode: Boolean = false,
+        @Query("NextUpDateCutoff") nextUpDateCutoff: String? = null
+    ): JellyfinItemsResponse
+
+    @GET("Users/{userId}/Items")
+    suspend fun getPlaylists(
+        @Path("userId") userId: String,
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Playlist",
+        @Query("Fields") fields: String = "Overview,ChildCount,PrimaryImageAspectRatio",
+        @Query("SortBy") sortBy: String = "SortName",
+        @Query("SortOrder") sortOrder: String = "Ascending",
+        @Query("Limit") limit: Int = 100
+    ): JellyfinItemsResponse
+
+    @GET("Playlists/{playlistId}/Items")
+    suspend fun getPlaylistItems(
+        @Path("playlistId") playlistId: String,
+        @Query("UserId") userId: String,
+        @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating,MediaStreams",
+        @Query("Limit") limit: Int = 200
+    ): JellyfinItemsResponse
+
+    @POST("Playlists")
+    suspend fun createPlaylist(
+        @Body body: JellyfinCreatePlaylistRequest
+    ): JellyfinCreatePlaylistResponse
+
+    @POST("Playlists/{playlistId}/Items")
+    suspend fun addItemsToPlaylist(
+        @Path("playlistId") playlistId: String,
+        @Query("Ids") ids: String,
+        @Query("UserId") userId: String
+    )
+
+    @DELETE("Playlists/{playlistId}/Items")
+    suspend fun removeItemsFromPlaylist(
+        @Path("playlistId") playlistId: String,
+        @Query("EntryIds") entryIds: String
+    )
+
+    @GET("Persons")
+    suspend fun getPersons(
+        @Query("SearchTerm") searchTerm: String,
+        @Query("Limit") limit: Int = 20,
+        @Query("Fields") fields: String = "PrimaryImageAspectRatio"
+    ): JellyfinItemsResponse
+
+    @GET("Users/{userId}/Items")
+    suspend fun getItemsByPerson(
+        @Path("userId") userId: String,
+        @Query("PersonIds") personIds: String,
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
+        @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating,MediaStreams",
+        @Query("SortBy") sortBy: String = "PremiereDate,ProductionYear,SortName",
+        @Query("SortOrder") sortOrder: String = "Descending",
+        @Query("Limit") limit: Int = 60
+    ): JellyfinItemsResponse
+
+    @DELETE("Items/{itemId}")
+    suspend fun deleteItem(
+        @Path("itemId") itemId: String
+    )
 }

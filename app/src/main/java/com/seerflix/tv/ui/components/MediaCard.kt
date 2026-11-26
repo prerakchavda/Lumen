@@ -406,8 +406,8 @@ fun NetflixPosterCard(
             )
         }
 
-        // Top-left Netflix TOP 10 corner ribbon or Collection badge
-        if (item.boxSetId != null) {
+        // Top-left Netflix TOP 10 corner ribbon, Folder, or Collection badge
+        if (item.boxSetId != null || item.isFolder) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -418,7 +418,7 @@ fun NetflixPosterCard(
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = AppStrings.current.cardCollection,
+                    text = if (item.isFolder) AppStrings.current.libraryFolderBadge else AppStrings.current.cardCollection,
                     color = colors.white,
                     fontSize = 9.sp,
                     fontWeight = FontWeight.Bold
@@ -984,20 +984,22 @@ fun ContinueWatchingCard(
                 }
             }
 
-            // Progress bar
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .align(Alignment.BottomCenter)
-                    .background(Color(0x55FFFFFF))
-            ) {
+            // Progress bar (shown for in-progress titles; omitted for unstarted Next Up episodes)
+            if (item.resumePositionTicks > 0L || !item.isNextUp) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth(item.watchProgressFraction.coerceAtLeast(0.05f))
-                        .fillMaxHeight()
-                        .background(colors.progressFill)
-                )
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .align(Alignment.BottomCenter)
+                        .background(Color(0x55FFFFFF))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth(item.watchProgressFraction.coerceAtLeast(0.05f))
+                            .fillMaxHeight()
+                            .background(colors.progressFill)
+                    )
+                }
             }
         }
 
@@ -1010,18 +1012,23 @@ fun ContinueWatchingCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        // "S2 E4 · 32 min left" — one consistent line instead of a badge on the artwork.
+        // "S2 E5 · Up Next" for Next Up episodes, or "S2 E4 · 32m left" for in-progress titles.
         val strings = AppStrings.current
-        val subtitle = remember(item.episodeLabel, item.runtimeTicks, item.resumePositionTicks, strings) {
+        val subtitle = remember(item.episodeLabel, item.runtimeTicks, item.resumePositionTicks, item.isNextUp, strings) {
+            val statusPart = if (item.isNextUp && item.resumePositionTicks <= 0L) {
+                strings.cardUpNext
+            } else {
+                formatTimeLeft(item.runtimeTicks, item.resumePositionTicks)?.let { strings.cardTimeLeft.format(it) }
+            }
             listOfNotNull(
                 item.episodeLabel?.takeIf { it.isNotBlank() }?.let(::normalizeEpisodeCode),
-                formatTimeLeft(item.runtimeTicks, item.resumePositionTicks)?.let { strings.cardTimeLeft.format(it) }
+                statusPart
             ).joinToString(" · ")
         }
         if (subtitle.isNotEmpty()) {
             Text(
                 text = subtitle,
-                color = colors.textSecondary,
+                color = if (item.isNextUp && item.resumePositionTicks <= 0L) colors.accent else colors.textSecondary,
                 fontSize = 11.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

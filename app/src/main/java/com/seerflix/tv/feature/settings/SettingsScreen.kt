@@ -159,6 +159,14 @@ fun SettingsScreen(
                     profile.autoSkipRecap, { viewModel.setAutoSkipRecap(!profile.autoSkipRecap) }, strings
                 )
             }
+            item {
+                ToggleRow(
+                    strings.settingsMergeNextUpTitle, strings.settingsMergeNextUpDesc,
+                    profile.mergeNextUpIntoContinueWatching,
+                    { viewModel.setMergeNextUpIntoContinueWatching(!profile.mergeNextUpIntoContinueWatching) },
+                    strings
+                )
+            }
 
             // ---- Subtitles ----
             item { SectionHeader(strings.settingsSubtitlesSection) }

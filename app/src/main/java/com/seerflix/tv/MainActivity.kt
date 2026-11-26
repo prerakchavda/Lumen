@@ -52,6 +52,9 @@ import com.seerflix.tv.feature.servers.AddServerScreen
 import com.seerflix.tv.feature.servers.ServerStatusOverlay
 import com.seerflix.tv.feature.library.LibraryScreen
 import com.seerflix.tv.core.diagnostics.DiagnosticsRepository
+import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.player.PlaybackQueueManager
+import com.seerflix.tv.core.player.QueueEntry
 import com.seerflix.tv.ui.components.CrashReportPrompt
 import com.seerflix.tv.ui.theme.SeerflixTheme
 import com.seerflix.tv.ui.theme.SeerflixTokens
@@ -72,6 +75,9 @@ class MainActivity : ComponentActivity() {
     // Injected so it is created up front and listens for group messages from the first connect.
     @Inject
     lateinit var syncPlayManager: SyncPlayManager
+
+    @Inject
+    lateinit var playbackQueueManager: PlaybackQueueManager
 
     @Inject
     lateinit var diagnostics: DiagnosticsRepository
@@ -103,6 +109,7 @@ class MainActivity : ComponentActivity() {
                     authRepository = authRepository,
                     socketClient = socketClient,
                     syncPlayManager = syncPlayManager,
+                    playbackQueueManager = playbackQueueManager,
                     diagnostics = diagnostics,
                     incomingIntent = latestIntentState,
                     onIntentHandled = { latestIntentState = null }
@@ -136,21 +143,27 @@ private object Routes {
     const val SETUP = "setup"
     const val PROFILES = "profiles"
     const val HOME = "home"
-    const val SEARCH = "search?query={query}&personId={personId}&personName={personName}"
+    const val SEARCH = "search?query={query}&personId={personId}&jfPersonId={jfPersonId}&personName={personName}"
     const val REQUESTS = "requests"
     const val DETAILS = "details/{tmdbId}/{jellyfinId}/{mediaType}"
-    const val PLAYER = "player/{itemId}?mediaSourceId={mediaSourceId}&startMs={startMs}&syncplay={syncplay}"
+    const val PLAYER = "player/{itemId}?mediaSourceId={mediaSourceId}&startMs={startMs}&fromStart={fromStart}&audioIndex={audioIndex}&subtitleIndex={subtitleIndex}&syncplay={syncplay}"
     const val SETTINGS = "settings"
     /** Add another Jellyfin server; with a server id, sign in again to that one. */
     const val ADD_SERVER = "servers/add?serverId={serverId}"
-    const val LIBRARY = "library?parentId={parentId}&title={title}&types={types}"
+    const val LIBRARY = "library?parentId={parentId}&title={title}&types={types}&collectionType={collectionType}&folderMode={folderMode}"
     const val TRAILER = "trailer?title={title}&youtubeKey={youtubeKey}&localTrailerId={localTrailerId}"
 
-    fun search(query: String = "", personId: Int? = null, personName: String? = null): String {
+    fun search(
+        query: String = "",
+        personId: Int? = null,
+        jfPersonId: String? = null,
+        personName: String? = null
+    ): String {
         val encQ = Uri.encode(query)
         val pid = personId?.toString() ?: "0"
+        val encJfPid = Uri.encode(jfPersonId.orEmpty())
         val encName = Uri.encode(personName.orEmpty())
-        return "search?query=$encQ&personId=$pid&personName=$encName"
+        return "search?query=$encQ&personId=$pid&jfPersonId=$encJfPid&personName=$encName"
     }
 
     fun details(item: UnifiedMediaItem): String {
@@ -168,15 +181,26 @@ private object Routes {
         itemId: String,
         mediaSourceId: String? = null,
         startMs: Long? = null,
+        fromStart: Boolean = false,
+        audioIndex: Int? = null,
+        subtitleIndex: Int? = null,
         fromSyncPlay: Boolean = false
     ): String {
         val encItem = Uri.encode(itemId)
         val encSrc = Uri.encode(mediaSourceId.orEmpty())
-        return "player/$encItem?mediaSourceId=$encSrc&startMs=${startMs ?: 0L}&syncplay=$fromSyncPlay"
+        val aIdx = audioIndex?.toString() ?: "-1"
+        val sIdx = subtitleIndex?.toString() ?: "-1"
+        return "player/$encItem?mediaSourceId=$encSrc&startMs=${startMs ?: 0L}&fromStart=$fromStart&audioIndex=$aIdx&subtitleIndex=$sIdx&syncplay=$fromSyncPlay"
     }
 
-    fun library(parentId: String?, title: String, types: String): String =
-        "library?parentId=${Uri.encode(parentId.orEmpty())}&title=${Uri.encode(title)}&types=${Uri.encode(types)}"
+    fun library(
+        parentId: String?,
+        title: String,
+        types: String,
+        collectionType: String? = null,
+        folderMode: Boolean = false
+    ): String =
+        "library?parentId=${Uri.encode(parentId.orEmpty())}&title=${Uri.encode(title)}&types=${Uri.encode(types)}&collectionType=${Uri.encode(collectionType.orEmpty())}&folderMode=$folderMode"
 
     fun addServer(serverId: String? = null): String = "servers/add?serverId=${Uri.encode(serverId.orEmpty())}"
 
@@ -220,12 +244,26 @@ private fun SeerflixNavGraph(
     authRepository: AuthRepository,
     socketClient: JellyfinSocketClient,
     syncPlayManager: SyncPlayManager,
+    playbackQueueManager: PlaybackQueueManager,
     diagnostics: DiagnosticsRepository,
     incomingIntent: Intent?,
     onIntentHandled: () -> Unit
 ) {
     val navController = rememberNavController()
     var startDestination by remember { mutableStateOf<String?>(null) }
+
+    val launchQueue: (List<QueueEntry>, Boolean) -> Unit = { entries, shuffle ->
+        val first = playbackQueueManager.setQueue(entries, startIndex = 0, shuffle = shuffle)
+        if (first != null) {
+            navController.navigate(
+                Routes.player(
+                    itemId = first.itemId,
+                    mediaSourceId = first.mediaSourceId,
+                    startMs = first.startPositionMs.takeIf { it > 0L }
+                )
+            )
+        }
+    }
 
     LaunchedEffect(Unit) {
         authRepository.warmup()
@@ -265,12 +303,47 @@ private fun SeerflixNavGraph(
             val signedIn = route != null && route != Routes.SETUP && route != Routes.PROFILES
             when (event) {
                 is ServerEvent.Play -> {
-                    if (!signedIn) return@collect
-                    val itemId = event.itemIds.getOrNull(event.startIndex) ?: event.itemIds.firstOrNull() ?: return@collect
-                    if (route == Routes.PLAYER) navController.popBackStack()
-                    navController.navigate(
-                        Routes.player(itemId, event.mediaSourceId, startMs = event.startPositionTicks / 10_000L)
-                    )
+                    if (!signedIn || event.itemIds.isEmpty()) return@collect
+                    val startMs = event.startPositionTicks / 10_000L
+                    val entries = event.itemIds.mapIndexed { idx, id ->
+                        QueueEntry(
+                            itemId = id,
+                            mediaSourceId = if (idx == event.startIndex) event.mediaSourceId else null,
+                            startPositionMs = if (idx == event.startIndex) startMs else 0L
+                        )
+                    }
+                    when (event.playCommand) {
+                        "PlayNext" -> {
+                            playbackQueueManager.enqueueNext(entries)
+                            if (route != Routes.PLAYER) {
+                                val first = playbackQueueManager.state.value.current ?: entries.first()
+                                navController.navigate(
+                                    Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
+                                )
+                            }
+                        }
+                        "PlayLast" -> {
+                            playbackQueueManager.enqueueLast(entries)
+                            if (route != Routes.PLAYER) {
+                                val first = playbackQueueManager.state.value.current ?: entries.first()
+                                navController.navigate(
+                                    Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
+                                )
+                            }
+                        }
+                        else -> {
+                            val first = if (entries.size > 1) {
+                                playbackQueueManager.setQueue(entries, startIndex = event.startIndex, shuffle = false)
+                            } else {
+                                playbackQueueManager.clear()
+                                entries.first()
+                            } ?: return@collect
+                            if (route == Routes.PLAYER) navController.popBackStack()
+                            navController.navigate(
+                                Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
+                            )
+                        }
+                    }
                 }
                 is ServerEvent.GeneralCommand -> when (event.name) {
                     "DisplayMessage" -> {
@@ -371,12 +444,27 @@ private fun SeerflixNavGraph(
                         Routes.library(
                             parentId = null,
                             title = if (movies) strings.libraryAllMovies else strings.libraryAllShows,
-                            types = if (movies) "Movie" else "Series"
+                            types = if (movies) "Movie" else "Series",
+                            collectionType = if (movies) "movies" else "tvshows"
                         )
                     )
                 },
+                onOpenLibraryView = { view ->
+                    navController.navigate(
+                        Routes.library(
+                            parentId = view.id,
+                            title = view.displayName,
+                            types = UnifiedCatalogRepository.includeTypesForCollectionType(view.collectionType, folderMode = false),
+                            collectionType = view.collectionType
+                        )
+                    )
+                },
+                onPlayQueue = launchQueue,
                 onOpenDetails = { item -> navController.navigate(Routes.details(item)) },
-                onPlayDirect = { itemId -> navController.navigate(Routes.player(itemId)) },
+                onPlayDirect = { itemId ->
+                    playbackQueueManager.clear()
+                    navController.navigate(Routes.player(itemId))
+                },
                 onOpenSearch = { navController.navigate(Routes.search()) { launchSingleTop = true } },
                 onOpenRequests = { navController.navigate(Routes.REQUESTS) { launchSingleTop = true } },
                 onSwitchProfile = { navController.navigate(Routes.PROFILES) { launchSingleTop = true } },
@@ -394,7 +482,9 @@ private fun SeerflixNavGraph(
             arguments = listOf(
                 navArgument("parentId") { type = NavType.StringType; defaultValue = "" },
                 navArgument("title") { type = NavType.StringType; defaultValue = "" },
-                navArgument("types") { type = NavType.StringType; defaultValue = "Movie,Series" }
+                navArgument("types") { type = NavType.StringType; defaultValue = "Movie,Series" },
+                navArgument("collectionType") { type = NavType.StringType; defaultValue = "" },
+                navArgument("folderMode") { type = NavType.BoolType; defaultValue = false }
             )
         ) {
             LibraryScreen(
@@ -427,6 +517,7 @@ private fun SeerflixNavGraph(
             arguments = listOf(
                 navArgument("query") { type = NavType.StringType; defaultValue = "" },
                 navArgument("personId") { type = NavType.StringType; defaultValue = "0" },
+                navArgument("jfPersonId") { type = NavType.StringType; defaultValue = "" },
                 navArgument("personName") { type = NavType.StringType; defaultValue = "" }
             )
         ) {
@@ -456,8 +547,23 @@ private fun SeerflixNavGraph(
             DetailsScreen(
                 onBack = { navController.popBackStack() },
                 onPlayItem = { itemId, mediaSourceId ->
+                    playbackQueueManager.clear()
                     navController.navigate(Routes.player(itemId, mediaSourceId))
                 },
+                onPlayWithOptions = { itemId, mediaSourceId, fromStart, audioIndex, subtitleIndex ->
+                    playbackQueueManager.clear()
+                    navController.navigate(
+                        Routes.player(
+                            itemId = itemId,
+                            mediaSourceId = mediaSourceId,
+                            startMs = if (fromStart) 0L else null,
+                            fromStart = fromStart,
+                            audioIndex = audioIndex,
+                            subtitleIndex = subtitleIndex
+                        )
+                    )
+                },
+                onPlayQueue = launchQueue,
                 onPlayTrailer = { title, ytKey, localId ->
                     navController.navigate(Routes.trailer(title, ytKey, localId))
                 },
@@ -467,6 +573,16 @@ private fun SeerflixNavGraph(
                         Routes.search(
                             query = if (personId == null) name else "",
                             personId = personId,
+                            personName = name
+                        )
+                    )
+                },
+                onSearchPerson = { name, personId, jfPersonId ->
+                    navController.navigate(
+                        Routes.search(
+                            query = if (personId == null && jfPersonId.isNullOrBlank()) name else "",
+                            personId = personId,
+                            jfPersonId = jfPersonId,
                             personName = name
                         )
                     )
@@ -480,6 +596,9 @@ private fun SeerflixNavGraph(
                 navArgument("itemId") { type = NavType.StringType },
                 navArgument("mediaSourceId") { type = NavType.StringType; defaultValue = "" },
                 navArgument("startMs") { type = NavType.StringType; defaultValue = "0" },
+                navArgument("fromStart") { type = NavType.StringType; defaultValue = "false" },
+                navArgument("audioIndex") { type = NavType.StringType; defaultValue = "-1" },
+                navArgument("subtitleIndex") { type = NavType.StringType; defaultValue = "-1" },
                 navArgument("syncplay") { type = NavType.StringType; defaultValue = "false" }
             )
         ) {

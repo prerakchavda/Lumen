@@ -1038,6 +1038,15 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         override suspend fun logout() = Unit
         override suspend fun getEpisodesLite(seriesId: String, userId: String, seasonId: String?, startItemId: String?, limit: Int?, fields: String?, enableImages: Boolean, isMissing: Boolean?) = JellyfinItemsResponse()
         override suspend fun getResumeItemsLite(userId: String, parentId: String?, limit: Int, mediaTypes: String, enableImages: Boolean) = JellyfinItemsResponse()
+        override suspend fun getNextUp(userId: String, limit: Int, fields: String, enableRewatching: Boolean, disableFirstEpisode: Boolean, nextUpDateCutoff: String?) = JellyfinItemsResponse()
+        override suspend fun getPlaylists(userId: String, recursive: Boolean, includeItemTypes: String, fields: String, sortBy: String, sortOrder: String, limit: Int) = JellyfinItemsResponse()
+        override suspend fun getPlaylistItems(playlistId: String, userId: String, fields: String, limit: Int) = JellyfinItemsResponse()
+        override suspend fun createPlaylist(body: com.seerflix.tv.core.network.JellyfinCreatePlaylistRequest) = com.seerflix.tv.core.network.JellyfinCreatePlaylistResponse("pl-1")
+        override suspend fun addItemsToPlaylist(playlistId: String, ids: String, userId: String) = Unit
+        override suspend fun removeItemsFromPlaylist(playlistId: String, entryIds: String) = Unit
+        override suspend fun getPersons(searchTerm: String, limit: Int, fields: String) = JellyfinItemsResponse()
+        override suspend fun getItemsByPerson(userId: String, personIds: String, recursive: Boolean, includeItemTypes: String, fields: String, sortBy: String, sortOrder: String, limit: Int) = JellyfinItemsResponse()
+        override suspend fun deleteItem(itemId: String) = Unit
     }
 
     private class FakeSeerrApi : SeerrApi {

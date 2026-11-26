@@ -28,6 +28,7 @@ import com.seerflix.tv.core.player.AudioDelayProcessor
 import com.seerflix.tv.core.player.ExternalPlayerHelper
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
 import com.seerflix.tv.core.player.NextEpisodeInfo
+import com.seerflix.tv.core.player.PlaybackQueueManager
 import com.seerflix.tv.core.player.PlaybackReportState
 import com.seerflix.tv.core.player.PlaybackSegments
 import com.seerflix.tv.core.player.SubtitleTrackSelector
@@ -77,6 +78,7 @@ data class PlayerUiState(
     val selectedMediaSourceId: String? = null,
     val selectedAudioStreamIndex: Int? = null,
     val selectedSubtitleStreamIndex: Int? = null,
+    val preselectedSubtitleStreamIndex: Int? = null,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
     val subtitleTextColor: com.seerflix.tv.core.model.SubtitleTextColor = com.seerflix.tv.core.model.SubtitleTextColor.WHITE,
@@ -116,6 +118,10 @@ data class PlayerUiState(
     val drawerEpisodes: List<EpisodeSummary> = emptyList(),
     val drawerEpisodesLoading: Boolean = false,
     val syncPlayGroup: SyncPlayGroup? = null,
+    val hasQueueNext: Boolean = false,
+    val hasQueuePrevious: Boolean = false,
+    val queuePositionLabel: String? = null,
+    val queueNextTitle: String? = null,
     val feedbackMessage: String? = null,
     /** Source frame rate from Jellyfin metadata, so the display mode can be switched before the first frame. */
     val videoFrameRateHint: Float? = null,
@@ -131,6 +137,7 @@ class PlayerViewModel @Inject constructor(
     private val catalogRepository: UnifiedCatalogRepository,
     private val trailerResolver: YouTubeTrailerResolver,
     private val syncPlayManager: SyncPlayManager,
+    private val playbackQueueManager: PlaybackQueueManager,
     private val prefs: SessionPreferences,
     socketClient: JellyfinSocketClient,
     // Honours the per-server self-signed certificate toggle; also handed to ExoPlayer so
@@ -150,8 +157,7 @@ class PlayerViewModel @Inject constructor(
     private val trailerTitle: String? = savedStateHandle.get<String>("title")?.takeIf { it.isNotBlank() }
     /** Start position handed over by "Play on" from another app or by a SyncPlay group. */
     private val initialStartMs: Long? = savedStateHandle.get<String>("startMs")?.toLongOrNull()?.takeIf { it >= 0L }
-    private val startFromBeginning: Boolean = savedStateHandle.get<String>("startMs") == "0" &&
-        savedStateHandle.get<String>("fromStart") == "true"
+    private val startFromBeginning: Boolean = savedStateHandle.get<String>("fromStart") == "true"
     private val openedBySyncPlay: Boolean = savedStateHandle.get<String>("syncplay") == "true"
 
     /** Group commands for the player (only while in a SyncPlay group). */
@@ -161,7 +167,7 @@ class PlayerViewModel @Inject constructor(
     /** Remote-control commands from other Jellyfin apps that act on the player. */
     val remotePlaystate: Flow<ServerEvent.Playstate> = socketClient.events.filterIsInstance<ServerEvent.Playstate>()
 
-    private val _uiState = MutableStateFlow(PlayerUiState())
+    private val _uiState = MutableStateFlow(PlayerUiState(preselectedSubtitleStreamIndex = initialSubtitleStreamIndex))
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     private var activeUserId: String = ""
@@ -184,6 +190,18 @@ class PlayerViewModel @Inject constructor(
         viewModelScope.launch {
             syncPlayManager.activeGroup.collect { group ->
                 _uiState.update { it.copy(syncPlayGroup = group) }
+            }
+        }
+        viewModelScope.launch {
+            playbackQueueManager.state.collect { q ->
+                _uiState.update {
+                    it.copy(
+                        hasQueueNext = q.hasNext,
+                        hasQueuePrevious = q.hasPrevious,
+                        queuePositionLabel = q.positionLabel,
+                        queueNextTitle = q.nextEntry?.title
+                    )
+                }
             }
         }
         if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
@@ -289,7 +307,10 @@ class PlayerViewModel @Inject constructor(
             }
         }
         requestedItemId = itemId
-        if (!isSameItem) assLoadJob?.cancel()
+        if (!isSameItem) {
+            assLoadJob?.cancel()
+            playbackQueueManager.syncToItem(itemId)
+        }
         // A quality forced by a playback error applies to that item only.
         val quality = if (!isSameItem && qualityPinnedByError && qualityOverride == _uiState.value.selectedQuality) {
             qualityPinnedByError = false
@@ -1024,6 +1045,60 @@ class PlayerViewModel @Inject constructor(
 
     fun cancelAutoplayNext() {
         _uiState.update { it.copy(autoplayCancelled = true) }
+    }
+
+    fun consumePreselectedSubtitle(): Int? {
+        val idx = _uiState.value.preselectedSubtitleStreamIndex
+        if (idx != null) {
+            _uiState.update { it.copy(preselectedSubtitleStreamIndex = null) }
+        }
+        return idx
+    }
+
+    /**
+     * Advances to the next queued item if a queue is active, otherwise falls back to the current
+     * session's [PlaybackSessionData.nextEpisodeId]. Returns true if navigation was triggered.
+     */
+    fun playNextInQueueOrEpisode(
+        currentPosMs: Long,
+        reportState: PlaybackReportState? = null,
+        fromAutoplay: Boolean = false
+    ): Boolean {
+        val nextQueue = playbackQueueManager.advanceNext()
+        if (nextQueue != null) {
+            reportStopped(currentPosMs, reportState)
+            loadItem(
+                itemId = nextQueue.itemId,
+                mediaSourceIdOverride = nextQueue.mediaSourceId,
+                resumeOverrideMs = nextQueue.startPositionMs.takeIf { it > 0L },
+                isAutoplayAdvance = fromAutoplay,
+                nextTitleForPrompt = nextQueue.title
+            )
+            return true
+        }
+        val nextEpId = _uiState.value.session?.nextEpisodeId ?: return false
+        reportStopped(currentPosMs, reportState)
+        loadItem(
+            nextEpId,
+            isAutoplayAdvance = fromAutoplay,
+            nextTitleForPrompt = _uiState.value.session?.nextEpisodeTitle
+        )
+        return true
+    }
+
+    /** Steps back to the previous item in the active queue. Returns true if handled. */
+    fun playPreviousInQueue(
+        currentPosMs: Long,
+        reportState: PlaybackReportState? = null
+    ): Boolean {
+        val prevQueue = playbackQueueManager.stepPrevious() ?: return false
+        reportStopped(currentPosMs, reportState)
+        loadItem(
+            itemId = prevQueue.itemId,
+            mediaSourceIdOverride = prevQueue.mediaSourceId,
+            resumeOverrideMs = prevQueue.startPositionMs.takeIf { it > 0L }
+        )
+        return true
     }
 
     private fun buildDefaultReportState(override: PlaybackReportState?): PlaybackReportState {
