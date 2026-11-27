@@ -380,24 +380,15 @@ private fun SeerflixNavGraph(
                             startPositionMs = if (idx == event.startIndex) startMs else 0L
                         )
                     }
-                    when (event.playCommand) {
-                        "PlayNext" -> {
-                            playbackQueueManager.enqueueNext(entries)
-                            if (route != Routes.PLAYER) {
-                                val first = playbackQueueManager.state.value.current ?: entries.first()
-                                navController.navigate(
-                                    Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
-                                )
-                            }
+                    // PlayNext / PlayLast only add to what is playing. With no player open, a queue
+                    // left over from an earlier playlist must not be resumed: they act as PlayNow.
+                    val playerOpen = route == Routes.PLAYER
+                    when {
+                        playerOpen && event.playCommand == "PlayNext" -> {
+                            playbackQueueManager.enqueueNext(entries, current = playbackQueueManager.nowPlaying)
                         }
-                        "PlayLast" -> {
-                            playbackQueueManager.enqueueLast(entries)
-                            if (route != Routes.PLAYER) {
-                                val first = playbackQueueManager.state.value.current ?: entries.first()
-                                navController.navigate(
-                                    Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
-                                )
-                            }
+                        playerOpen && event.playCommand == "PlayLast" -> {
+                            playbackQueueManager.enqueueLast(entries, current = playbackQueueManager.nowPlaying)
                         }
                         else -> {
                             val first = if (entries.size > 1) {

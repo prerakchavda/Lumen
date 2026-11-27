@@ -99,6 +99,7 @@ import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.SeerrIssueType
 import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.UnifiedMediaItem
+import com.seerflix.tv.feature.player.PlayerTrackSelection
 import com.seerflix.tv.core.player.QueueEntry
 import com.seerflix.tv.ui.components.AvailabilityBadge
 import com.seerflix.tv.ui.components.TitleMetaLine
@@ -376,7 +377,16 @@ fun DetailsContent(
                             onCancelRequest = onCancelRequest,
                             onOpenPlaylistDialog = extraActions.onOpenPlaylistDialog,
                             onOpenMediaInfo = extraActions.onOpenMediaInfo,
-                            onOpenTrackPicker = extraActions.onOpenTrackPicker,
+                            onOpenTrackPicker = {
+                                // The picker lists the first version's streams; for another version
+                                // its indexes would point into a different file, so play that
+                                // version without the picker instead.
+                                if (selectedSourceId == null || selectedSourceId == item.mediaVersions.firstOrNull()?.id) {
+                                    extraActions.onOpenTrackPicker()
+                                } else {
+                                    resolvePlayTarget()?.let { (id, src) -> onPlayItem(id, src) }
+                                }
+                            },
                             onOpenDeleteConfirm = extraActions.onOpenDeleteConfirm
                         )
                     }
@@ -671,8 +681,16 @@ fun DetailsContent(
                 val versionItemId = sourceId?.let { id ->
                     currentItem.mediaVersions.firstOrNull { it.id == id }?.itemId
                 }
+                // The listed streams are the first version's: their indexes only apply to it.
+                val tracksMatchVersion = sourceId == null || sourceId == currentItem.mediaVersions.firstOrNull()?.id
                 (versionItemId ?: currentItem.jellyfinId)?.let { id ->
-                    extraActions.onPlayWithOptions(id, sourceId, false, audioIdx, subIdx)
+                    extraActions.onPlayWithOptions(
+                        id,
+                        sourceId,
+                        false,
+                        audioIdx.takeIf { tracksMatchVersion },
+                        subIdx.takeIf { tracksMatchVersion }
+                    )
                 }
             },
             onDismiss = extraActions.onDismissTrackPicker
@@ -2538,8 +2556,11 @@ private fun TrackPickerDialog(
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
     val shape = RoundedCornerShape(spec.dialogCornerRadiusDp.dp)
-    var selectedAudio by remember { mutableStateOf(audioTracks.firstOrNull { it.isDefault }?.index ?: audioTracks.firstOrNull()?.index) }
-    var selectedSub by remember { mutableStateOf<Int?>(subtitleTracks.firstOrNull { it.isDefault }?.index) }
+    // null = "Default": nothing explicit is sent and the profile's preferred audio language /
+    // subtitle mode decide in the player. Only a track the user actually picks is sent.
+    var selectedAudio by remember { mutableStateOf<Int?>(null) }
+    // null = "Default", SUBTITLE_OFF = explicitly off, otherwise the picked stream index.
+    var selectedSub by remember { mutableStateOf<Int?>(null) }
     val playFocus = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
         LaunchedEffect(Unit) {
@@ -2562,6 +2583,11 @@ private fun TrackPickerDialog(
 
             if (audioTracks.isNotEmpty()) {
                 Text(strings.playerAudioTracks, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
+                TrackPickerOptionRow(
+                    label = strings.commonDefault,
+                    selected = selectedAudio == null,
+                    onClick = { selectedAudio = null }
+                )
                 audioTracks.forEach { track ->
                     TrackPickerOptionRow(
                         label = listOfNotNull(
@@ -2578,9 +2604,14 @@ private fun TrackPickerDialog(
             if (subtitleTracks.isNotEmpty()) {
                 Text(strings.settingsSubtitlesSection, color = colors.accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
                 TrackPickerOptionRow(
-                    label = strings.optionOff,
+                    label = strings.commonDefault,
                     selected = selectedSub == null,
                     onClick = { selectedSub = null }
+                )
+                TrackPickerOptionRow(
+                    label = strings.optionOff,
+                    selected = selectedSub == PlayerTrackSelection.SUBTITLE_OFF,
+                    onClick = { selectedSub = PlayerTrackSelection.SUBTITLE_OFF }
                 )
                 subtitleTracks.forEach { track ->
                     TrackPickerOptionRow(

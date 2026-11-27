@@ -72,6 +72,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -184,7 +185,10 @@ fun PlayerScreen(
 
     val subtitleOffsetUsRef = remember { AtomicLong(0L) }
     val audioDelayProcessor = remember { AudioDelayProcessor() }
-    val player = remember(context) {
+    // The audio sink (HDMI passthrough vs. local PCM decoding) is fixed when the renderers are
+    // built, so toggling passthrough builds a new player; the VM reloads the item into it.
+    val audioPassthroughForPlayer = state.audioPassthroughEnabled
+    val player = remember(context, audioPassthroughForPlayer) {
         val subtitleParserFactory = OffsetSubtitleParserFactory { subtitleOffsetUsRef.get() }
         val upstreamFactory = OkHttpDataSource.Factory(viewModel.mediaHttpClient)
         val mediaSourceFactory = DefaultMediaSourceFactory(DefaultDataSource.Factory(context, upstreamFactory))
@@ -195,7 +199,8 @@ fun PlayerScreen(
             PlayerTuning.buildRenderersFactory(
                 context = context,
                 enableSoftwareAudioDecoding = viewModel.softwareAudioDecodingEnabled,
-                audioDelayProcessor = audioDelayProcessor
+                audioDelayProcessor = audioDelayProcessor,
+                audioPassthroughEnabled = audioPassthroughForPlayer
             )
         )
             .setMediaSourceFactory(mediaSourceFactory)
@@ -214,6 +219,8 @@ fun PlayerScreen(
                 playWhenReady = true
             }
     }
+    // For long-running effects that aren't restarted when the player is rebuilt.
+    val currentPlayer by rememberUpdatedState(player)
 
     var isPlaying by remember { mutableStateOf(true) }
     var currentPosMs by remember { mutableLongStateOf(0L) }
@@ -230,6 +237,7 @@ fun PlayerScreen(
     var activeAudioDecoderName by remember { mutableStateOf<String?>(null) }
     var liveStreamStats by remember { mutableStateOf<LiveStreamStats?>(null) }
     var initialSubtitleAppliedForPlaySession by remember { mutableStateOf<String?>(null) }
+    var initialAudioAppliedForPlaySession by remember { mutableStateOf<String?>(null) }
     var skippedIntroItemId by remember { mutableStateOf<String?>(null) }
     var skippedRecapItemId by remember { mutableStateOf<String?>(null) }
     var autoSkipUndoPrompt by remember { mutableStateOf<Pair<SkipSegmentType, Long>?>(null) }
@@ -240,6 +248,8 @@ fun PlayerScreen(
     var hasInitializedOffsetEffect by remember { mutableStateOf(false) }
     var hasInitializedAudioOffsetEffect by remember { mutableStateOf(false) }
     var hasInitializedSleepTimerEffect by remember { mutableStateOf(false) }
+    // Set when the sleep timer itself ends playback: clearing it then is not a "cancelled".
+    var sleepTimerJustFired by remember { mutableStateOf(false) }
     // Written on every remote key press but only read inside effects (never during composition), so
     // key presses / held D-pad repeats don't recompose the whole screen.
     val lastInteractionTick = remember { mutableLongStateOf(0L) }
@@ -363,9 +373,38 @@ fun PlayerScreen(
                     detectedVideoFrameRate = videoRate
                 }
                 val activeSession = state.session
-                if (activeSession != null && !activeSession.isTrailer) {
-                    val selectedAudioFmt = tracks.groups
-                        .firstOrNull { it.type == C.TRACK_TYPE_AUDIO && it.isSelected }
+                // Stopping / replacing the stream reports empty tracks; that says nothing about
+                // what the user had selected, so it must not overwrite the selection.
+                if (activeSession != null && !activeSession.isTrailer && tracks.groups.isNotEmpty()) {
+                    val audioGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    // Direct Play streams the whole file: the server can't pick the audio track, so
+                    // the one asked for (pre-play picker, audio switch) is selected here, once per
+                    // play session. Jellyfin's in-container audio streams and ExoPlayer's audio
+                    // groups are both in container order.
+                    val containerAudioTracks = activeSession.audioTracks.filter { !it.isExternal }
+                    if (!activeSession.isHls && audioGroups.isNotEmpty() &&
+                        initialAudioAppliedForPlaySession != activeSession.playSessionId
+                    ) {
+                        initialAudioAppliedForPlaySession = activeSession.playSessionId
+                        val requestedAudio = state.requestedAudioStreamIndex
+                        val ordinal = requestedAudio?.let { req -> containerAudioTracks.indexOfFirst { it.index == req } } ?: -1
+                        // Only when both lists line up one-to-one; otherwise the ordinal could point elsewhere.
+                        val target = if (audioGroups.size == containerAudioTracks.size) audioGroups.getOrNull(ordinal) else null
+                        if (requestedAudio != null && target != null && !target.isSelected) {
+                            if (target.isTrackSupported(0)) {
+                                player.trackSelectionParameters = player.trackSelectionParameters
+                                    .buildUpon()
+                                    .setOverrideForType(TrackSelectionOverride(target.mediaTrackGroup, 0))
+                                    .build()
+                            } else {
+                                // Not decodable here: let the server convert that track instead.
+                                viewModel.selectServerAudioTrack(requestedAudio, player.currentPosition.coerceAtLeast(0L), forceHls = true)
+                                return
+                            }
+                        }
+                    }
+                    val selectedAudioGroup = audioGroups.firstOrNull { it.isSelected }
+                    val selectedAudioFmt = selectedAudioGroup
                         ?.let { g -> (0 until g.length).firstOrNull { g.isTrackSelected(it) }?.let { g.getTrackFormat(it) } }
                     val selectedTextFmt = tracks.groups
                         .firstOrNull { it.type == C.TRACK_TYPE_TEXT && it.isSelected }
@@ -373,7 +412,11 @@ fun PlayerScreen(
                     val matchedAudioIdx = if (activeSession.isHls) {
                         state.selectedAudioStreamIndex ?: activeSession.activeAudioStreamIndex
                     } else {
-                        selectedAudioFmt?.let { fmt ->
+                        val selectedOrdinal = selectedAudioGroup?.let { audioGroups.indexOf(it) } ?: -1
+                        val byOrdinal = if (audioGroups.size == containerAudioTracks.size) {
+                            containerAudioTracks.getOrNull(selectedOrdinal)?.index
+                        } else null
+                        byOrdinal ?: selectedAudioFmt?.let { fmt ->
                             activeSession.audioTracks.firstOrNull {
                                 SubtitleTrackSelector.languagesMatch(it.language, fmt.language) &&
                                     (fmt.label == null || it.label.contains(fmt.label!!, ignoreCase = true))
@@ -384,14 +427,7 @@ fun PlayerScreen(
                     }
                     val matchedSubIdx = state.burnInSubtitleIndex
                         ?: state.activeAssSubtitleIndex
-                        ?: selectedTextFmt?.let { fmt ->
-                            activeSession.subtitleTracks.firstOrNull {
-                                SubtitleTrackSelector.languagesMatch(it.language, fmt.language) &&
-                                    (fmt.label == null || it.label.contains(fmt.label!!, ignoreCase = true))
-                            }?.index ?: activeSession.subtitleTracks.firstOrNull {
-                                SubtitleTrackSelector.languagesMatch(it.language, fmt.language)
-                            }?.index
-                        }
+                        ?: selectedTextFmt?.let { fmt -> matchJellyfinSubtitleTrack(fmt, activeSession.subtitleTracks)?.index }
                     viewModel.updateActiveTrackIndexes(matchedAudioIdx, matchedSubIdx)
 
                     // Apply pre-playback picked subtitle or Jellyfin SubtitleSelectionMode once per playSession.
@@ -403,9 +439,7 @@ fun PlayerScreen(
                         val preselectedIdx = viewModel.consumePreselectedSubtitle()
                         val activeAudioLang = selectedAudioFmt?.language
                             ?: activeSession.audioTracks.firstOrNull { it.index == matchedAudioIdx }?.language
-                        val chosen = if (preselectedIdx != null) {
-                            activeSession.subtitleTracks.firstOrNull { it.index == preselectedIdx }
-                        } else {
+                        val automatic = {
                             SubtitleTrackSelector.selectSubtitleTrack(
                                 mode = state.subtitleSelectionMode,
                                 preferredSubtitleLang = state.preferredSubtitleLang,
@@ -413,6 +447,13 @@ fun PlayerScreen(
                                 activeAudioLang = activeAudioLang,
                                 subtitleTracks = activeSession.subtitleTracks
                             )
+                        }
+                        val chosen = when {
+                            // Explicitly off (picker "Off", or off before a same-item reload).
+                            preselectedIdx == PlayerTrackSelection.SUBTITLE_OFF -> null
+                            preselectedIdx != null ->
+                                activeSession.subtitleTracks.firstOrNull { it.index == preselectedIdx } ?: automatic()
+                            else -> automatic()
                         }
                         val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
                         if (chosen == null) {
@@ -423,14 +464,7 @@ fun PlayerScreen(
                                     .build()
                             }
                         } else if (state.activeAssSubtitleIndex == null) {
-                            val matchGroup = textGroups.firstOrNull { grp ->
-                                val fmt = grp.getTrackFormat(0)
-                                val langOk = SubtitleTrackSelector.languagesMatch(fmt.language, chosen.language)
-                                val forcedFlag = (fmt.selectionFlags and C.SELECTION_FLAG_FORCED) != 0
-                                langOk && (!chosen.isForced || forcedFlag || fmt.label.orEmpty().contains("forced", ignoreCase = true))
-                            } ?: textGroups.firstOrNull { grp ->
-                                SubtitleTrackSelector.languagesMatch(grp.getTrackFormat(0).language, chosen.language)
-                            }
+                            val matchGroup = findTextGroupForTrack(chosen, textGroups)
                             if (matchGroup != null) {
                                 player.trackSelectionParameters = player.trackSelectionParameters
                                     .buildUpon()
@@ -579,6 +613,13 @@ fun PlayerScreen(
         }
         val opt = state.sleepTimerOption
         if (opt == SleepTimerOption.OFF) {
+            if (sleepTimerJustFired) {
+                // Keep the "reached" HUD up instead of following it with "cancelled".
+                sleepTimerJustFired = false
+                delay(4000L)
+                sleepTimerHudText = null
+                return@LaunchedEffect
+            }
             sleepTimerHudText = strings.sleepTimerHudCancelled
             delay(2200L)
             sleepTimerHudText = null
@@ -595,9 +636,12 @@ fun PlayerScreen(
         val endMs = state.sleepTimerEndMs ?: return@LaunchedEffect
         val remaining = (endMs - System.currentTimeMillis()).coerceAtLeast(0L)
         delay(remaining)
-        player.pause()
+        currentPlayer.pause()
         osdVisible = true
+        // Falling asleep must not roll into the next episode once the countdown effect restarts.
+        viewModel.cancelAutoplayNext()
         sleepTimerHudText = strings.sleepTimerHudTriggered
+        sleepTimerJustFired = true
         viewModel.clearSleepTimer()
         delay(4000L)
         sleepTimerHudText = null
@@ -646,7 +690,7 @@ fun PlayerScreen(
     // Declared before the media-setup effect: with Jellyfin's frame-rate metadata the display mode
     // switch (an HDMI resync of 1-3 s on most TVs) is requested before prepare() and overlaps with
     // initial buffering, instead of blanking the screen right after the first frame.
-    LaunchedEffect(state.frameRateMatchMode, state.session?.isTrailer, detectedVideoFrameRate, state.videoFrameRateHint) {
+    LaunchedEffect(player, state.frameRateMatchMode, state.session?.isTrailer, detectedVideoFrameRate, state.videoFrameRateHint) {
         val isTrailer = state.session?.isTrailer == true
         val mode = state.frameRateMatchMode
         val videoFrameRate = detectedVideoFrameRate.takeIf { it > 1f } ?: state.videoFrameRateHint ?: 0f
@@ -693,6 +737,7 @@ fun PlayerScreen(
         activeVideoDecoderName = null
         activeAudioDecoderName = null
         initialSubtitleAppliedForPlaySession = null
+        initialAudioAppliedForPlaySession = null
         autoSkipUndoPrompt = null
         // Drop the previous item's position so auto-skip / up-next don't evaluate the new item
         // against stale values before the progress loop catches up.
@@ -756,16 +801,23 @@ fun PlayerScreen(
             player.setMediaItem(mediaItemBuilder.build())
         }
 
-        // Apply profile preferred audio & subtitle defaults
+        // Apply profile preferred audio & subtitle defaults. Track overrides belong to the previous
+        // stream; the explicit picks for this one are applied again once its tracks are known.
         val paramsBuilder = player.trackSelectionParameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
         state.preferredAudioLang?.takeIf { it.isNotBlank() }?.let { lang ->
             paramsBuilder.setPreferredAudioLanguage(lang)
         }
-        if (state.burnInSubtitleIndex != null || state.subtitleSelectionMode == SubtitleSelectionMode.NONE || state.preferredSubtitleLang == "off") {
+        if (state.burnInSubtitleIndex != null ||
+            state.preselectedSubtitleStreamIndex == PlayerTrackSelection.SUBTITLE_OFF ||
+            (state.preselectedSubtitleStreamIndex == null &&
+                (state.subtitleSelectionMode == SubtitleSelectionMode.NONE || state.preferredSubtitleLang == "off"))
+        ) {
             paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
         } else {
             paramsBuilder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-            state.preferredSubtitleLang?.takeIf { it.isNotBlank() }?.let { subLang ->
+            state.preferredSubtitleLang?.takeIf { it.isNotBlank() && it != "off" }?.let { subLang ->
                 paramsBuilder.setPreferredTextLanguage(subLang)
             }
         }
@@ -785,14 +837,14 @@ fun PlayerScreen(
         viewModel.reportStart(resumeMs, buildLiveReportState())
     }
 
-    LaunchedEffect(state.selectedSpeed) {
+    LaunchedEffect(player, state.selectedSpeed) {
         player.setPlaybackSpeed(state.selectedSpeed)
     }
 
     // Track position & report progress to Jellyfin every 10s.
     // currentPosMs is only read in narrowly scoped places (derived flags, the OSD seek bar, effects)
     // so this 2 Hz update doesn't recompose the whole screen.
-    LaunchedEffect(state.session?.itemId) {
+    LaunchedEffect(player, state.session?.itemId) {
         var lastReportAt = System.currentTimeMillis()
         while (true) {
             isPlaying = player.isPlaying
@@ -853,7 +905,7 @@ fun PlayerScreen(
 
     // Loop-safe Auto-Skip Recap & Intro. Evaluated on position updates (not as a composition key),
     // reading the latest session so markers that arrive after playback started are honoured.
-    LaunchedEffect(session?.itemId) {
+    LaunchedEffect(player, session?.itemId) {
         snapshotFlow { currentPosMs }.collect {
             val activeSession = state.session ?: return@collect
             // Only evaluate once the new item is actually loaded and ready; right after a session switch
@@ -920,15 +972,18 @@ fun PlayerScreen(
         }
     }
 
-    // nextEpisodeId arrives asynchronously after playback started; until then this stays false.
+    // nextEpisodeId arrives asynchronously after playback started; until then this stays false
+    // (unless a queue — Play All / shuffle / playlist — has a next entry, which then wins).
     val showNextEpisode by remember {
         derivedStateOf {
             val s = state.session
             val pos = currentPosMs
             val dur = durationMs
+            val hasNext = s != null && !s.isCinemaIntro && !s.isTrailer &&
+                (state.hasQueueNext || s.nextEpisodeId != null)
             // Last 25 s, or the last fifth for short episodes (a fixed 25 s window with a 60 s
             // minimum never showed Up Next for short-form shows), or once playback has ended.
-            s?.nextEpisodeId != null && (
+            s != null && hasNext && (
                 (s.creditsStartTicks != null && pos * 10_000L >= s.creditsStartTicks) ||
                     (dur > 0L && pos >= dur - minOf(25_000L, dur / 5)) ||
                     playbackEnded
@@ -946,17 +1001,22 @@ fun PlayerScreen(
 
     // Keyed on isLoading so the countdown stops once "Play Now"/Next already started loading the
     // next episode (otherwise it fired a second stopped report + loadItem).
-    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading, state.sleepTimerOption) {
-        val nextId = state.session?.nextEpisodeId
+    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading, state.sleepTimerOption, state.hasQueueNext) {
+        val hasNext = state.hasQueueNext || state.session?.nextEpisodeId != null
         val blockedBySleepEnd = state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO
-        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && !blockedBySleepEnd && nextId != null) {
+        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && !blockedBySleepEnd && hasNext) {
             nextEpisodeCountdown = 5
             while (nextEpisodeCountdown > 0) {
                 delay(1000L)
-                nextEpisodeCountdown--
+                // Paused (by the user, or the sleep timer): the countdown waits too.
+                if (currentPlayer.playWhenReady) nextEpisodeCountdown--
             }
-            viewModel.reportStopped(currentPosMs, buildLiveReportState())
-            viewModel.loadItem(nextId, isAutoplayAdvance = true, nextTitleForPrompt = state.session?.nextEpisodeTitle)
+            // The queue's next entry when a queue is active, otherwise the next episode.
+            viewModel.playNextInQueueOrEpisode(
+                currentPosMs = currentPosMs,
+                reportState = buildLiveReportState(),
+                fromAutoplay = true
+            )
         }
     }
 
@@ -971,8 +1031,10 @@ fun PlayerScreen(
             return@LaunchedEffect
         }
         if (state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO) {
-            player.pause()
+            currentPlayer.pause()
             osdVisible = true
+            viewModel.cancelAutoplayNext()
+            sleepTimerJustFired = true
             viewModel.clearSleepTimer()
             sleepTimerHudText = strings.sleepTimerHudTriggered
             delay(4000L)
@@ -981,7 +1043,7 @@ fun PlayerScreen(
         }
         val hasQueueNext = state.hasQueueNext
         val nextId = s.nextEpisodeId
-        if (hasQueueNext) {
+        if (hasQueueNext && !state.autoplayCancelled) {
             delay(400L)
             if (state.isLoading || state.showStillWatchingPrompt) return@LaunchedEffect
             viewModel.playNextInQueueOrEpisode(
@@ -989,18 +1051,16 @@ fun PlayerScreen(
                 reportState = buildLiveReportState(),
                 fromAutoplay = true
             )
-        } else if (nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
+        } else if (!hasQueueNext && nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
             delay(400L) // let an in-flight Up Next countdown win if it's about to fire
             if (state.isLoading || state.showStillWatchingPrompt) return@LaunchedEffect
             viewModel.reportStopped(durationMs.coerceAtLeast(currentPosMs), buildLiveReportState())
             viewModel.loadItem(nextId, isAutoplayAdvance = true, nextTitleForPrompt = s.nextEpisodeTitle)
-        } else if (nextId == null || !state.autoplayNextEpisode || state.autoplayCancelled) {
-            // Keep the Up Next card up when autoplay is off/cancelled but a next episode exists;
+        } else if (!hasQueueNext && nextId == null) {
+            // Keep the Up Next card up when autoplay is off/cancelled but something comes next;
             // only leave automatically when there's nothing to go to next.
-            if (nextId == null) {
-                delay(1500L)
-                if (playbackEnded) exitPlayer()
-            }
+            delay(1500L)
+            if (playbackEnded) exitPlayer()
         }
     }
 
@@ -1150,6 +1210,9 @@ fun PlayerScreen(
                     lastInteractionTick.longValue += 1
                     // Loading spinner / error screen: let the Retry/Back buttons get normal key handling.
                     if (!playerSurfaceActive) return@onPreviewKeyEvent false
+                    // "Still watching?" prompt: its buttons get OK / D-pad, and the paused video
+                    // must not seek or toggle the OSD underneath it.
+                    if (state.showStillWatchingPrompt) return@onPreviewKeyEvent false
                     when (keyEvent.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                             togglePlayPause()
@@ -1184,14 +1247,14 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_CHANNEL_UP -> {
                             if (session?.isLiveTv == true && activeSheet == null) {
-                                viewModel.surfChannel(+1)
+                                viewModel.surfChannel(+1, player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
                                 osdVisible = true
                                 true
                             } else false
                         }
                         KeyEvent.KEYCODE_CHANNEL_DOWN -> {
                             if (session?.isLiveTv == true && activeSheet == null) {
-                                viewModel.surfChannel(-1)
+                                viewModel.surfChannel(-1, player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
                                 osdVisible = true
                                 true
                             } else false
@@ -1201,7 +1264,7 @@ fun PlayerScreen(
                             if (activeSheet != null || showEpisodesDrawer) false
                             else if (!osdVisible && session?.isLiveTv == true && state.liveTvChannels.size > 1) {
                                 val delta = if (keyEvent.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) +1 else -1
-                                viewModel.surfChannel(delta)
+                                viewModel.surfChannel(delta, player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
                                 osdVisible = true
                                 true
                             } else if (!osdVisible) {
@@ -1451,14 +1514,15 @@ fun PlayerScreen(
                 }
 
                 // Next Episode Overlay Card with Auto-Play Countdown
-                if (showNextEpisode && session?.nextEpisodeId != null && !showEpisodesDrawer && activeSheet == null && !state.showStillWatchingPrompt) {
+                if (showNextEpisode && session != null && !showEpisodesDrawer && activeSheet == null && !state.showStillWatchingPrompt) {
+                    // An active queue decides what comes next (and its title), not the series order.
+                    val upNextTitle = if (state.hasQueueNext) state.queueNextTitle else session.nextEpisodeTitle
                     NextEpisodeOverlayCard(
-                        nextEpisodeTitle = session.nextEpisodeTitle ?: strings.playerNextEpisode,
+                        nextEpisodeTitle = upNextTitle ?: strings.playerNextEpisode,
                         autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled && state.sleepTimerOption != SleepTimerOption.END_OF_VIDEO,
                         countdownSeconds = nextEpisodeCountdown,
                         onPlayNow = {
-                            viewModel.reportStopped(currentPosMs, buildLiveReportState())
-                            viewModel.loadItem(session.nextEpisodeId)
+                            viewModel.playNextInQueueOrEpisode(currentPosMs, buildLiveReportState())
                         },
                         onWatchCredits = viewModel::cancelAutoplayNext,
                         modifier = Modifier
@@ -1826,6 +1890,10 @@ fun PlayerScreen(
                             activeSheet = null
                             viewModel.selectBurnInSubtitleTrack(idx, currentPosMs)
                         },
+                        onLeaveBurnInForTextTrack = { textIdx ->
+                            activeSheet = null
+                            viewModel.selectBurnInSubtitleTrack(null, currentPosMs, textSubtitleIndex = textIdx)
+                        },
                         onSearchRemoteSubtitles = viewModel::searchRemoteSubtitles,
                         onDownloadRemoteSubtitle = { subId ->
                             activeSheet = null
@@ -1908,7 +1976,7 @@ fun PlayerScreen(
                         currentChannelId = session?.itemId,
                         onSelectChannel = { channel ->
                             activeSheet = null
-                            viewModel.tuneChannel(channel)
+                            viewModel.tuneChannel(channel, player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
                         },
                         onClose = { activeSheet = null }
                     )
@@ -2809,6 +2877,8 @@ private fun CaptionsSideSheet(
     onSelectAssMode: (AssSubtitleMode) -> Unit,
     onSelectExternalAssTrack: (ExternalSubtitleFile?) -> Unit,
     onSelectBurnInSubtitle: (Int?) -> Unit,
+    /** Stop burning in and show this Jellyfin subtitle (null: automatic choice) instead. */
+    onLeaveBurnInForTextTrack: (Int?) -> Unit,
     onSearchRemoteSubtitles: (String) -> Unit,
     onDownloadRemoteSubtitle: (String) -> Unit,
     onClose: () -> Unit
@@ -2924,7 +2994,12 @@ private fun CaptionsSideSheet(
                         // The styled ASS overlay hides ExoPlayer's SubtitleView; drop it so the
                         // chosen track is actually visible.
                         if (activeAssSubtitleIndex != null) onSelectExternalAssTrack(null)
-                        if (burnInSubtitleIndex != null) onSelectBurnInSubtitle(null)
+                        // Leaving burn-in reloads the stream: carry this pick over to it.
+                        if (burnInSubtitleIndex != null) {
+                            onLeaveBurnInForTextTrack(
+                                matchJellyfinSubtitleTrack(format, session?.subtitleTracks.orEmpty())?.index
+                            )
+                        }
                     }
                 )
             }
@@ -3250,6 +3325,44 @@ private fun AudioSideSheet(
             )
         }
     }
+}
+
+private fun isForcedTextFormat(fmt: androidx.media3.common.Format): Boolean =
+    (fmt.selectionFlags and C.SELECTION_FLAG_FORCED) != 0 || fmt.label.orEmpty().contains("forced", ignoreCase = true)
+
+private fun trackLabelMatches(track: TrackOption, fmt: androidx.media3.common.Format): Boolean {
+    val label = fmt.label?.takeIf { it.isNotBlank() } ?: return false
+    return track.label.contains(label, ignoreCase = true)
+}
+
+/**
+ * The Jellyfin subtitle stream an ExoPlayer text format belongs to: same language, then the same
+ * forced flag and label, so a forced track isn't mistaken for the full one (or the other way round).
+ */
+private fun matchJellyfinSubtitleTrack(fmt: androidx.media3.common.Format, tracks: List<TrackOption>): TrackOption? {
+    val forced = isForcedTextFormat(fmt)
+    val sameLang = tracks.filter { SubtitleTrackSelector.languagesMatch(it.language, fmt.language) }
+    return sameLang.firstOrNull { it.isForced == forced && trackLabelMatches(it, fmt) }
+        ?: sameLang.firstOrNull { trackLabelMatches(it, fmt) }
+        ?: sameLang.firstOrNull { it.isForced == forced }
+        ?: sameLang.firstOrNull()
+        ?: tracks.firstOrNull { trackLabelMatches(it, fmt) }
+}
+
+/**
+ * The text group to select for the Jellyfin subtitle [chosen]. Matching by language alone could
+ * pick a forced-only group listed before the full track, so forced flag and label come first.
+ */
+private fun findTextGroupForTrack(chosen: TrackOption, textGroups: List<Tracks.Group>): Tracks.Group? {
+    val sameLang = textGroups.filter {
+        SubtitleTrackSelector.languagesMatch(it.getTrackFormat(0).language, chosen.language)
+    }
+    val sameForced = sameLang.filter { isForcedTextFormat(it.getTrackFormat(0)) == chosen.isForced }
+    return sameForced.firstOrNull { trackLabelMatches(chosen, it.getTrackFormat(0)) }
+        ?: sameForced.firstOrNull()
+        ?: sameLang.firstOrNull { trackLabelMatches(chosen, it.getTrackFormat(0)) }
+        ?: sameLang.firstOrNull()
+        ?: textGroups.firstOrNull { trackLabelMatches(chosen, it.getTrackFormat(0)) }
 }
 
 private fun formatServerAudioTrackLabel(track: TrackOption, strings: UiStrings): String {

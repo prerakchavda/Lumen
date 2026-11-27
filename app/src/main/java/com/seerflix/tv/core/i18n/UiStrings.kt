@@ -182,6 +182,38 @@ data class UiStrings(
         internal set
     var commonMinutesShort: String = "%dm"
         internal set
+    var commonUnknownError: String = "Unknown error"
+        internal set
+    var commonError: String = "Error"
+        internal set
+    var commonNoActiveProfile: String = "No active profile selected."
+        internal set
+    var libraryLoadFailed: String = "Couldn't load the library"
+        internal set
+    var watchedUpdateFailed: String = "Couldn't update watched status: %s"
+        internal set
+    var myListUpdateFailed: String = "Couldn't update My List: %s"
+        internal set
+    var requestNeedsSeerr: String = "Connect Seerr in Server Settings to submit requests."
+        internal set
+    var requestsLockedKids: String = "Requests are locked in Kids Mode for this profile."
+        internal set
+    var requestFailed: String = "Request failed: %s"
+        internal set
+    var requestedTitleFeedback: String = "Requested \"%s\""
+        internal set
+    var requestedTitleQualityFeedback: String = "Requested \"%1\$s\" (%2\$s)"
+        internal set
+    var requestedMissingOne: String = "Requested 1 missing title"
+        internal set
+    var requestedMissingMany: String = "Requested %d missing titles"
+        internal set
+    var requestedMissingInOne: String = "Requested 1 missing title in %s"
+        internal set
+    var requestedMissingInMany: String = "Requested %1\$d missing titles in %2\$s"
+        internal set
+    var requestsSubmitFailed: String = "Unable to submit requests"
+        internal set
 
     // ---- Details screen (0.7) ----
     var detailsTitleNotFound: String = "Title not found"
@@ -262,6 +294,42 @@ data class UiStrings(
         internal set
     var detailsSubmitIssue: String = "Submit Issue"
         internal set
+    var detailsLoadFailed: String = "Failed to load details"
+        internal set
+    var detailsBlockedForProfile: String = "This title isn't available on this profile."
+        internal set
+    var detailsRequestSent: String = "Request sent to Seerr!"
+        internal set
+    var detailsRequestCancelled: String = "Request cancelled"
+        internal set
+    var detailsCancelFailed: String = "Cancel failed: %s"
+        internal set
+    var detailsIssueNeedsSeerr: String = "Issue reporting requires Seerr."
+        internal set
+    var detailsIssueReported: String = "Issue reported to Seerr"
+        internal set
+    var detailsIssueFailed: String = "Failed to report issue: %s"
+        internal set
+    var detailsMarkedWatched: String = "Marked as watched"
+        internal set
+    var detailsMarkedUnwatched: String = "Marked as unwatched"
+        internal set
+    var detailsOpeningExternalPlayer: String = "Opening external player..."
+        internal set
+    var detailsNoExternalPlayer: String = "No compatible external video player installed"
+        internal set
+    var detailsExternalPlayerFailed: String = "External player failed: %s"
+        internal set
+    var detailsAddedToMyList: String = "Added to My List"
+        internal set
+    var detailsRemovedFromMyList: String = "Removed from My List"
+        internal set
+    var detailsReminderAdded: String = "Reminder set for release"
+        internal set
+    var detailsReminderRemoved: String = "Reminder removed"
+        internal set
+    var detailsRemovedFromContinue: String = "Removed from Continue Watching"
+        internal set
     var issueVideo: String = "Video Problem"
         internal set
     var issueAudio: String = "Audio Sync / Missing"
@@ -336,6 +404,22 @@ data class UiStrings(
         internal set
     var homeDismiss: String = "Dismiss"
         internal set
+    var homeLoadFailed: String = "Failed to load catalog"
+        internal set
+    var homePresetSwitched: String = "Switched UI preset to %s"
+        internal set
+    var homeLayoutSaved: String = "Saved Home layout customization"
+        internal set
+    var homeMarkedWatched: String = "Marked \"%s\" as Watched"
+        internal set
+    var homeMarkedUnwatched: String = "Marked \"%s\" as Unwatched"
+        internal set
+    var homeAddedToMyList: String = "Added \"%s\" to My List"
+        internal set
+    var homeRemovedFromMyList: String = "Removed \"%s\" from My List"
+        internal set
+    var homeContinueRemoveFailed: String = "Couldn't remove from Continue Watching: %s"
+        internal set
     var genreAll: String = "All Genres"
         internal set
     var genreAction: String = "Action & Adventure"
@@ -385,6 +469,27 @@ data class UiStrings(
     var badgeNewSeason: String = "New Season"
         internal set
     var badgeNewEpisode: String = "New Episode"
+        internal set
+    var upcomingTonight: String = "Tonight"
+        internal set
+    var upcomingToday: String = "Today"
+        internal set
+    var upcomingTomorrow: String = "Tomorrow"
+        internal set
+    var upcomingInDays: String = "In %d days"
+        internal set
+    /** java.time pattern for a short month + day release date (no year). */
+    var upcomingDatePattern: String = "MMM d"
+        internal set
+    var upcomingNowInLibrary: String = "Now in Library"
+        internal set
+    var upcomingDigital: String = "Digital"
+        internal set
+    var upcomingDisc: String = "DVD / Blu-ray"
+        internal set
+    var collectionOwnedOfTotal: String = "%1\$d of %2\$d in Library"
+        internal set
+    var collectionOwnedCount: String = "%d in Library"
         internal set
 
     // ---- Live TV guide (0.7) ----
@@ -450,6 +555,22 @@ data class UiStrings(
         internal set
     var syncPlayJoin: String = "Join"
         internal set
+    var syncPlayStarted: String = "Started SyncPlay room: %s"
+        internal set
+    var syncPlayUnavailable: String = "SyncPlay unavailable: %s"
+        internal set
+    var syncPlayCheckJellyfin: String = "Check Jellyfin"
+        internal set
+    var syncPlayJoined: String = "Joined SyncPlay: %s"
+        internal set
+    var syncPlayRoomFallback: String = "Room"
+        internal set
+    var syncPlayJoinFailed: String = "Could not join SyncPlay: %s"
+        internal set
+    var syncPlayLeft: String = "Left SyncPlay room"
+        internal set
+    var syncPlayLeaveFailed: String = "Could not leave SyncPlay: %s"
+        internal set
 
     // ---- App update dialog (0.7) ----
     var updateAvailable: String = "Lumen %s Available"
@@ -473,6 +594,10 @@ data class UiStrings(
     var updateReadyHint: String = "Update downloaded. Press Install Update if the Android installer didn't open."
         internal set
     var updateFailedPrefix: String = "Update failed: %s"
+        internal set
+    var updateDownloadFailed: String = "Download failed"
+        internal set
+    var updateInstallerUnavailable: String = "Could not open Android package installer."
         internal set
 
     // ---- Player (0.7) ----
@@ -678,6 +803,20 @@ data class UiStrings(
         internal set
     var profileAdd: String = "Add Profile"
         internal set
+    var profilePinIncorrect: String = "Incorrect PIN. Try again."
+        internal set
+    var profilePinLockedOut: String = "Too many incorrect attempts. Try again in %ds."
+        internal set
+    var profileInvalidCredentials: String = "Invalid Jellyfin username or password."
+        internal set
+    var profileSignInForbidden: String = "Sign-in forbidden (HTTP 403). Check account permissions."
+        internal set
+    var profileSignInFailed: String = "Sign-in failed"
+        internal set
+    var profileQuickConnectDisabled: String = "Quick Connect is not enabled on this server — sign in with your password below."
+        internal set
+    var profileQuickConnectExpired: String = "Quick Connect code expired or the server stopped responding — sign in with your password, or switch back to Quick Connect for a new code."
+        internal set
 
     // ---- UI presets (0.7) ----
     var presetPickerTitle: String = "Appearance & UI Preset"
@@ -708,6 +847,16 @@ data class UiStrings(
         internal set
     var requestsFilterAvailable: String = "Available"
         internal set
+    var requestsLoadFailed: String = "Failed to load requests"
+        internal set
+    var requestsApproved: String = "Request #%d approved"
+        internal set
+    var requestsDeclined: String = "Request #%d declined"
+        internal set
+    var requestsApproveFailed: String = "Approve failed"
+        internal set
+    var requestsDeclineFailed: String = "Decline failed"
+        internal set
 
     // ---- Search screen (0.7) ----
     var searchVoicePrompt: String = "Search movies, TV shows, or actors"
@@ -733,6 +882,8 @@ data class UiStrings(
     var searchNoResults: String = "No results found for \"%s\""
         internal set
     var searchPeople: String = "People"
+        internal set
+    var searchFilmographyFallback: String = "Filmography"
         internal set
 
     // ---- Setup screen (0.7) ----
@@ -783,6 +934,26 @@ data class UiStrings(
     var setupScanning: String = "Scanning…"
         internal set
     var setupScan: String = "Scan"
+        internal set
+    var setupCompanionReceived: String = "Received settings from phone companion! Ready to connect."
+        internal set
+    var setupJellyfinOnlyEnabled: String = "Jellyfin-Only Mode enabled (Seerr requests optional)"
+        internal set
+    var setupFoundServers: String = "Found %d Jellyfin server(s) on your network."
+        internal set
+    var setupSelectedServer: String = "Selected %1\$s (%2\$s)"
+        internal set
+    var setupNeedJellyfinUrl: String = "Please enter a Jellyfin URL or pick a discovered server."
+        internal set
+    var setupNeedSeerrUrl: String = "Please enter a Seerr URL, or enable Jellyfin-Only Mode."
+        internal set
+    var setupTesting: String = "Testing server connections..."
+        internal set
+    var setupConnected: String = "Connected to %1\$s (%2\$s)"
+        internal set
+    var setupConnectionFailed: String = "Connection failed: %s"
+        internal set
+    var setupCheckUrls: String = "Check URLs and network"
         internal set
 
     // ---- Hero banner & cards (0.7) ----
@@ -1004,6 +1175,111 @@ data class UiStrings(
     // ---- Phase 2: Next Up, Libraries, Playlists, Queues & Details Parity (0.9.3) ----
     var rowNextUp: String = "Next Up"
         internal set
+    // Home row titles, resolved by row id on screen (the catalog builds English titles).
+    var rowContinueWatching: String = "Continue Watching"
+        internal set
+    var rowReadyToWatch: String = "Ready to Watch • Your Reminders"
+        internal set
+    var rowGemsForYou: String = "Gems for You"
+        internal set
+    var rowTodaysTopPicks: String = "Today's Top Picks for You"
+        internal set
+    var rowAwardWinningTv: String = "Award-Winning TV Shows"
+        internal set
+    var rowTop10TvToday: String = "Top 10 TV Shows Today"
+        internal set
+    var rowTop10MoviesToday: String = "Top 10 Movies Today"
+        internal set
+    /** %s = country name. */
+    var rowTop10TvIn: String = "Top 10 TV Shows in %s Today"
+        internal set
+    /** %s = country name. */
+    var rowTop10MoviesIn: String = "Top 10 Movies in %s Today"
+        internal set
+    var rowBecauseYouWatched: String = "Because you watched %s"
+        internal set
+    var rowSeasonalRomance: String = "Date Night & Romance"
+        internal set
+    var rowSeasonalSummer: String = "Summer Blockbusters"
+        internal set
+    var rowSeasonalSpooky: String = "Spooky Season Picks"
+        internal set
+    var rowSeasonalAutumn: String = "Cozy Autumn & Thanksgiving Picks"
+        internal set
+    var rowSeasonalHoliday: String = "Holiday Favorites"
+        internal set
+    var rowSeasonalAcclaimed: String = "Critically Acclaimed Films"
+        internal set
+    var rowNewOnDigital: String = "New on Digital & Streaming"
+        internal set
+    var rowRecentlyAdded: String = "Recently Added"
+        internal set
+    var rowNeedALaugh: String = "Need a Good Laugh?"
+        internal set
+    var rowAnimationCriticsLove: String = "Animation Critics Love"
+        internal set
+    var rowBlockbusterMovies: String = "Blockbuster Movies"
+        internal set
+    var rowMovieComedies: String = "Comedies"
+        internal set
+    var rowMovieActionAdventure: String = "Action & Adventure Movies"
+        internal set
+    var rowMovieHorror: String = "Horror Movies"
+        internal set
+    var rowMovieDrama: String = "Drama Movies"
+        internal set
+    var rowMovieFamilyAnimation: String = "Family Animation"
+        internal set
+    var rowMovieSciFi: String = "Sci-Fi Movies"
+        internal set
+    var rowAwardWinningTvDramas: String = "Award-Winning TV Dramas"
+        internal set
+    var rowThirtyMinuteHits: String = "In a Hurry? Try These 30-Minute Hits"
+        internal set
+    var rowImaginativeTv: String = "Imaginative TV Shows"
+        internal set
+    var rowFamiliarTvFavorites: String = "Familiar TV Favorites"
+        internal set
+    var rowTvComedies: String = "TV Comedies"
+        internal set
+    var rowNewOnLumen: String = "New on Lumen"
+        internal set
+    var rowTvCrime: String = "Crime TV Shows"
+        internal set
+    var rowAiringThisWeek: String = "New Episodes Coming This Week"
+        internal set
+    var rowComingToStreamingDvd: String = "Coming Soon to Streaming & DVD"
+        internal set
+    var rowComingSoonTv: String = "Coming Soon • TV Shows"
+        internal set
+    var rowWatchItAgain: String = "Watch It Again"
+        internal set
+    var rowLibraryMovies: String = "Movies in Your Library"
+        internal set
+    var rowLibraryShows: String = "TV Shows in Your Library"
+        internal set
+    /** %s = genre name. */
+    var rowGenreInLibrary: String = "In Your Library • %s"
+        internal set
+    var rowGenreTop10Movies: String = "Top 10 %s Movies"
+        internal set
+    var rowGenreMoreMovies: String = "More %s Movies"
+        internal set
+    var rowGenreTop10Tv: String = "Top 10 %s TV Shows"
+        internal set
+    var rowGenreMoreTv: String = "More %s TV Shows"
+        internal set
+    /** %s = streaming service name. */
+    var rowTop10OnService: String = "Top 10 on %s"
+        internal set
+    var rowTrendingNow: String = "Trending Now"
+        internal set
+    var rowJustAddedToServer: String = "Just Added to Your Server"
+        internal set
+    var rowSavedShows: String = "Saved TV Shows"
+        internal set
+    var rowSavedMovies: String = "Saved Movies"
+        internal set
     var cardUpNext: String = "Up Next"
         internal set
     var settingsMergeNextUpTitle: String = "Merge Next Up into Continue Watching"
@@ -1070,6 +1346,15 @@ data class UiStrings(
         internal set
     var mediaInfoStreams: String = "Streams"
         internal set
+    var mediaInfoStreamVideo: String = "Video"
+        internal set
+    var mediaInfoStreamAudio: String = "Audio"
+        internal set
+    var mediaInfoStreamSubtitle: String = "Subtitle"
+        internal set
+    /** Season number, episode number, episode name. */
+    var episodeCodeTitle: String = "S%1\$d E%2\$d · %3\$s"
+        internal set
     var actionTrackPicker: String = "Audio & Subtitles"
         internal set
     var trackPickerTitle: String = "Select Audio & Subtitles"
@@ -1087,6 +1372,14 @@ data class UiStrings(
     var deleteConfirmStep2: String = "Confirm Permanent Delete"
         internal set
     var deleteSuccessFeedback: String = "Deleted from server"
+        internal set
+    var deleteFailed: String = "Failed to delete item"
+        internal set
+    var playlistAddFailed: String = "Failed to add to playlist"
+        internal set
+    var playlistCreateFailed: String = "Failed to create playlist"
+        internal set
+    var playlistWrongServer: String = "This title isn't on the server that holds your playlists."
         internal set
 
     // Phase 3 (0.9.3): Live TV EPG Grid, DVR options, Channel Switcher, OLED Screensaver, Cinema Intros & Theme Songs
@@ -1320,6 +1613,22 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         commonRequested = "Solicitado"
         commonMatchPercent = "%d%% de coincidencia"
         commonMinutesShort = "%d min"
+        commonUnknownError = "Error desconocido"
+        commonError = "Error"
+        commonNoActiveProfile = "No hay ningún perfil activo."
+        libraryLoadFailed = "No se pudo cargar la biblioteca"
+        watchedUpdateFailed = "No se pudo actualizar el estado de visto: %s"
+        myListUpdateFailed = "No se pudo actualizar Mi Lista: %s"
+        requestNeedsSeerr = "Conecta Seerr en la configuración del servidor para enviar solicitudes."
+        requestsLockedKids = "Las solicitudes están bloqueadas en el modo infantil de este perfil."
+        requestFailed = "La solicitud falló: %s"
+        requestedTitleFeedback = "Solicitado: \"%s\""
+        requestedTitleQualityFeedback = "Solicitado: \"%1\$s\" (%2\$s)"
+        requestedMissingOne = "Se solicitó 1 título que faltaba"
+        requestedMissingMany = "Se solicitaron %d títulos que faltaban"
+        requestedMissingInOne = "Se solicitó 1 título que faltaba de %s"
+        requestedMissingInMany = "Se solicitaron %1\$d títulos que faltaban de %2\$s"
+        requestsSubmitFailed = "No se pudieron enviar las solicitudes"
 
         // Details screen (0.8)
         detailsTitleNotFound = "Título no encontrado"
@@ -1361,6 +1670,24 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         detailsIssueHint = "Describe el problema de reproducción o subtítulos (opcional)"
         detailsReporting = "Enviando..."
         detailsSubmitIssue = "Enviar problema"
+        detailsLoadFailed = "No se pudieron cargar los detalles"
+        detailsBlockedForProfile = "Este título no está disponible en este perfil."
+        detailsRequestSent = "¡Solicitud enviada a Seerr!"
+        detailsRequestCancelled = "Solicitud cancelada"
+        detailsCancelFailed = "No se pudo cancelar: %s"
+        detailsIssueNeedsSeerr = "Para informar de problemas se necesita Seerr."
+        detailsIssueReported = "Problema notificado a Seerr"
+        detailsIssueFailed = "No se pudo informar del problema: %s"
+        detailsMarkedWatched = "Marcado como visto"
+        detailsMarkedUnwatched = "Marcado como no visto"
+        detailsOpeningExternalPlayer = "Abriendo el reproductor externo..."
+        detailsNoExternalPlayer = "No hay ningún reproductor de vídeo externo compatible instalado"
+        detailsExternalPlayerFailed = "Error del reproductor externo: %s"
+        detailsAddedToMyList = "Añadido a Mi Lista"
+        detailsRemovedFromMyList = "Quitado de Mi Lista"
+        detailsReminderAdded = "Recordatorio activado para el estreno"
+        detailsReminderRemoved = "Recordatorio eliminado"
+        detailsRemovedFromContinue = "Quitado de Seguir viendo"
         issueVideo = "Problema de vídeo"
         issueAudio = "Audio desfasado / ausente"
         issueSubtitle = "Subtítulos"
@@ -1399,6 +1726,14 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         homeJustArrived = "Recién llegado • %s"
         homeJustArrivedBody = "Tu solicitud de Seerr ya se descargó y está lista para ver."
         homeDismiss = "Descartar"
+        homeLoadFailed = "No se pudo cargar el catálogo"
+        homePresetSwitched = "Estilo de interfaz cambiado a %s"
+        homeLayoutSaved = "Diseño de Inicio guardado"
+        homeMarkedWatched = "\"%s\" marcado como visto"
+        homeMarkedUnwatched = "\"%s\" marcado como no visto"
+        homeAddedToMyList = "\"%s\" añadido a Mi Lista"
+        homeRemovedFromMyList = "\"%s\" quitado de Mi Lista"
+        homeContinueRemoveFailed = "No se pudo quitar de Seguir viendo: %s"
         genreAll = "Todos los géneros"
         genreAction = "Acción"
         genreComedy = "Comedia"
@@ -1424,6 +1759,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         badgeRecentlyAdded = "Recién añadido"
         badgeNewSeason = "Nueva temporada"
         badgeNewEpisode = "Nuevo episodio"
+        upcomingTonight = "Esta noche"
+        upcomingToday = "Hoy"
+        upcomingTomorrow = "Mañana"
+        upcomingInDays = "En %d días"
+        upcomingDatePattern = "d MMM"
+        upcomingNowInLibrary = "Ya en la biblioteca"
+        upcomingDigital = "Digital"
+        upcomingDisc = "DVD / Blu-ray"
+        collectionOwnedOfTotal = "%1\$d de %2\$d en la biblioteca"
+        collectionOwnedCount = "%d en la biblioteca"
 
         // Live TV guide (0.8)
         liveNoChannels = "No se encontraron canales de TV en vivo"
@@ -1459,6 +1804,14 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayNoRooms = "Aún no hay salas activas. ¡Crea una arriba y empieza a ver!"
         syncPlayParticipants = "%1\$d participante(s) • %2\$s"
         syncPlayJoin = "Unirse"
+        syncPlayStarted = "Sala de SyncPlay creada: %s"
+        syncPlayUnavailable = "SyncPlay no disponible: %s"
+        syncPlayCheckJellyfin = "Revisa Jellyfin"
+        syncPlayJoined = "Te has unido a SyncPlay: %s"
+        syncPlayRoomFallback = "Sala"
+        syncPlayJoinFailed = "No se pudo unir a SyncPlay: %s"
+        syncPlayLeft = "Has salido de la sala de SyncPlay"
+        syncPlayLeaveFailed = "No se pudo salir de SyncPlay: %s"
 
         // App update dialog (0.8)
         updateAvailable = "Lumen %s disponible"
@@ -1472,6 +1825,8 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         updatePermissionHint = "Activa \"Instalar apps desconocidas\" para Lumen en los ajustes del TV y vuelve aquí para instalar."
         updateReadyHint = "Actualización descargada. Pulsa Instalar actualización si no se abrió el instalador."
         updateFailedPrefix = "Error al actualizar: %s"
+        updateDownloadFailed = "Error en la descarga"
+        updateInstallerUnavailable = "No se pudo abrir el instalador de paquetes de Android."
 
         // Player (0.8)
         playerSubtitleSyncHud = "Sincronía de subtítulos: %s"
@@ -1576,6 +1931,13 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         profileEdit = "Editar perfil"
         profilePinProtected = "Protegido con PIN"
         profileAdd = "Añadir perfil"
+        profilePinIncorrect = "PIN incorrecto. Inténtalo de nuevo."
+        profilePinLockedOut = "Demasiados intentos fallidos. Vuelve a intentarlo en %d s."
+        profileInvalidCredentials = "Usuario o contraseña de Jellyfin incorrectos."
+        profileSignInForbidden = "Inicio de sesión denegado (HTTP 403). Revisa los permisos de la cuenta."
+        profileSignInFailed = "Error al iniciar sesión"
+        profileQuickConnectDisabled = "La conexión rápida no está activada en este servidor; inicia sesión con tu contraseña abajo."
+        profileQuickConnectExpired = "El código de conexión rápida caducó o el servidor dejó de responder; inicia sesión con tu contraseña o vuelve a la conexión rápida para obtener un código nuevo."
 
         // UI presets (0.8)
         presetPickerTitle = "Apariencia y estilo"
@@ -1593,6 +1955,11 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         requestsEmpty = "Aún no hay solicitudes aquí."
         requestsRequestedBy = "Solicitado por %1\$s • %2\$s"
         requestsFilterAvailable = "Disponible"
+        requestsLoadFailed = "No se pudieron cargar las solicitudes"
+        requestsApproved = "Solicitud n.º %d aprobada"
+        requestsDeclined = "Solicitud n.º %d rechazada"
+        requestsApproveFailed = "No se pudo aprobar"
+        requestsDeclineFailed = "No se pudo rechazar"
 
         // Search screen (0.8)
         searchVoicePrompt = "Busca películas, series o actores"
@@ -1607,6 +1974,7 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         searchNoMatches = "No se encontraron títulos."
         searchNoResults = "No hay resultados para \"%s\""
         searchPeople = "Personas"
+        searchFilmographyFallback = "Filmografía"
 
         // Setup screen (0.8)
         setupTitle = "Configuración del servidor"
@@ -1633,6 +2001,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         setupScanNetwork = "Buscar en la red"
         setupScanning = "Buscando…"
         setupScan = "Buscar"
+        setupCompanionReceived = "¡Ajustes recibidos desde el móvil! Listo para conectar."
+        setupJellyfinOnlyEnabled = "Modo solo Jellyfin activado (las solicitudes de Seerr son opcionales)"
+        setupFoundServers = "Se encontraron %d servidor(es) Jellyfin en tu red."
+        setupSelectedServer = "Seleccionado: %1\$s (%2\$s)"
+        setupNeedJellyfinUrl = "Introduce una URL de Jellyfin o elige un servidor encontrado."
+        setupNeedSeerrUrl = "Introduce una URL de Seerr o activa el modo solo Jellyfin."
+        setupTesting = "Probando las conexiones con los servidores..."
+        setupConnected = "Conectado a %1\$s (%2\$s)"
+        setupConnectionFailed = "Error de conexión: %s"
+        setupCheckUrls = "Revisa las URL y la red"
 
         // Hero banner & cards (0.8)
         heroFilm = "PELÍCULA"
@@ -1742,6 +2120,56 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsHomeBitrateTitle = "Límite de bitrate del servidor principal"
         // Phase 2
         rowNextUp = "A continuación"
+        rowContinueWatching = "Seguir viendo"
+        rowReadyToWatch = "Listo para ver • Tus recordatorios"
+        rowGemsForYou = "Joyas para ti"
+        rowTodaysTopPicks = "Lo mejor de hoy para ti"
+        rowAwardWinningTv = "Series premiadas"
+        rowTop10TvToday = "Top 10 series hoy"
+        rowTop10MoviesToday = "Top 10 películas hoy"
+        rowTop10TvIn = "Top 10 series hoy · %s"
+        rowTop10MoviesIn = "Top 10 películas hoy · %s"
+        rowBecauseYouWatched = "Porque viste %s"
+        rowSeasonalRomance = "Noche de cita y romance"
+        rowSeasonalSummer = "Taquillazos de verano"
+        rowSeasonalSpooky = "Para la temporada de miedo"
+        rowSeasonalAutumn = "Otoño acogedor y Acción de Gracias"
+        rowSeasonalHoliday = "Favoritas navideñas"
+        rowSeasonalAcclaimed = "Películas aclamadas por la crítica"
+        rowNewOnDigital = "Novedades en digital y streaming"
+        rowRecentlyAdded = "Añadido recientemente"
+        rowNeedALaugh = "¿Necesitas reírte?"
+        rowAnimationCriticsLove = "Animación aclamada por la crítica"
+        rowBlockbusterMovies = "Películas taquilleras"
+        rowMovieComedies = "Comedias"
+        rowMovieActionAdventure = "Películas de acción y aventura"
+        rowMovieHorror = "Películas de terror"
+        rowMovieDrama = "Películas dramáticas"
+        rowMovieFamilyAnimation = "Animación familiar"
+        rowMovieSciFi = "Películas de ciencia ficción"
+        rowAwardWinningTvDramas = "Series dramáticas premiadas"
+        rowThirtyMinuteHits = "¿Con prisa? Prueba estos éxitos de 30 minutos"
+        rowImaginativeTv = "Series imaginativas"
+        rowFamiliarTvFavorites = "Series favoritas de siempre"
+        rowTvComedies = "Series de comedia"
+        rowNewOnLumen = "Novedades en Lumen"
+        rowTvCrime = "Series policíacas"
+        rowAiringThisWeek = "Nuevos episodios esta semana"
+        rowComingToStreamingDvd = "Próximamente en streaming y DVD"
+        rowComingSoonTv = "Próximamente • Series"
+        rowWatchItAgain = "Volver a ver"
+        rowLibraryMovies = "Películas en tu biblioteca"
+        rowLibraryShows = "Series en tu biblioteca"
+        rowGenreInLibrary = "En tu biblioteca • %s"
+        rowGenreTop10Movies = "Top 10 películas · %s"
+        rowGenreMoreMovies = "Más películas · %s"
+        rowGenreTop10Tv = "Top 10 series · %s"
+        rowGenreMoreTv = "Más series · %s"
+        rowTop10OnService = "Top 10 en %s"
+        rowTrendingNow = "Tendencias ahora"
+        rowJustAddedToServer = "Recién añadido a tu servidor"
+        rowSavedShows = "Series guardadas"
+        rowSavedMovies = "Películas guardadas"
         cardUpNext = "Siguiente"
         settingsMergeNextUpTitle = "Combinar A continuación en Seguir viendo"
         settingsMergeNextUpDesc = "Muestra los próximos episodios junto a los títulos en progreso en lugar de una fila separada."
@@ -1775,6 +2203,10 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         mediaInfoSize = "Tamaño"
         mediaInfoBitrate = "Bitrate"
         mediaInfoStreams = "Pistas"
+        mediaInfoStreamVideo = "Vídeo"
+        mediaInfoStreamAudio = "Audio"
+        mediaInfoStreamSubtitle = "Subtítulos"
+        episodeCodeTitle = "T%1\$d E%2\$d · %3\$s"
         actionTrackPicker = "Audio y subtítulos"
         trackPickerTitle = "Seleccionar audio y subtítulos"
         trackPickerPlayWithSelection = "Reproducir con pistas seleccionadas"
@@ -1784,6 +2216,10 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         deleteConfirmStep1 = "Sí, quiero eliminar esto"
         deleteConfirmStep2 = "Confirmar eliminación permanente"
         deleteSuccessFeedback = "Eliminado del servidor"
+        deleteFailed = "No se pudo eliminar el elemento"
+        playlistAddFailed = "No se pudo añadir a la lista"
+        playlistCreateFailed = "No se pudo crear la lista"
+        playlistWrongServer = "Este título no está en el servidor que guarda tus listas."
         liveViewList = "Lista"
         liveViewGrid = "Guía EPG"
         liveFilterAll = "Todos"
@@ -1972,6 +2408,22 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         commonRequested = "Demandé"
         commonMatchPercent = "%d%% de correspondance"
         commonMinutesShort = "%d min"
+        commonUnknownError = "Erreur inconnue"
+        commonError = "Erreur"
+        commonNoActiveProfile = "Aucun profil actif."
+        libraryLoadFailed = "Impossible de charger la bibliothèque"
+        watchedUpdateFailed = "Impossible de mettre à jour le statut de visionnage : %s"
+        myListUpdateFailed = "Impossible de mettre à jour Ma Liste : %s"
+        requestNeedsSeerr = "Connectez Seerr dans les paramètres du serveur pour envoyer des demandes."
+        requestsLockedKids = "Les demandes sont verrouillées en mode enfant pour ce profil."
+        requestFailed = "Échec de la demande : %s"
+        requestedTitleFeedback = "Demande envoyée : « %s »"
+        requestedTitleQualityFeedback = "Demande envoyée : « %1\$s » (%2\$s)"
+        requestedMissingOne = "1 titre manquant demandé"
+        requestedMissingMany = "%d titres manquants demandés"
+        requestedMissingInOne = "1 titre manquant demandé dans %s"
+        requestedMissingInMany = "%1\$d titres manquants demandés dans %2\$s"
+        requestsSubmitFailed = "Impossible d'envoyer les demandes"
 
         // Details screen (0.8)
         detailsTitleNotFound = "Titre introuvable"
@@ -2013,6 +2465,24 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         detailsIssueHint = "Décrivez le problème de lecture ou de sous-titres (facultatif)"
         detailsReporting = "Envoi..."
         detailsSubmitIssue = "Signaler"
+        detailsLoadFailed = "Impossible de charger les détails"
+        detailsBlockedForProfile = "Ce titre n'est pas disponible sur ce profil."
+        detailsRequestSent = "Demande envoyée à Seerr !"
+        detailsRequestCancelled = "Demande annulée"
+        detailsCancelFailed = "Échec de l'annulation : %s"
+        detailsIssueNeedsSeerr = "Le signalement de problèmes nécessite Seerr."
+        detailsIssueReported = "Problème signalé à Seerr"
+        detailsIssueFailed = "Impossible de signaler le problème : %s"
+        detailsMarkedWatched = "Marqué comme vu"
+        detailsMarkedUnwatched = "Marqué comme non vu"
+        detailsOpeningExternalPlayer = "Ouverture du lecteur externe..."
+        detailsNoExternalPlayer = "Aucun lecteur vidéo externe compatible n'est installé"
+        detailsExternalPlayerFailed = "Échec du lecteur externe : %s"
+        detailsAddedToMyList = "Ajouté à Ma Liste"
+        detailsRemovedFromMyList = "Retiré de Ma Liste"
+        detailsReminderAdded = "Rappel activé pour la sortie"
+        detailsReminderRemoved = "Rappel supprimé"
+        detailsRemovedFromContinue = "Retiré de Reprendre la lecture"
         issueVideo = "Problème vidéo"
         issueAudio = "Audio décalé / absent"
         issueSubtitle = "Sous-titres"
@@ -2051,6 +2521,14 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         homeJustArrived = "Nouveauté • %s"
         homeJustArrivedBody = "Votre demande Seerr est téléchargée et prête à être regardée."
         homeDismiss = "Ignorer"
+        homeLoadFailed = "Impossible de charger le catalogue"
+        homePresetSwitched = "Style d'interface changé : %s"
+        homeLayoutSaved = "Disposition de l'accueil enregistrée"
+        homeMarkedWatched = "« %s » marqué comme vu"
+        homeMarkedUnwatched = "« %s » marqué comme non vu"
+        homeAddedToMyList = "« %s » ajouté à Ma Liste"
+        homeRemovedFromMyList = "« %s » retiré de Ma Liste"
+        homeContinueRemoveFailed = "Impossible de retirer de Reprendre la lecture : %s"
         genreAll = "Tous les genres"
         genreAction = "Action"
         genreComedy = "Comédie"
@@ -2076,6 +2554,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         badgeRecentlyAdded = "Ajouté récemment"
         badgeNewSeason = "Nouvelle saison"
         badgeNewEpisode = "Nouvel épisode"
+        upcomingTonight = "Ce soir"
+        upcomingToday = "Aujourd'hui"
+        upcomingTomorrow = "Demain"
+        upcomingInDays = "Dans %d jours"
+        upcomingDatePattern = "d MMM"
+        upcomingNowInLibrary = "Dans la bibliothèque"
+        upcomingDigital = "Numérique"
+        upcomingDisc = "DVD / Blu-ray"
+        collectionOwnedOfTotal = "%1\$d sur %2\$d dans la bibliothèque"
+        collectionOwnedCount = "%d dans la bibliothèque"
 
         // Live TV guide (0.8)
         liveNoChannels = "Aucune chaîne TV en direct trouvée"
@@ -2111,6 +2599,14 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayNoRooms = "Aucun salon actif. Créez-en un ci-dessus et lancez la lecture !"
         syncPlayParticipants = "%1\$d participant(s) • %2\$s"
         syncPlayJoin = "Rejoindre"
+        syncPlayStarted = "Salon SyncPlay créé : %s"
+        syncPlayUnavailable = "SyncPlay indisponible : %s"
+        syncPlayCheckJellyfin = "Vérifiez Jellyfin"
+        syncPlayJoined = "SyncPlay rejoint : %s"
+        syncPlayRoomFallback = "Salon"
+        syncPlayJoinFailed = "Impossible de rejoindre SyncPlay : %s"
+        syncPlayLeft = "Salon SyncPlay quitté"
+        syncPlayLeaveFailed = "Impossible de quitter SyncPlay : %s"
 
         // App update dialog (0.8)
         updateAvailable = "Lumen %s disponible"
@@ -2124,6 +2620,8 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         updatePermissionHint = "Activez « Installer des applis inconnues » pour Lumen dans les paramètres TV, puis revenez ici."
         updateReadyHint = "Mise à jour téléchargée. Appuyez sur Installer si l'installeur ne s'est pas ouvert."
         updateFailedPrefix = "Échec de la mise à jour : %s"
+        updateDownloadFailed = "Échec du téléchargement"
+        updateInstallerUnavailable = "Impossible d'ouvrir le programme d'installation d'Android."
 
         // Player (0.8)
         playerSubtitleSyncHud = "Synchro des sous-titres : %s"
@@ -2228,6 +2726,13 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         profileEdit = "Modifier le profil"
         profilePinProtected = "Protégé par PIN"
         profileAdd = "Ajouter un profil"
+        profilePinIncorrect = "Code PIN incorrect. Réessayez."
+        profilePinLockedOut = "Trop de tentatives incorrectes. Réessayez dans %d s."
+        profileInvalidCredentials = "Nom d'utilisateur ou mot de passe Jellyfin incorrect."
+        profileSignInForbidden = "Connexion refusée (HTTP 403). Vérifiez les autorisations du compte."
+        profileSignInFailed = "Échec de la connexion"
+        profileQuickConnectDisabled = "La connexion rapide n'est pas activée sur ce serveur — connectez-vous avec votre mot de passe ci-dessous."
+        profileQuickConnectExpired = "Le code de connexion rapide a expiré ou le serveur ne répond plus — connectez-vous avec votre mot de passe, ou revenez à la connexion rapide pour obtenir un nouveau code."
 
         // UI presets (0.8)
         presetPickerTitle = "Apparence et style"
@@ -2245,6 +2750,11 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         requestsEmpty = "Aucune demande dans cette vue."
         requestsRequestedBy = "Demandé par %1\$s • %2\$s"
         requestsFilterAvailable = "Disponible"
+        requestsLoadFailed = "Impossible de charger les demandes"
+        requestsApproved = "Demande n° %d approuvée"
+        requestsDeclined = "Demande n° %d refusée"
+        requestsApproveFailed = "Échec de l'approbation"
+        requestsDeclineFailed = "Échec du refus"
 
         // Search screen (0.8)
         searchVoicePrompt = "Recherchez des films, séries ou acteurs"
@@ -2259,6 +2769,7 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         searchNoMatches = "Aucun titre correspondant."
         searchNoResults = "Aucun résultat pour « %s »"
         searchPeople = "Personnes"
+        searchFilmographyFallback = "Filmographie"
 
         // Setup screen (0.8)
         setupTitle = "Configuration du serveur"
@@ -2285,6 +2796,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         setupScanNetwork = "Analyser le réseau"
         setupScanning = "Recherche…"
         setupScan = "Rechercher"
+        setupCompanionReceived = "Paramètres reçus depuis le téléphone ! Prêt à se connecter."
+        setupJellyfinOnlyEnabled = "Mode Jellyfin uniquement activé (demandes Seerr facultatives)"
+        setupFoundServers = "%d serveur(s) Jellyfin trouvé(s) sur votre réseau."
+        setupSelectedServer = "Sélectionné : %1\$s (%2\$s)"
+        setupNeedJellyfinUrl = "Saisissez une URL Jellyfin ou choisissez un serveur détecté."
+        setupNeedSeerrUrl = "Saisissez une URL Seerr ou activez le mode Jellyfin uniquement."
+        setupTesting = "Test des connexions aux serveurs..."
+        setupConnected = "Connecté à %1\$s (%2\$s)"
+        setupConnectionFailed = "Échec de la connexion : %s"
+        setupCheckUrls = "Vérifiez les URL et le réseau"
 
         // Hero banner & cards (0.8)
         heroFilm = "FILM"
