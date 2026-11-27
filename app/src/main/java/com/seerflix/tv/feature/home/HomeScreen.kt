@@ -89,6 +89,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -413,6 +416,7 @@ fun HomeScreen(
         onDismissUpdateDialog = viewModel::dismissUpdateDialog,
         previewHttpClient = viewModel.previewHttpClient,
         extraActions = HomeExtraActions(
+            onHeroVisibilityChanged = viewModel::setHeroVisible,
             onBrowseAll = onOpenLibrary,
             onOpenLibraryView = onOpenLibraryView,
             onOpenLibraries = viewModel::openLibrariesDialog,
@@ -453,7 +457,9 @@ data class HomeExtraActions(
     val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {},
     val onStartAppUpdate: () -> Unit = {},
     val onCancelAppUpdate: () -> Unit = {},
-    val onResumeAppUpdateDialog: () -> Unit = {}
+    val onResumeAppUpdateDialog: () -> Unit = {},
+    /** Whether the hero billboard is on screen (trailer work is skipped while it isn't). */
+    val onHeroVisibilityChanged: (Boolean) -> Unit = {}
 )
 
 @Composable
@@ -932,6 +938,15 @@ private fun HomeMainCanvas(
 
     // Hoisted out of the list branch so it survives a visit to Collections / Live TV.
     val listState = rememberLazyListState()
+
+    // Scrolled into the rows, only the compact header shows the featured title: tell the VM so
+    // it doesn't fetch / decode trailers nobody can see.
+    val onHeroVisibilityChanged by rememberUpdatedState(extraActions.onHeroVisibilityChanged)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex == 0 }
+            .distinctUntilChanged()
+            .collect { onHeroVisibilityChanged(it) }
+    }
 
     val focusTop: suspend () -> Unit = {
         withFrameNanos { }

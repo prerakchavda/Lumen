@@ -39,18 +39,25 @@ class RequestReadyWorker(
         val repo = entryPoint.catalogRepository()
         val tvSync = entryPoint.tvChannelSyncManager()
 
-        // With the profile: an index rebuilt without it carries no rating cap.
-        repo.refreshLibraryIndex(activeProfile.jellyfinUserId, activeProfile = activeProfile)
-        val requests = repo.loadRequestsHub().getOrNull() ?: return Result.success()
+        // One cheap call first: most runs find nothing new, and then neither the library index
+        // nor 50 per-title Seerr lookups are needed.
+        val statuses = repo.loadRequestStatuses().getOrNull() ?: return Result.success()
 
         val previouslyTracked = prefs.getTrackedPendingRequestIds()
-        val currentlyPendingOrProcessing = requests
+        val currentlyPendingOrProcessing = statuses
             .filter { it.mediaStatus == AvailabilityTier.PENDING || it.mediaStatus == AvailabilityTier.PROCESSING }
             .map { it.requestId }
             .toSet()
+        val newlyAvailableIds = statuses
+            .filter { it.mediaStatus.isInLibrary && it.requestId in previouslyTracked }
+            .map { it.requestId }
+            .toSet()
 
-        val newlyAvailable = requests.filter { req ->
-            req.mediaStatus.isInLibrary && req.requestId in previouslyTracked
+        val newlyAvailable = if (newlyAvailableIds.isEmpty()) emptyList() else {
+            // With the profile: an index rebuilt without it carries no rating cap.
+            repo.refreshLibraryIndex(activeProfile.jellyfinUserId, activeProfile = activeProfile)
+            repo.loadRequestsHub(onlyRequestIds = newlyAvailableIds).getOrNull()
+                ?: return Result.success()
         }
 
         if (newlyAvailable.isNotEmpty()) {

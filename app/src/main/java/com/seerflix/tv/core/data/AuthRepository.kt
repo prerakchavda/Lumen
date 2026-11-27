@@ -245,6 +245,11 @@ class AuthRepository @Inject constructor(
         prefs.updateProfilePreferences(profile)
     }
 
+    /** Atomic change of a few fields of [profileId] (see [SessionPreferences.updateProfile]). */
+    suspend fun updateProfile(profileId: String, transform: (UserProfile) -> UserProfile) {
+        prefs.updateProfile(profileId, transform)
+    }
+
     suspend fun updateSubtitleAppearance(fontScale: Float, backgroundAlpha: Float) {
         prefs.updateSubtitleAppearance(fontScale, backgroundAlpha)
     }

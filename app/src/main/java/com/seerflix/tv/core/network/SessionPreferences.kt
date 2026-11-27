@@ -628,6 +628,27 @@ class SessionPreferences private constructor(
         cachedUiLanguage = resolvedProfile.uiLanguage.ifBlank { "en" }
     }
 
+    /**
+     * Changes [profileId] in one atomic edit, starting from the STORED profile: only the fields
+     * [transform] touches change, so a concurrent write (a playback toggle, a refreshed cookie,
+     * server track defaults) is never rolled back by a stale snapshot.
+     */
+    suspend fun updateProfile(profileId: String, transform: (UserProfile) -> UserProfile) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: return@edit
+            var changed: UserProfile? = null
+            val updated = current.map { if (it.id == profileId) transform(it).also { p -> changed = p } else it }
+            val result = changed ?: return@edit
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+            if (prefs[Keys.ACTIVE_PROFILE_ID] == profileId) {
+                cachedMetadataLanguage = result.metadataLanguage.ifBlank { "en" }
+                cachedUiLanguage = result.uiLanguage.ifBlank { "en" }
+            }
+        }
+    }
+
     suspend fun updateProfilePreferences(updatedProfile: UserProfile) {
         dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {

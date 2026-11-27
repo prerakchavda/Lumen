@@ -3545,11 +3545,31 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
-    suspend fun loadRequestsHub(): Result<List<MediaRequestSummary>> = runCatchingCancellable {
+    /** A request's media status only, from the single requests page (no per-title lookups). */
+    data class RequestStatus(val requestId: Int, val mediaStatus: AvailabilityTier)
+
+    /**
+     * The status of the latest requests with one Seerr call. The background "request is ready"
+     * check uses this first and only loads titles / posters (and the library index) for the few
+     * requests that actually became available.
+     */
+    suspend fun loadRequestStatuses(): Result<List<RequestStatus>> = runCatchingCancellable {
+        if (!isSeerrEnabled) return@runCatchingCancellable emptyList()
+        seerrApi.getRequests(take = 50, skip = 0, filter = "all", sort = "added").results.map { req ->
+            RequestStatus(
+                requestId = req.id,
+                mediaStatus = AvailabilityTier.fromSeerrCode(if (req.is4k) req.media?.status4k else req.media?.status)
+            )
+        }
+    }
+
+    /** [onlyRequestIds]: look up titles / posters for just these requests (null = all). */
+    suspend fun loadRequestsHub(onlyRequestIds: Set<Int>? = null): Result<List<MediaRequestSummary>> = runCatchingCancellable {
         if (!isSeerrEnabled) return@runCatchingCancellable emptyList()
         val page = seerrApi.getRequests(take = 50, skip = 0, filter = "all", sort = "added")
+        val wanted = if (onlyRequestIds == null) page.results else page.results.filter { it.id in onlyRequestIds }
         coroutineScope {
-            page.results.map { req ->
+            wanted.map { req ->
                 async {
                     val tmdbId = req.media?.tmdbId ?: 0
                     val isMovie = when (req.media?.mediaType?.lowercase()) {

@@ -170,6 +170,21 @@ class HomeViewModel @Inject constructor(
     @Volatile private var focusPreviewJob: Job? = null
     /** The item the hero is showing or about to show (the target of [focusPreviewJob]). */
     @Volatile private var focusTargetId: String? = null
+    /** False while Home is scrolled into the rows (the hero, and so its trailer, is off screen). */
+    @Volatile private var heroVisible = true
+
+    fun setHeroVisible(visible: Boolean) {
+        if (heroVisible == visible) return
+        heroVisible = visible
+        if (visible) {
+            // Back at the top: resolve the trailer that was skipped while scrolled away.
+            val state = _uiState.value
+            val featured = state.featuredItem ?: return
+            if (state.previewStream == null && state.profile?.autoplayPreviews == true) {
+                onItemFocused(featured, force = true)
+            }
+        }
+    }
     private var feedbackJob: Job? = null
     private var catalogJob: Job? = null
     private var collectionJob: Job? = null
@@ -389,13 +404,14 @@ class HomeViewModel @Inject constructor(
         val current = _uiState.value.profile ?: return
         _uiState.update { it.copy(showCustomizeHomeDialog = false) }
         viewModelScope.launch(Dispatchers.IO) {
-            val updated = current.copy(
-                pinnedLibraryIds = pinnedLibraryIds,
-                hiddenHomeRowIds = hiddenRowIds,
-                homeRowOrder = rowOrder,
-                defaultStartupTab = defaultStartupTab
-            )
-            authRepository.updateProfilePreferences(updated)
+            authRepository.updateProfile(current.id) {
+                it.copy(
+                    pinnedLibraryIds = pinnedLibraryIds,
+                    hiddenHomeRowIds = hiddenRowIds,
+                    homeRowOrder = rowOrder,
+                    defaultStartupTab = defaultStartupTab
+                )
+            }
             showActionFeedback(strings.homeLayoutSaved)
             loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre, _uiState.value.availabilityFilter)
         }
@@ -1142,7 +1158,7 @@ class HomeViewModel @Inject constructor(
 
             val needsMetadataEnrichment = item.overview.isBlank() ||
                 (item.backdropUrl == null && item.posterUrl == null)
-            val needsTrailerEnrichment = profile.autoplayPreviews &&
+            val needsTrailerEnrichment = heroVisible && profile.autoplayPreviews &&
                 item.youtubeTrailerKey == null &&
                 item.localTrailerItemId == null
 
@@ -1174,9 +1190,10 @@ class HomeViewModel @Inject constructor(
                 item
             }
 
-            if (!profile.autoplayPreviews) return@launch
+            if (!profile.autoplayPreviews || !heroVisible) return@launch
 
             delay(1400L)
+            if (!heroVisible) return@launch
             val target = mergedFeatured ?: item
             val stream = trailerResolver.resolvePreview(
                 localTrailerId = target.localTrailerItemId,

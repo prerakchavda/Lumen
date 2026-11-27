@@ -144,7 +144,7 @@ class SettingsViewModel @Inject constructor(
 
     fun setAutoplayNext(enabled: Boolean) = viewModelScope.launch {
         val profile = _uiState.value.profile ?: return@launch
-        authRepository.updateProfilePreferences(profile.copy(autoplayNextEpisode = enabled))
+        authRepository.updateProfile(profile.id) { it.copy(autoplayNextEpisode = enabled) }
     }
 
     fun setSubtitleSelectionMode(mode: com.seerflix.tv.core.model.SubtitleSelectionMode) = viewModelScope.launch {
