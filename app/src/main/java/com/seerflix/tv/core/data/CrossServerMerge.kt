@@ -33,7 +33,12 @@ internal object CrossServerMerge {
         /** Most recently played first (Continue Watching). */
         LAST_PLAYED,
         /** Most recently added first (Latest). */
-        DATE_CREATED
+        DATE_CREATED,
+        /**
+         * Round robin by each server's own rank (Next Up: unplayed episodes carry no play date to
+         * sort on, so the home list would otherwise fill the whole row before any other server's).
+         */
+        INTERLEAVE
     }
 
     private fun isMovie(dto: JellyfinItemDto) = dto.type.equals("Movie", ignoreCase = true)
@@ -152,6 +157,12 @@ internal object CrossServerMerge {
             Order.LAST_PLAYED -> if (nonEmpty <= 1) merged else merged.sortedByDescending { lastPlayedMs(it.item) }
             Order.DATE_CREATED -> if (nonEmpty <= 1) merged else merged.sortedByDescending { m ->
                 m.copies.maxOf { parseDateMs(it.dateCreated) ?: Long.MIN_VALUE }
+            }
+            Order.INTERLEAVE -> if (nonEmpty <= 1) merged else {
+                val rank = HashMap<String, Int>()
+                perServer.forEach { items -> items.forEachIndexed { i, dto -> rank.putIfAbsent(dto.id, i) } }
+                // A title on several servers takes its best rank; ties keep server order (stable sort).
+                merged.sortedBy { m -> m.copies.minOf { rank[it.id] ?: Int.MAX_VALUE } }
             }
         }
     }

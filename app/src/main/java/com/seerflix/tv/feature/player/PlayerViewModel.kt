@@ -941,6 +941,8 @@ class PlayerViewModel @Inject constructor(
         // copy is what plays (and what progress is reported for).
         val otherCopyId = session.mediaSources.firstOrNull { it.id == mediaSourceId }?.itemId
         reportStopped(currentPosMs)
+        // Same title, so it keeps its place in the queue (loadItem would otherwise clear it).
+        if (otherCopyId != null) playbackQueueManager.replaceCurrentItemId(otherCopyId, expectedCurrentId = session.itemId)
         loadItem(
             itemId = otherCopyId ?: session.itemId,
             mediaSourceIdOverride = mediaSourceId,
