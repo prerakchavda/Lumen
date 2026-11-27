@@ -20,6 +20,7 @@ import com.seerflix.tv.core.model.UserProfile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -477,26 +478,34 @@ class SessionPreferences private constructor(
         config
     }
 
-    val profilesFlow: Flow<List<UserProfile>> = dataStore.data.map { prefs ->
-        val raw = prefs[Keys.PROFILES_JSON] ?: return@map emptyList()
-        runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
-    }
-
-    val activeProfileFlow: Flow<UserProfile?> = dataStore.data.map { prefs ->
-        val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@map null
-        val raw = prefs[Keys.PROFILES_JSON] ?: return@map null
-        val list = runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
-        val found = list.firstOrNull { it.id == activeId }
-        cachedToken = found?.jellyfinToken
-        installActiveProfile(found)
-        if (!found?.seerrCookie.isNullOrBlank()) {
-            cachedSeerrCookie = found?.seerrCookie
+    // Only re-decode the profiles JSON when it (or the active id) actually changed: every other
+    // DataStore write (reminders, My List, tracked requests...) re-emits dataStore.data.
+    val profilesFlow: Flow<List<UserProfile>> = dataStore.data
+        .map { it[Keys.PROFILES_JSON] }
+        .distinctUntilChanged()
+        .map { raw ->
+            if (raw == null) return@map emptyList()
+            runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
         }
-        cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
-        cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
-        cachedAudioPassthroughEnabled = found?.audioPassthroughEnabled ?: true
-        found
-    }
+
+    val activeProfileFlow: Flow<UserProfile?> = dataStore.data
+        .map { it[Keys.ACTIVE_PROFILE_ID] to it[Keys.PROFILES_JSON] }
+        .distinctUntilChanged()
+        .map { (activeIdOrNull, rawOrNull) ->
+            val activeId = activeIdOrNull ?: return@map null
+            val raw = rawOrNull ?: return@map null
+            val list = runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
+            val found = list.firstOrNull { it.id == activeId }
+            cachedToken = found?.jellyfinToken
+            installActiveProfile(found)
+            if (!found?.seerrCookie.isNullOrBlank()) {
+                cachedSeerrCookie = found?.seerrCookie
+            }
+            cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
+            cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
+            cachedAudioPassthroughEnabled = found?.audioPassthroughEnabled ?: true
+            found
+        }
 
     val readyAlertsFlow: Flow<List<com.seerflix.tv.core.model.ReadyRequestAlert>> = dataStore.data.map { prefs ->
         val raw = prefs[Keys.READY_ALERTS_JSON] ?: return@map emptyList()
@@ -624,8 +633,18 @@ class SessionPreferences private constructor(
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
-            val updated = current.map {
-                if (it.id == updatedProfile.id) updatedProfile else it
+            // Callers edit preferences on a snapshot of the profile. Keep the sign-in state from
+            // the stored copy, so a token / Seerr cookie / server account written since that
+            // snapshot was taken isn't rolled back by a settings change.
+            val updated = current.map { stored ->
+                if (stored.id == updatedProfile.id) {
+                    updatedProfile.copy(
+                        jellyfinUserId = stored.jellyfinUserId,
+                        jellyfinToken = stored.jellyfinToken,
+                        seerrCookie = stored.seerrCookie,
+                        serverCredentials = stored.serverCredentials
+                    )
+                } else stored
             }
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
             if (prefs[Keys.ACTIVE_PROFILE_ID] == updatedProfile.id) {

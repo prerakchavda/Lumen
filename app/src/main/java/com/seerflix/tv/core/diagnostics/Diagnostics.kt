@@ -125,6 +125,8 @@ class DiagnosticsRepository @Inject constructor(
         } catch (e: HttpException) {
             if (e.code() == 403) LogUploadResult.DisabledOnServer
             else LogUploadResult.Failed("Server returned HTTP ${e.code()}")
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
         } catch (e: Exception) {
             LogUploadResult.Failed(e.message ?: e.javaClass.simpleName)
         }

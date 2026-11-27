@@ -23,6 +23,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -94,6 +95,9 @@ class JellyfinSocketClient @Inject constructor(
     // settings, failover base URL, auth header) comes from the API client.
     private val socketHttp: OkHttpClient by lazy {
         okHttpClient.newBuilder()
+            // Own dispatcher: the WebSocket reader loop holds its dispatcher slot for the whole
+            // connection, which would otherwise cost the Jellyfin API one of its per-host slots.
+            .dispatcher(Dispatcher())
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(30, TimeUnit.SECONDS)
             .build()
@@ -104,7 +108,7 @@ class JellyfinSocketClient @Inject constructor(
     @Volatile private var connectedToken: String? = null
     private var reconnectJob: Job? = null
     private var keepAliveJob: Job? = null
-    private var attempt = 0
+    @Volatile private var attempt = 0
 
     /** Called when the app comes to the foreground or the signed-in profile changes. */
     @Synchronized
@@ -267,8 +271,12 @@ class JellyfinSocketClient @Inject constructor(
         if (event != null) _events.tryEmit(event)
     }
 
+    // Called from the socket reader thread; synchronized with stop()/closeSocket() so a keep-alive
+    // message racing a disconnect can't leave a loop running after the socket closed.
+    @Synchronized
     private fun startKeepAlive(timeoutSeconds: Long) {
         keepAliveJob?.cancel()
+        if (socket == null) return
         keepAliveJob = scope.launch {
             val interval = (timeoutSeconds * 1000L / 2).coerceAtLeast(5_000L)
             while (isActive) {

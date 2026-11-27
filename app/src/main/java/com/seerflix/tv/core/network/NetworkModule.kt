@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.Dispatcher
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -22,6 +23,11 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLHandshakeException
 import java.util.concurrent.TimeUnit
 import javax.inject.Qualifier
 import javax.inject.Singleton
@@ -104,12 +110,21 @@ internal class FailoverBaseUrlInterceptor(
                 return response
             } catch (io: IOException) {
                 lastError = io
-                // A cancelled call must not fan out to the next candidate URL.
-                if (idx == candidates.lastIndex || chain.call().isCanceled()) throw io
+                // A cancelled call must not fan out to the next candidate URL. Neither may a
+                // non-idempotent request (POST/DELETE...) that may already have reached the server
+                // (e.g. a read timeout): resending it could duplicate a request, timer or playlist.
+                val replayable = original.method == "GET" || original.method == "HEAD" || io.isConnectFailure()
+                if (!replayable || idx == candidates.lastIndex || chain.call().isCanceled()) throw io
             }
         }
         throw lastError ?: IOException("Unable to reach server URL")
     }
+
+    /** Failed before the request could have been sent, so it is safe to try the next URL. */
+    private fun IOException.isConnectFailure(): Boolean =
+        this is ConnectException || this is UnknownHostException || this is NoRouteToHostException ||
+            this is SSLHandshakeException ||
+            (this is SocketTimeoutException && message?.contains("connect", ignoreCase = true) == true)
 
     private fun rewriteRequestUrl(original: okhttp3.Request, targetBase: HttpUrl): okhttp3.Request {
         val baseSegments = targetBase.pathSegments.filter { it.isNotEmpty() }
@@ -320,6 +335,16 @@ object NetworkModule {
         explicitNulls = false
     }
 
+    /**
+     * OkHttp's default allows only 5 concurrent calls per host, and every API call is queued
+     * under its placeholder host (seerr.local / jellyfin.local) before the URL is rewritten. A
+     * cold Home load fans out dozens of Seerr calls, so the default serialized them in fives.
+     */
+    private fun apiDispatcher(): Dispatcher = Dispatcher().apply {
+        maxRequests = 64
+        maxRequestsPerHost = 16
+    }
+
     private fun loggingInterceptor(): HttpLoggingInterceptor = HttpLoggingInterceptor().apply {
         level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
         redactHeader("Authorization")
@@ -334,6 +359,7 @@ object NetworkModule {
     fun provideJellyfinOkHttp(prefs: SessionPreferences): OkHttpClient {
         val logging = loggingInterceptor()
         return OkHttpClient.Builder()
+            .dispatcher(apiDispatcher())
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .applyDynamicSelfSignedTrust(prefs)
@@ -355,6 +381,7 @@ object NetworkModule {
     fun provideSeerrOkHttp(prefs: SessionPreferences): OkHttpClient {
         val logging = loggingInterceptor()
         return OkHttpClient.Builder()
+            .dispatcher(apiDispatcher())
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .applyDynamicSelfSignedTrust(prefs)
@@ -392,6 +419,8 @@ object NetworkModule {
             interceptors().clear()
             networkInterceptors().clear()
         }
+        // Own dispatcher: artwork / subtitle fetches don't compete with API calls for slots.
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 8 })
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 

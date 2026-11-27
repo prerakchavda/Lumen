@@ -270,9 +270,11 @@ class UnifiedCatalogRepository @Inject constructor(
             return
         }
         if (serverWithoutIndex && syncIndexWithServers(userId)) {
-            // A server was just added (or signed in to) and nothing of it is cached yet.
-            startIndexFetch(userId).await()
-            return
+            // A server was just added (or signed in to) and nothing of it is cached yet: fetch
+            // only the missing shares (not the whole home library again), and at most once per
+            // cooldown per server, so a server whose library query keeps failing can't make every
+            // screen load wait on it.
+            fetchMissingExtraParts(userId)
         }
         if (System.currentTimeMillis() - current.fetchedAtMs < LIBRARY_INDEX_TTL_MS) return
         if (policy == IndexPolicy.BLOCK_IF_STALE) {
@@ -492,6 +494,28 @@ class UnifiedCatalogRepository @Inject constructor(
         )
         indexStore?.write(extraStoreUser(userId, session), extraStoreServer(session), now, entries)
         return true
+    }
+
+    /** Last attempt to fetch an extra server's missing share, by server id. */
+    private val extraPartAttemptAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private suspend fun fetchMissingExtraParts(userId: String) {
+        val now = System.currentTimeMillis()
+        val missing = servers?.availableExtras().orEmpty().filter { session ->
+            extraIndexParts[session.id]?.ownerKey != extraPartKey(userId, session) &&
+                now - (extraPartAttemptAtMs[session.id] ?: 0L) > EXTRA_PART_RETRY_COOLDOWN_MS
+        }
+        if (missing.isEmpty()) return
+        missing.forEach { extraPartAttemptAtMs[it.id] = now }
+        val fetches = missing.map { session -> indexScope.async { fetchExtraIndexPart(userId, session) } }
+        // Same wait as a full fetch; a slower share is merged in when it arrives.
+        val results = withTimeoutOrNull(EXTRA_INDEX_WAIT_MS) { fetches.awaitAll() }
+        if (results?.any { it } == true || (results == null && fetches.any { it.isCompleted })) {
+            remergeIndex(userId)
+        }
+        fetches.filterNot { it.isCompleted }.forEach { pending ->
+            indexScope.launch { if (pending.await()) remergeIndex(userId) }
+        }
     }
 
     /** Rebuilds the current index from the cached shares (a late share arrived). */
@@ -1009,6 +1033,7 @@ class UnifiedCatalogRepository @Inject constructor(
         ensureLibraryIndex(userId)
         val localEntries = prefs.getLocalMyList(userId)
         val remainingLocal = mutableListOf<UnifiedMediaItem>()
+        val promoted = mutableListOf<UnifiedMediaItem>()
 
         for (entry in localEntries) {
             val matchedJf = if (entry.mediaType == MediaType.MOVIE) {
@@ -1017,15 +1042,25 @@ class UnifiedCatalogRepository @Inject constructor(
                 tmdbToJellyfinSeries[entry.tmdbId]
             }
             if (matchedJf != null) {
-                // Auto-promote local My List item to Jellyfin Favorites now that it's in the library
-                runCatchingCancellable { setFavorite(userId, matchedJf.id, true) }
-                prefs.removeFromLocalMyList(userId, entry.tmdbId, entry.mediaType)
+                // Auto-promote local My List item to Jellyfin Favorites now that it's in the library.
+                // Only drop the local entry once the server accepted it, or a transient failure
+                // would silently lose the title from My List.
+                val promotedOk = runCatchingCancellable { setFavorite(userId, matchedJf.id, true) }.isSuccess
+                if (promotedOk) {
+                    prefs.removeFromLocalMyList(userId, entry.tmdbId, entry.mediaType)
+                    // The favourites fetch may have started before this promotion landed.
+                    promoted += mapJellyfinItem(matchedJf).copy(isInMyList = true)
+                } else {
+                    remainingLocal += entry.toUnifiedMediaItem()
+                }
             } else {
                 remainingLocal += entry.toUnifiedMediaItem()
             }
         }
 
-        val jfFavs = jfFavsDeferred.await().map { mapJellyfinItem(it).copy(isInMyList = true) }
+        val fetchedFavs = jfFavsDeferred.await().map { mapJellyfinItem(it).copy(isInMyList = true) }
+        val fetchedIds = fetchedFavs.mapTo(HashSet()) { it.id }
+        val jfFavs = fetchedFavs + promoted.filter { it.id !in fetchedIds }
         val seenTmdb = jfFavs.mapNotNull { it.tmdbId?.let { id -> "${it.mediaType}_$id" } }.toSet()
         val dedupedLocal = remainingLocal.filterNot {
             it.tmdbId != null && "${it.mediaType}_${it.tmdbId}" in seenTmdb
@@ -1781,9 +1816,11 @@ class UnifiedCatalogRepository @Inject constructor(
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) return@async emptyList()
             // Match on the raw index first: mapping every library item just to test its genre was
             // the expensive part on a large library.
-            val matchingDtos = allLibraryItems.filter { dto ->
+            // Capped: a broad genre ("Drama") on a big library matched thousands of titles, all
+            // mapped into one horizontal row (and only the first 60 got overviews anyway).
+            val matchingDtos = allLibraryItems.asSequence().filter { dto ->
                 (filterType == null || jellyfinMediaType(dto) == filterType) && matchesGenreLabel(dto, genre)
-            }
+            }.take(OVERVIEW_BACKFILL_LIMIT).toList()
             withOverviews(userId, matchingDtos)
                 .map { mapJellyfinItem(it) }
                 .filter(availabilityFilter::matches)
@@ -2090,7 +2127,7 @@ class UnifiedCatalogRepository @Inject constructor(
             }
         }.getOrDefault(emptyList())
         if (fetched.isNotEmpty()) {
-            streamingProviderCache[cacheKey] = StreamingChartCacheEntry(now, fetched)
+            putBounded(streamingProviderCache, cacheKey, StreamingChartCacheEntry(now, fetched)) { it.atMs }
         }
         return fetched
     }
@@ -2314,59 +2351,101 @@ class UnifiedCatalogRepository @Inject constructor(
     /** Short-lived: charts are re-resolved on every Home load, but availability can change. */
     private val chartCardCache = java.util.concurrent.ConcurrentHashMap<String, ChartCardCacheEntry>()
 
-    private suspend fun movieReleaseDetails(tmdbId: Int): SeerrMovieDetailsDto? {
-        val key = "${MediaType.MOVIE.name}_${tmdbId}_$metaLang"
+    /**
+     * In-flight detail lookups by cache key. On a cold Home load the trending filter, the Top 10
+     * rows and the release-date rows ask for the same popular titles at the same time; they now
+     * share one request instead of each fetching `/movie/{id}`.
+     */
+    private val chartCardInFlight =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<ChartCardLookup>>()
+
+    /** [abandoned]: the caller that was fetching it was cancelled; a waiter fetches it itself. */
+    private class ChartCardLookup(val entry: ChartCardCacheEntry?, val abandoned: Boolean = false)
+
+    private suspend fun chartCardEntry(tmdbId: Int, type: MediaType): ChartCardCacheEntry? {
+        val key = "${type.name}_${tmdbId}_$metaLang"
         val now = System.currentTimeMillis()
-        chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }?.movieDetails?.let { return it }
-        val details = runCatchingCancellable { seerrApi.getMovieDetails(tmdbId, language = metaLang) }.getOrNull()
-            ?: return null
-        chartCardCache[key] = ChartCardCacheEntry(
-            atMs = now,
-            result = SeerrMediaResultDto(
-                id = details.id, mediaType = "movie", title = details.title, overview = details.overview,
-                releaseDate = details.releaseDate, posterPath = details.posterPath, backdropPath = details.backdropPath,
-                voteAverage = details.voteAverage, adult = details.adult, mediaInfo = details.mediaInfo
-            ),
-            rating = details.certification(watchRegion),
-            movieDetails = details
-        )
-        return details
+        chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }?.let { return it }
+        val mine = kotlinx.coroutines.CompletableDeferred<ChartCardLookup>()
+        val existing = chartCardInFlight.putIfAbsent(key, mine)
+        if (existing != null) {
+            val shared = existing.await()
+            if (!shared.abandoned) return shared.entry
+            return runCatchingCancellable { fetchChartCardEntry(tmdbId, type, metaLang) }.getOrNull()
+                ?.also { putBounded(chartCardCache, key, it) { e -> e.atMs } }
+        }
+        // This caller fetches; concurrent callers for the same title wait for its result.
+        var lookup = ChartCardLookup(null, abandoned = true)
+        try {
+            val entry = runCatchingCancellable { fetchChartCardEntry(tmdbId, type, metaLang) }.getOrNull()
+                ?.also { putBounded(chartCardCache, key, it) { e -> e.atMs } }
+            lookup = ChartCardLookup(entry)
+            return entry
+        } finally {
+            chartCardInFlight.remove(key, mine)
+            mine.complete(lookup)
+        }
     }
+
+    private suspend fun fetchChartCardEntry(tmdbId: Int, type: MediaType, lang: String): ChartCardCacheEntry {
+        val now = System.currentTimeMillis()
+        return if (type == MediaType.MOVIE) {
+            val d = seerrApi.getMovieDetails(tmdbId, language = lang)
+            ChartCardCacheEntry(
+                now,
+                SeerrMediaResultDto(
+                    id = d.id, mediaType = "movie", title = d.title, overview = d.overview,
+                    releaseDate = d.releaseDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
+                    voteAverage = d.voteAverage, adult = d.adult, mediaInfo = d.mediaInfo
+                ),
+                d.certification(watchRegion),
+                d
+            )
+        } else {
+            val d = seerrApi.getTvDetails(tmdbId, language = lang)
+            ChartCardCacheEntry(
+                now,
+                SeerrMediaResultDto(
+                    id = d.id, mediaType = "tv", name = d.name, overview = d.overview,
+                    firstAirDate = d.firstAirDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
+                    voteAverage = d.voteAverage, mediaInfo = d.mediaInfo
+                ),
+                d.certification(watchRegion)
+            )
+        }
+    }
+
+    /**
+     * The TTL is only checked on read, so these caches would otherwise grow for the life of the
+     * process (curated keys include the date). Past [SEERR_CACHE_MAX_ENTRIES], expired entries
+     * are dropped, then the oldest ones.
+     */
+    private fun <V> putBounded(
+        cache: java.util.concurrent.ConcurrentHashMap<String, V>,
+        key: String,
+        value: V,
+        atMs: (V) -> Long
+    ) {
+        cache[key] = value
+        if (cache.size <= SEERR_CACHE_MAX_ENTRIES) return
+        val now = System.currentTimeMillis()
+        cache.entries.removeIf { now - atMs(it.value) !in 0 until CHART_CARD_TTL_MS }
+        if (cache.size > SEERR_CACHE_MAX_ENTRIES) {
+            cache.entries.sortedBy { atMs(it.value) }
+                .take(cache.size - SEERR_CACHE_MAX_ENTRIES)
+                .forEach { cache.remove(it.key, it.value) }
+        }
+    }
+
+    private suspend fun movieReleaseDetails(tmdbId: Int): SeerrMovieDetailsDto? =
+        chartCardEntry(tmdbId, MediaType.MOVIE)?.movieDetails
 
     private suspend fun chartCardWithDetails(
         tmdbId: Int,
         type: MediaType,
         today: LocalDate
     ): Pair<UnifiedMediaItem, SeerrMovieDetailsDto?>? {
-        val key = "${type.name}_${tmdbId}_$metaLang"
-        val now = System.currentTimeMillis()
-        val cached = chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }
-        val entry = cached ?: runCatchingCancellable {
-            if (type == MediaType.MOVIE) {
-                val d = seerrApi.getMovieDetails(tmdbId, language = metaLang)
-                ChartCardCacheEntry(
-                    now,
-                    SeerrMediaResultDto(
-                        id = d.id, mediaType = "movie", title = d.title, overview = d.overview,
-                        releaseDate = d.releaseDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
-                        voteAverage = d.voteAverage, adult = d.adult, mediaInfo = d.mediaInfo
-                    ),
-                    d.certification(watchRegion),
-                    d
-                )
-            } else {
-                val d = seerrApi.getTvDetails(tmdbId, language = metaLang)
-                ChartCardCacheEntry(
-                    now,
-                    SeerrMediaResultDto(
-                        id = d.id, mediaType = "tv", name = d.name, overview = d.overview,
-                        firstAirDate = d.firstAirDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
-                        voteAverage = d.voteAverage, mediaInfo = d.mediaInfo
-                    ),
-                    d.certification(watchRegion)
-                )
-            }
-        }.getOrNull()?.also { chartCardCache[key] = it } ?: return null
+        val entry = chartCardEntry(tmdbId, type) ?: return null
         val card = mapSeerrResult(entry.result, type, today)
         // Certification lets Kids / rating-limited profiles filter chart titles they don't own.
         val ratedCard = if (card.maturityRating == null && entry.rating != null) card.copy(maturityRating = entry.rating) else card
@@ -2423,7 +2502,7 @@ class UnifiedCatalogRepository @Inject constructor(
                     withRuntimeLte = withRuntimeLte
                 ).results
             }.getOrDefault(emptyList()).also {
-                if (it.isNotEmpty()) curatedDiscoverCache[key] = CuratedDiscoverCacheEntry(now, it)
+                if (it.isNotEmpty()) putBounded(curatedDiscoverCache, key, CuratedDiscoverCacheEntry(now, it)) { e -> e.atMs }
             }
         raw.filter { isReleasedOnOrBefore(it.releaseDate, today) }
             .map { mapSeerrResult(it, MediaType.MOVIE, today) }
@@ -2454,7 +2533,7 @@ class UnifiedCatalogRepository @Inject constructor(
                     withRuntimeLte = withRuntimeLte
                 ).results
             }.getOrDefault(emptyList()).also {
-                if (it.isNotEmpty()) curatedDiscoverCache[key] = CuratedDiscoverCacheEntry(now, it)
+                if (it.isNotEmpty()) putBounded(curatedDiscoverCache, key, CuratedDiscoverCacheEntry(now, it)) { e -> e.atMs }
             }
         raw.filter { isReleasedOnOrBefore(it.firstAirDate, today) }
             .map { mapSeerrResult(it, MediaType.SERIES, today) }
@@ -4535,6 +4614,8 @@ class UnifiedCatalogRepository @Inject constructor(
         private val HOME_SERVER = JellyfinServer(id = ServerScopedId.HOME, isHome = true)
         /** How long a row / grid / search waits for an extra server before going on without it. */
         private const val ROW_EXTRA_TIMEOUT_MS = 3_500L
+        private const val EXTRA_PART_RETRY_COOLDOWN_MS = 10 * 60_000L
+        private const val SEERR_CACHE_MAX_ENTRIES = 400
         private const val DETAILS_EXTRA_TIMEOUT_MS = 5_000L
         /** How long a blocking index load waits for the extra servers' shares. */
         private const val EXTRA_INDEX_WAIT_MS = 6_000L
