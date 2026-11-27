@@ -50,6 +50,11 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 > *Note: UI screenshots above are rendered from the real Jetpack Compose TV layouts via CashApp Paparazzi (`./gradlew testDebugUnitTest`) using synthetic poster/backdrop preview artwork.*
 
 ## Key Features
+- **Release Polish (new in 0.9.4)**:
+  - **Live TV**: the guide now covers the full 36 hours on large lineups, keeps "now" current while open, refreshes after you return from a channel, lines up on local half-hours in every time zone and follows the TV's 12/24-hour clock. Changing channel releases the previous tuner. Recordings use the server's DVR padding and series defaults unless you change them. Recordings, Kids profiles and the launcher's Watch Next row respect rating limits.
+  - **Playback**: Up Next follows shuffle and playlist queues. An audio track picked before playback now plays on Direct Play, and "Off" in the track picker really turns subtitles off. Subtitle choices survive quality, audio and version switches. A failed cinema intro is skipped instead of ending playback. The sleep timer no longer lets the next episode autoplay. Passthrough off now decodes Dolby audio on the box, so audio sync works.
+  - **Screensaver & Home**: waking the screensaver keeps your place (Back no longer exits the app). The screensaver also no longer starts while a dialog is open or after you come back from the background, and trailers and theme songs pause under it. Switching tabs no longer flashes the previous tab's rows, and deleted titles disappear from Home and library grids right away.
+  - **Fully localized**: every screen, message, row title and badge is now translated in `en`, `es`, `fr`, `de` and `ja`.
 - **Jellyfin Video Parity & Living-Room Polish (new in 0.9.3)**:
   - **HLS Audio Switching, PGS/VobSub Burn-In & Bundled FFmpeg Audio**: Switch any server audio track cleanly during HLS/transcoded streams, burn in image subtitles (`PGS` / `VobSub` / `DVBSub`) on demand or in HLS mode, and decode AC3/E-AC3/DTS/TrueHD/Vorbis/FLAC/Opus locally in PCM via Jellyfin's `media3-ffmpeg-decoder` (with a Settings toggle).
   - **Smart & Forced-Only Subtitles + Server Preference Sync**: Supports Jellyfin's `Default`, `Smart`, `Only Forced`, `Always`, and `None` subtitle modes and pulls user audio/subtitle defaults from `/Users/{userId}`.
