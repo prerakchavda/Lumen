@@ -63,6 +63,14 @@ data class LocalMyListEntry(
     )
 }
 
+/** Wrong-PIN state of one profile; [lockedUntilMs] is wall-clock time. */
+@Serializable
+data class PinThrottleEntry(
+    val failures: Int = 0,
+    val strikes: Int = 0,
+    val lockedUntilMs: Long = 0L
+)
+
 @Singleton
 class SessionPreferences private constructor(
     private val dataStore: DataStore<Preferences>,
@@ -100,6 +108,7 @@ class SessionPreferences private constructor(
         /** Every Jellyfin server (home first). The home entry's URLs live in the keys above. */
         val JELLYFIN_SERVERS_JSON = stringPreferencesKey("jellyfin_servers_json")
         val SCHEMA_VERSION = stringPreferencesKey("schema_version")
+        val PIN_THROTTLE_JSON = stringPreferencesKey("pin_throttle_json")
 
         fun localMyList(profileId: String) = stringPreferencesKey("local_my_list_$profileId")
         fun reminders(profileId: String) = stringPreferencesKey("reminders_$profileId")
@@ -402,6 +411,16 @@ class SessionPreferences private constructor(
 
     val allowRemoteControlFlow: Flow<Boolean> = dataStore.data.map { prefs ->
         (prefs[Keys.ALLOW_REMOTE_CONTROL] != "false").also { cachedAllowRemoteControl = it }
+    }
+
+    /** Wrong-PIN counters per profile id, kept on disk so killing the app does not reset a lockout. */
+    suspend fun pinThrottleState(): Map<String, PinThrottleEntry> {
+        val raw = dataStore.data.first()[Keys.PIN_THROTTLE_JSON] ?: return emptyMap()
+        return runCatching { json.decodeFromString<Map<String, PinThrottleEntry>>(raw) }.getOrDefault(emptyMap())
+    }
+
+    suspend fun savePinThrottleState(state: Map<String, PinThrottleEntry>) {
+        dataStore.edit { it[Keys.PIN_THROTTLE_JSON] = json.encodeToString(state) }
     }
 
     suspend fun setAllowRemoteControl(enabled: Boolean) {

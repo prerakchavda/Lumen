@@ -45,17 +45,21 @@ import com.seerflix.tv.core.model.ServerStatus
 import com.seerflix.tv.ui.theme.SeerflixTokens
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 
 data class ServerStatusUiState(
     /** Extra servers that are offline right now (quiet pill only). */
     val offline: List<ServerStatus> = emptyList(),
     /** Extra servers that rejected the stored token: the profile has to sign in again. */
-    val needSignIn: List<ServerStatus> = emptyList()
+    val needSignIn: List<ServerStatus> = emptyList(),
+    /** Ids the user already answered (sign in / later); not prompted again. */
+    val dismissedPrompts: Set<String> = emptySet()
 )
 
 @HiltViewModel
@@ -63,15 +67,24 @@ class ServerStatusViewModel @Inject constructor(
     accounts: ServerAccountRepository,
     authRepository: AuthRepository
 ) : ViewModel() {
+    // Kept here, not in a composable remember, so leaving Home (Details, Settings...) and coming
+    // back doesn't ask again.
+    private val dismissed = MutableStateFlow(emptySet<String>())
+
     val uiState: StateFlow<ServerStatusUiState> =
-        combine(accounts.statusFlow, authRepository.activeProfileFlow) { statuses, profile ->
+        combine(accounts.statusFlow, authRepository.activeProfileFlow, dismissed) { statuses, profile, dismissedIds ->
             ServerStatusUiState(
                 offline = statuses.filter { it.health == ServerHealth.UNREACHABLE },
                 // A Kids / rating-limited profile can't manage servers, so it is never asked to.
                 needSignIn = if (profile?.isRestricted == true) emptyList()
-                else statuses.filter { it.health == ServerHealth.AUTH_REQUIRED }
+                else statuses.filter { it.health == ServerHealth.AUTH_REQUIRED },
+                dismissedPrompts = dismissedIds
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000L), ServerStatusUiState())
+
+    fun dismissPrompt(serverId: String) {
+        dismissed.update { it + serverId }
+    }
 }
 
 /**
@@ -113,16 +126,16 @@ fun ServerStatusOverlay(
         }
     }
 
-    // Ask once per server per app run; "Later" leaves the note above and Settings as the way back.
-    var dismissed by remember { mutableStateOf(emptySet<String>()) }
-    val asking = state.needSignIn.firstOrNull { it.server.id !in dismissed }
+    // Ask once per server while Home is on the stack; "Later" leaves the note above and Settings
+    // as the way back.
+    val asking = state.needSignIn.firstOrNull { it.server.id !in state.dismissedPrompts }
     if (asking != null) {
         val signInFocus = remember { FocusRequester() }
         LaunchedEffect(asking.server.id) {
             delay(80L)
             runCatching { signInFocus.requestFocus() }
         }
-        val dismiss = { dismissed = dismissed + asking.server.id }
+        val dismiss = { viewModel.dismissPrompt(asking.server.id) }
         Dialog(onDismissRequest = dismiss) {
             Column(
                 modifier = Modifier

@@ -12,8 +12,10 @@ import com.seerflix.tv.core.network.SeerrApi
 import com.seerflix.tv.core.network.SeerrJellyfinLoginRequest
 import com.seerflix.tv.core.network.SeerrQuickConnectAuthRequest
 import com.seerflix.tv.core.network.SessionPreferences
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,20 +43,27 @@ class AuthRepository @Inject constructor(
         // tested. If the test fails, put back the previous working config so backing out of
         // Settings doesn't leave the app pointed at a broken server.
         val previous = prefs.serverConfigFlow.first()
-        val result = testAndSaveServersInternal(
-            jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
-        )
-        if (result.isFailure && previous.isConfigured) {
-            prefs.saveServerUrls(
-                jellyfinUrl = previous.jellyfinUrl,
-                seerrUrl = previous.seerrUrl,
-                jellyfinLocalUrl = previous.jellyfinLocalUrl,
-                seerrLocalUrl = previous.seerrLocalUrl,
-                trustSelfSignedCerts = previous.trustSelfSignedCerts,
-                seerrApiKey = previous.seerrApiKey
+        var result: Result<Pair<String, String>>? = null
+        try {
+            result = testAndSaveServersInternal(
+                jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
             )
+            return result
+        } finally {
+            // Also restore when cancelled mid-test (user pressed Back): result is still null then.
+            if (result?.isSuccess != true && previous.isConfigured) {
+                withContext(NonCancellable) {
+                    prefs.saveServerUrls(
+                        jellyfinUrl = previous.jellyfinUrl,
+                        seerrUrl = previous.seerrUrl,
+                        jellyfinLocalUrl = previous.jellyfinLocalUrl,
+                        seerrLocalUrl = previous.seerrLocalUrl,
+                        trustSelfSignedCerts = previous.trustSelfSignedCerts,
+                        seerrApiKey = previous.seerrApiKey
+                    )
+                }
+            }
         }
-        return result
     }
 
     private suspend fun testAndSaveServersInternal(
@@ -229,8 +238,10 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun switchProfile(profileId: String) {
+        // No server sync here: MainActivity's LaunchedEffect(activeProfile?.jellyfinToken) runs
+        // syncUserConfigurationFromServer() in the background, so a dead server can't hold up
+        // navigation for the full network timeout.
         prefs.setActiveProfile(profileId)
-        runCatchingCancellable { syncUserConfigurationFromServer() }
     }
 
     suspend fun clearActiveProfile() {

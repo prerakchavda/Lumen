@@ -45,7 +45,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -134,7 +137,24 @@ fun SearchContent(
     // Set when the focused element is about to disappear (a person tile or the Clear chip), so
     // focus can be handed to a stable target on the next frame instead of being lost.
     var pendingFocusTarget by remember { mutableStateOf<FocusRequester?>(null) }
+    // Only the first arrival grabs focus / opens the keyboard: coming back from Details must leave
+    // focus on the restored result card.
+    var autoFocused by rememberSaveable { mutableStateOf(false) }
+    val firstEntry = remember { !autoFocused }
+    // The card opened last; read once, unobserved, so clicks don't recompose every card.
+    var openedItemId by rememberSaveable { mutableStateOf<String?>(null) }
+    val returnTargetId = remember { Snapshot.withoutReadObservation { openedItemId } }
+    val returnFocusRequester = remember { FocusRequester() }
+    val returnFocusModifier = { item: UnifiedMediaItem ->
+        if (returnTargetId != null && item.id == returnTargetId) Modifier.focusRequester(returnFocusRequester) else Modifier
+    }
     LaunchedEffect(Unit) {
+        if (autoFocused) {
+            withFrameNanos { } // let the grid lay its cards out
+            runCatching { returnFocusRequester.requestFocus() }
+            return@LaunchedEffect
+        }
+        autoFocused = true
         // Arriving on an actor's filmography (from Details) shouldn't pop the on-screen keyboard
         // over the results; focus the filter chip instead of the text field.
         val target = if (state.activePersonName != null) clearFilterFocusRequester else searchInputFocusRequester
@@ -169,7 +189,7 @@ fun SearchContent(
             // TV: OK opens the keyboard; D-pad back up from the results doesn't. A fresh, empty
             // search opens straight into typing.
             val openKeyboardOnEntry = remember {
-                state.query.isEmpty() && state.activePersonName == null && state.selectedGenre == null
+                firstEntry && state.query.isEmpty() && state.activePersonName == null && state.selectedGenre == null
             }
             TvTextFieldContainer(
                 modifier = Modifier.weight(1f),
@@ -337,7 +357,11 @@ fun SearchContent(
                                     NetflixPosterCard(
                                         item = item,
                                         onFocus = {},
-                                        onClick = { onOpenDetails(item) }
+                                        onClick = {
+                                            openedItemId = item.id
+                                            onOpenDetails(item)
+                                        },
+                                        modifier = returnFocusModifier(item)
                                     )
                                 }
                             }
@@ -418,7 +442,11 @@ fun SearchContent(
                                     NetflixPosterCard(
                                         item = item,
                                         onFocus = {},
-                                        onClick = { onOpenDetails(item) }
+                                        onClick = {
+                                            openedItemId = item.id
+                                            onOpenDetails(item)
+                                        },
+                                        modifier = returnFocusModifier(item)
                                     )
                                 }
                             }

@@ -54,6 +54,9 @@ class SeerflixSearchProvider : ContentProvider() {
                     authRepository.warmup()
                     val profile = authRepository.activeProfileFlow.first()
                         ?: return@withTimeoutOrNull emptyList()
+                    // A PIN-locked profile's titles must not show up in the system search without
+                    // the PIN (the app itself opens on the profile picker for it).
+                    if (profile.hasPin) return@withTimeoutOrNull emptyList()
                     // Global search must honour the active profile's parental controls.
                     entryPoint.catalogRepository().searchUnified(
                         userId = profile.jellyfinUserId,

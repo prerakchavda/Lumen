@@ -415,7 +415,9 @@ private fun SeerflixNavGraph(
                             "Series", "Season", "Episode" -> MediaType.SERIES
                             else -> MediaType.MOVIE
                         }
-                        navController.navigate("details/0/$id/${type.name}")
+                        // Server-supplied id: encode it and don't let a malformed route crash
+                        // the app (same as the deep-link path).
+                        runCatching { navController.navigate("details/0/${Uri.encode(id)}/${type.name}") }
                     }
                     "GoHome" -> if (signedIn) navController.popBackStack(Routes.HOME, inclusive = false)
                     "Back" -> if (signedIn && route != Routes.HOME) navController.popBackStack()
@@ -678,9 +680,12 @@ private fun SeerflixNavGraph(
 
     // After a crash: offer once (on Home) to store the report on the user's Jellyfin server.
     var crashReport by remember { mutableStateOf<String?>(null) }
+    // Once answered, don't offer again this run even if the upload failed and the file remains
+    // (it is offered again on the next launch).
+    var crashHandled by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     val crashScope = androidx.compose.runtime.rememberCoroutineScope()
     LaunchedEffect(currentRoute) {
-        if (currentRoute == Routes.HOME && crashReport == null) {
+        if (currentRoute == Routes.HOME && crashReport == null && !crashHandled) {
             crashReport = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { diagnostics.pendingCrash() }
         }
     }
@@ -689,8 +694,13 @@ private fun SeerflixNavGraph(
         CrashReportPrompt(
             onSend = {
                 crashReport = null
+                crashHandled = true
                 crashScope.launch {
                     val result = diagnostics.upload()
+                    // Uploads are turned off on this server: retrying on a later launch won't help.
+                    if (result == com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { diagnostics.dismissCrash() }
+                    }
                     serverMessage = "" to when (result) {
                         is com.seerflix.tv.core.diagnostics.LogUploadResult.Uploaded -> crashStrings.settingsLogsSent.format(result.fileName)
                         com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer -> crashStrings.settingsLogsDisabled
@@ -700,6 +710,7 @@ private fun SeerflixNavGraph(
             },
             onDismiss = {
                 crashReport = null
+                crashHandled = true
                 diagnostics.dismissCrash()
             }
         )
