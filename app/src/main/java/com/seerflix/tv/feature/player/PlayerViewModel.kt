@@ -498,6 +498,10 @@ class PlayerViewModel @Inject constructor(
             // Returns as soon as PlaybackInfo is known; segments (skip intro/recap, credits) and the
             // next episode are fetched in this job and merged in when they arrive. Until then the
             // skip / up-next UI simply doesn't trigger.
+            // Re-opening a title right after leaving it: the server may not have stored the
+            // position from that session yet. Only matters when the server's resume point is used
+            // (in-player reloads pass their own position, and other items have no pending stop).
+            if (resumeOverrideMs == null && !isSameItem) playbackManager.awaitPendingStops(itemId)
             playbackManager.preparePlaybackWithExtras(
                 extrasScope = this,
                 userId = activeUserId,

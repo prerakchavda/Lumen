@@ -825,7 +825,9 @@ fun PlayerScreen(
 
         val resumeMs = (session.resumeTicks / 10_000L).coerceAtLeast(0L)
         if (resumeMs > 5_000L) {
-            seekExact(resumeMs)
+            // Snap to a keyframe within ±3 s: a frame-exact resume decodes and drops everything
+            // from the previous keyframe, which delays the first frame on 4K HEVC.
+            seekFast(resumeMs)
         }
         player.prepare()
         if (viewModel.isSyncPlayActive()) {

@@ -43,6 +43,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
@@ -176,8 +177,11 @@ class JellyfinPlaybackManager @Inject constructor(
      */
     private val reportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** A "stopped" report still in flight and the (normalized) item / series ids it covers. */
+    private class PendingStop(val ids: Set<String>, val job: Job)
+
     /** "Stopped" reports still in flight, keyed by play session. */
-    private val pendingStops = ConcurrentHashMap<String, Job>()
+    private val pendingStops = ConcurrentHashMap<String, PendingStop>()
 
     private val _stopReported = MutableSharedFlow<String>(extraBufferCapacity = 8)
 
@@ -189,8 +193,14 @@ class JellyfinPlaybackManager @Inject constructor(
      * it has processed the stop (after killing any transcode, which can take a few seconds), so
      * anything that reads the resume position right after leaving the player must wait for it.
      */
-    suspend fun awaitPendingStops(timeoutMs: Long = PENDING_STOP_TIMEOUT_MS) {
-        val jobs = pendingStops.values.toList()
+    suspend fun awaitPendingStops(
+        itemId: String? = null,
+        timeoutMs: Long = PENDING_STOP_TIMEOUT_MS
+    ) {
+        val wanted = itemId?.let(::normalizeStopId)
+        val jobs = pendingStops.values
+            .filter { wanted == null || wanted in it.ids }
+            .map { it.job }
         if (jobs.isEmpty()) return
         withTimeoutOrNull(timeoutMs) { jobs.forEach { it.join() } }
     }
@@ -286,7 +296,9 @@ class JellyfinPlaybackManager @Inject constructor(
                 ?: error(strings.playerErrorSignInAgain)
             val requestedSourceId = mediaSourceId?.let { ServerScopedId.rawOf(it) }
             val capabilities = if (prefs.cachedMatchDeviceCapabilities) {
-                capabilityProvider.current()
+                // The first call scans MediaCodecList (hundreds of ms on weak SoCs); keep it off
+                // the main thread, where the player's load coroutine runs.
+                withContext(Dispatchers.Default) { capabilityProvider.current() }
             } else {
                 DeviceMediaCapabilities.PERMISSIVE
             }
@@ -328,9 +340,6 @@ class JellyfinPlaybackManager @Inject constructor(
             // Series/Season the speculative request is dropped once the episode is resolved.
             val requestedRawId = requestedSession.raw(itemId)
             val speculativePlayback = playbackInfoAsync(requestedSession, requestedRawId, requestedSourceId)
-            // Re-opening a title right after leaving it: the server hasn't stored the position
-            // from the previous session yet, so the item would come back with the old one.
-            awaitPendingStops()
             val requested = requestedSession.api.getItemDetails(
                 requestedSession.userId, requestedRawId, fields = PLAYBACK_ITEM_FIELDS
             )
@@ -913,9 +922,13 @@ class JellyfinPlaybackManager @Inject constructor(
     ) {
         val key = session.playSessionId
         val job = reportScope.launch { reportStopped(session, positionTicks, reportState) }
-        pendingStops[key] = job
+        val pending = PendingStop(
+            ids = listOfNotNull(session.itemId, session.seriesId).map(::normalizeStopId).toSet(),
+            job = job
+        )
+        pendingStops[key] = pending
         job.invokeOnCompletion {
-            pendingStops.remove(key, job)
+            pendingStops.remove(key, pending)
             _stopReported.tryEmit(session.itemId)
         }
     }
@@ -943,6 +956,8 @@ class JellyfinPlaybackManager @Inject constructor(
         const val NEXT_EPISODE_LOOKAHEAD = 8
 
         const val PENDING_STOP_TIMEOUT_MS = 4_000L
+
+        private fun normalizeStopId(id: String): String = id.replace("-", "").lowercase()
 
         /**
          * Picks the next episode from [following] (episodes after [current] in the server's
