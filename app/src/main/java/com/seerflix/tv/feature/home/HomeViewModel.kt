@@ -167,7 +167,9 @@ class HomeViewModel @Inject constructor(
     private val strings: UiStrings
         get() = stringsForLanguage(prefs.cachedUiLanguage)
 
-    private var focusPreviewJob: Job? = null
+    @Volatile private var focusPreviewJob: Job? = null
+    /** The item the hero is showing or about to show (the target of [focusPreviewJob]). */
+    @Volatile private var focusTargetId: String? = null
     private var feedbackJob: Job? = null
     private var catalogJob: Job? = null
     private var collectionJob: Job? = null
@@ -361,17 +363,17 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.removeFromPlaylist(profile.jellyfinUserId, playlistId, listOf(entryId))
                 .onSuccess {
-                    val active = _uiState.value.activePlaylistDetails
-                    if (active?.id == playlistId) {
+                    // Read and write inside update{}: two removals finishing together must not
+                    // bring the first removed item back.
+                    _uiState.update { s ->
+                        val active = s.activePlaylistDetails?.takeIf { it.id == playlistId } ?: return@update s
                         val updatedItems = active.items.filterNot { it.playlistItemId == entryId }
-                        _uiState.update { s ->
-                            s.copy(
-                                activePlaylistDetails = active.copy(items = updatedItems, itemCount = updatedItems.size),
-                                playlists = s.playlists.map {
-                                    if (it.id == playlistId) it.copy(itemCount = updatedItems.size) else it
-                                }
-                            )
-                        }
+                        s.copy(
+                            activePlaylistDetails = active.copy(items = updatedItems, itemCount = updatedItems.size),
+                            playlists = s.playlists.map {
+                                if (it.id == playlistId) it.copy(itemCount = updatedItems.size) else it
+                            }
+                        )
                     }
                     showActionFeedback(strings.playlistRemovedFeedback)
                 }
@@ -1115,8 +1117,19 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    @Synchronized
     fun onItemFocused(item: UnifiedMediaItem, force: Boolean = false) {
-        if (!force && _uiState.value.featuredItem?.id == item.id) return
+        if (!force) {
+            if (focusTargetId == item.id) return
+            if (_uiState.value.featuredItem?.id == item.id) {
+                // Back on the featured card (A -> B -> A) before B's delayed switch fired:
+                // cancel it, or the hero would change to B while A is focused.
+                focusPreviewJob?.cancel()
+                focusTargetId = item.id
+                return
+            }
+        }
+        focusTargetId = item.id
         focusPreviewJob?.cancel()
         focusPreviewJob = viewModelScope.launch(Dispatchers.IO) {
             if (!force) {

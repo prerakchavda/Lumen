@@ -4056,7 +4056,9 @@ private fun CustomizeHomeDialog(
     val hiddenRows = remember(profile.id) {
         mutableStateListOf<String>().apply { addAll(profile.hiddenHomeRowIds) }
     }
-    val orderedRows = remember(profile.id, currentRows) {
+    // Snapshot when the dialog opens: background row refreshes (watch state changed elsewhere,
+    // library updates) must not reset the user's reordering mid-edit.
+    val orderedRows = remember(profile.id) {
         val visible = currentRows.distinctBy { it.id }.map { it.id to it.title }
         // Hidden rows are filtered out of `currentRows` by the repository, so without this they
         // vanished from the dialog and could never be shown again.
