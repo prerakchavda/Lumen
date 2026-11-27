@@ -260,6 +260,15 @@ private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): Stri
     }
 }
 
+/** SyncPlay group state as Jellyfin / SyncPlayManager report it ("Playing", "Paused", ...), localized for display. */
+private fun syncPlayStateLabel(state: String, s: UiStrings): String = when (state.lowercase()) {
+    "playing" -> s.syncPlayStatePlaying
+    "paused" -> s.syncPlayStatePaused
+    "idle" -> s.syncPlayStateIdle
+    "waiting" -> s.syncPlayStateWaiting
+    else -> state
+}
+
 private const val CONTINUE_WATCHING_FOR_PREFIX = "Continue Watching for "
 private const val BECAUSE_YOU_WATCHED_PREFIX = "Because you watched "
 
@@ -4310,7 +4319,7 @@ private fun SyncPlayDialog(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(strings.syncPlayActiveRoom.format(activeGroup.groupName), color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(
-                            text = strings.syncPlayViewers.format(activeGroup.participants.size.coerceAtLeast(1), activeGroup.state),
+                            text = strings.syncPlayViewers.format(activeGroup.participants.size.coerceAtLeast(1), syncPlayStateLabel(activeGroup.state, strings)),
                             color = colors.matchGreen,
                             fontSize = 12.sp
                         )
@@ -4364,7 +4373,7 @@ private fun SyncPlayDialog(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(grp.groupName, color = colors.white, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(
-                                    text = strings.syncPlayParticipants.format(grp.participants.size, grp.state),
+                                    text = strings.syncPlayParticipants.format(grp.participants.size, syncPlayStateLabel(grp.state, strings)),
                                     color = colors.textSecondary,
                                     fontSize = 11.sp
                                 )
