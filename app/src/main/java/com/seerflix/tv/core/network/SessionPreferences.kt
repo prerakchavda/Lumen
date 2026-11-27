@@ -426,6 +426,11 @@ class SessionPreferences private constructor(
     var cachedUiLanguage: String = "en"
         private set
 
+    /** Active profile's audio passthrough setting, so the player is built for it up front. */
+    @Volatile
+    var cachedAudioPassthroughEnabled: Boolean = true
+        private set
+
     val isSeerrConfigured: Boolean
         get() = cachedSeerrUrl.isNotBlank() || cachedSeerrLocalUrl.isNotBlank()
 
@@ -489,6 +494,7 @@ class SessionPreferences private constructor(
         }
         cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
         cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
+        cachedAudioPassthroughEnabled = found?.audioPassthroughEnabled ?: true
         found
     }
 

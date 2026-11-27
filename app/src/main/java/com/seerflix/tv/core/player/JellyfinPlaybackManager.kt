@@ -41,8 +41,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -171,6 +173,49 @@ class JellyfinPlaybackManager @Inject constructor(
     private val reportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
+     * Start / progress / stop reports go out one at a time, in the order they were made. Sent
+     * concurrently, a progress report could reach the server after the stop and bring the
+     * session back as "now playing" (and rewrite the watched position).
+     */
+    private val reportQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    /** Play sessions already reported stopped: later progress for them is dropped. */
+    private val stoppedPlaySessionIds = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+
+    init {
+        reportScope.launch {
+            for (job in reportQueue) runCatchingCancellable { job() }
+        }
+    }
+
+    /** Queues a "playback started" report (ordered with progress / stop reports). */
+    fun enqueueStart(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        reportState: PlaybackReportState? = null
+    ) {
+        // A session handed to an external player and resumed here is started again.
+        stoppedPlaySessionIds.remove(session.playSessionId)
+        reportQueue.trySend { reportStart(session, positionTicks, reportState) }
+    }
+
+    /** Queues a progress report; dropped if the session is reported stopped before it is sent. */
+    fun enqueueProgress(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        isPaused: Boolean,
+        reportState: PlaybackReportState? = null
+    ) {
+        reportQueue.trySend {
+            if (session.playSessionId !in stoppedPlaySessionIds) {
+                reportProgress(session, positionTicks, isPaused, reportState)
+            }
+        }
+    }
+
+    /**
      * Resolves a playable session. Only the calls needed to start the stream are awaited; media
      * segments and the next episode are not fetched (use [preparePlaybackWithExtras] for those).
      */
@@ -261,7 +306,8 @@ class JellyfinPlaybackManager @Inject constructor(
                 ?: error(strings.playerErrorSignInAgain)
             val requestedSourceId = mediaSourceId?.let { ServerScopedId.rawOf(it) }
             val capabilities = if (prefs.cachedMatchDeviceCapabilities) {
-                capabilityProvider.current()
+                // MediaCodecList / AudioCapabilities / display HDR queries: keep them off Main.
+                withContext(Dispatchers.Default) { capabilityProvider.current() }
             } else {
                 DeviceMediaCapabilities.PERMISSIVE
             }
@@ -883,7 +929,8 @@ class JellyfinPlaybackManager @Inject constructor(
         positionTicks: Long,
         reportState: PlaybackReportState? = null
     ) {
-        reportScope.launch { reportStopped(session, positionTicks, reportState) }
+        stoppedPlaySessionIds += session.playSessionId
+        reportQueue.trySend { reportStopped(session, positionTicks, reportState) }
     }
 
     suspend fun reportStopped(

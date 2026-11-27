@@ -191,7 +191,11 @@ class PlayerViewModel @Inject constructor(
     /** Remote-control commands from other Jellyfin apps that act on the player. */
     val remotePlaystate: Flow<ServerEvent.Playstate> = socketClient.events.filterIsInstance<ServerEvent.Playstate>()
 
-    private val _uiState = MutableStateFlow(PlayerUiState())
+    // Start from the active profile's passthrough setting: the player is keyed on it, so a
+    // mismatched default would build (and immediately throw away) a second ExoPlayer.
+    private val _uiState = MutableStateFlow(
+        PlayerUiState(audioPassthroughEnabled = prefs.cachedAudioPassthroughEnabled)
+    )
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     /** UI strings for the active profile's language, read when a message is produced. */
@@ -1505,9 +1509,7 @@ class PlayerViewModel @Inject constructor(
         val session = _uiState.value.session ?: return
         if (session.isTrailer || session.isCinemaIntro) return
         val full = buildDefaultReportState(reportState)
-        viewModelScope.launch {
-            playbackManager.reportStart(session, positionMs * 10_000L, full)
-        }
+        playbackManager.enqueueStart(session, positionMs * 10_000L, full)
     }
 
     fun reportProgress(positionMs: Long, isPaused: Boolean, reportState: PlaybackReportState? = null) {
@@ -1527,9 +1529,7 @@ class PlayerViewModel @Inject constructor(
             return
         }
         val full = buildDefaultReportState(reportState)
-        viewModelScope.launch {
-            playbackManager.reportProgress(session, positionMs * 10_000L, isPaused, full)
-        }
+        playbackManager.enqueueProgress(session, positionMs * 10_000L, isPaused, full)
     }
 
     fun reportStopped(positionMs: Long, reportState: PlaybackReportState? = null) {
