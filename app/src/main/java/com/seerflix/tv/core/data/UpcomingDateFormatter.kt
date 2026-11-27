@@ -108,6 +108,8 @@ object UpcomingDateFormatter {
     fun isHighlightBadge(label: String?): Boolean {
         if (label.isNullOrBlank()) return false
         if (label == NOW_IN_LIBRARY) return true
+        // Collection completion badges are never dates (and would cost a failed date parse).
+        if (COLLECTION_OWNED_OF.containsMatchIn(label) || COLLECTION_OWNED.containsMatchIn(label)) return false
         val (prefix, date) = splitBadge(label) ?: return false
         return date.kind == When.TONIGHT || (date.kind == When.TODAY && prefix == null)
     }

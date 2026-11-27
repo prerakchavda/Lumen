@@ -1262,6 +1262,10 @@ data class UiStrings(
         internal set
     var rowBecauseYouWatched: String = "Because you watched %s"
         internal set
+    var rowBecauseYouWatchedGeneric: String = "Because You Watched"
+        internal set
+    var rowSeasonalPicksGeneric: String = "Seasonal Picks"
+        internal set
     var rowSeasonalRomance: String = "Date Night & Romance"
         internal set
     var rowSeasonalSummer: String = "Summer Blockbusters"
@@ -2224,6 +2228,8 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         rowTop10TvIn = "Top 10 series hoy · %s"
         rowTop10MoviesIn = "Top 10 películas hoy · %s"
         rowBecauseYouWatched = "Porque viste %s"
+        rowBecauseYouWatchedGeneric = "Porque lo viste"
+        rowSeasonalPicksGeneric = "Selección de temporada"
         rowSeasonalRomance = "Noche de cita y romance"
         rowSeasonalSummer = "Taquillazos de verano"
         rowSeasonalSpooky = "Para la temporada de miedo"
@@ -3049,6 +3055,8 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         rowTop10TvIn = "Top 10 des séries aujourd'hui · %s"
         rowTop10MoviesIn = "Top 10 des films aujourd'hui · %s"
         rowBecauseYouWatched = "Parce que vous avez regardé %s"
+        rowBecauseYouWatchedGeneric = "Parce que vous avez regardé"
+        rowSeasonalPicksGeneric = "Sélection de saison"
         rowSeasonalRomance = "Soirée en amoureux & romance"
         rowSeasonalSummer = "Blockbusters de l'été"
         rowSeasonalSpooky = "Frissons de saison"
@@ -3874,6 +3882,8 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         rowTop10TvIn = "Top 10 Serien heute · %s"
         rowTop10MoviesIn = "Top 10 Filme heute · %s"
         rowBecauseYouWatched = "Weil du %s geschaut hast"
+        rowBecauseYouWatchedGeneric = "Weil du es geschaut hast"
+        rowSeasonalPicksGeneric = "Saisonale Auswahl"
         rowSeasonalRomance = "Date Night & Romantik"
         rowSeasonalSummer = "Sommer-Blockbuster"
         rowSeasonalSpooky = "Gruseliges für die Saison"
@@ -4699,6 +4709,8 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         rowTop10TvIn = "今日のTV番組トップ10（%s）"
         rowTop10MoviesIn = "今日の映画トップ10（%s）"
         rowBecauseYouWatched = "「%s」を観たあなたへ"
+        rowBecauseYouWatchedGeneric = "視聴履歴からのおすすめ"
+        rowSeasonalPicksGeneric = "季節のおすすめ"
         rowSeasonalRomance = "デートナイト＆ロマンス"
         rowSeasonalSummer = "夏の大ヒット作"
         rowSeasonalSpooky = "ハロウィンにおすすめ"

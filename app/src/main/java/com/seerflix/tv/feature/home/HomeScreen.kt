@@ -218,7 +218,7 @@ private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): Stri
         "because_you_watched" ->
             if (title.startsWith(BECAUSE_YOU_WATCHED_PREFIX)) {
                 s.rowBecauseYouWatched.format(title.removePrefix(BECAUSE_YOU_WATCHED_PREFIX))
-            } else title
+            } else s.rowBecauseYouWatchedGeneric
         "seasonal_picks" -> when (title) {
             "Date Night & Romance" -> s.rowSeasonalRomance
             "Summer Blockbusters" -> s.rowSeasonalSummer
@@ -226,7 +226,7 @@ private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): Stri
             "Cozy Autumn & Thanksgiving Picks" -> s.rowSeasonalAutumn
             "Holiday Favorites" -> s.rowSeasonalHoliday
             "Critically Acclaimed Films" -> s.rowSeasonalAcclaimed
-            else -> title
+            else -> s.rowSeasonalPicksGeneric
         }
         "new_on_digital", "np_new_on_digital" -> s.rowNewOnDigital
         // The TV tab reuses this id for its "New on Lumen" row.

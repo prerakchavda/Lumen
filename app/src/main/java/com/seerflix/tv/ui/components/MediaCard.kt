@@ -444,7 +444,7 @@ fun NetflixPosterCard(
         // Upcoming countdown / completion pill OR Netflix centered bottom status ribbon
         if (hasUpcomingBadge) {
             // Highlight comes from the parsed badge (arrived reminder / airing today), not its text.
-            val isHighlight = UpcomingDateFormatter.isHighlightBadge(item.upcomingBadgeLabel)
+            val isHighlight = remember(item.upcomingBadgeLabel) { UpcomingDateFormatter.isHighlightBadge(item.upcomingBadgeLabel) }
             val badgeStrings = AppStrings.current
             val badgeText = remember(item.upcomingBadgeLabel, badgeStrings) {
                 UpcomingDateFormatter.localizeBadge(item.upcomingBadgeLabel!!, badgeStrings)
