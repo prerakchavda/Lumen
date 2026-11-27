@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -222,17 +223,19 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             catalogRepository.deletedItemIds.collect { deleted ->
                 if (deleted.isEmpty()) return@collect
-                _uiState.update { state ->
-                    val rows = state.rows.map { row ->
-                        val kept = row.items.filterNot { it.jellyfinId in deleted }
-                        if (kept.size == row.items.size) row else row.copy(items = kept)
-                    }.filter { it.items.isNotEmpty() }
+                val before = _uiState.value.featuredItem
+                val after = _uiState.updateAndGet { state ->
+                    val rows = state.rows.withoutDeleted()
+                    val featuredGone = state.featuredItem?.jellyfinId in deleted
                     state.copy(
                         rows = rows,
-                        featuredItem = state.featuredItem?.takeUnless { it.jellyfinId in deleted }
-                            ?: if (state.featuredItem != null) rows.firstOrNull()?.items?.firstOrNull() else null
+                        featuredItem = if (!featuredGone) state.featuredItem
+                            else rows.firstOrNull()?.items?.firstOrNull(),
+                        // The deleted title's trailer must not keep playing under the new hero.
+                        previewStream = if (featuredGone) null else state.previewStream
                     )
-                }
+                }.featuredItem
+                if (after != null && after.id != before?.id) onItemFocused(after, force = true)
             }
         }
         // Live updates pushed by the server: new / removed titles (debounced, a library scan
@@ -264,8 +267,22 @@ class HomeViewModel @Inject constructor(
         }
         viewModelScope.launch {
             authRepository.activeProfileFlow.collect { active ->
-                if (active != null) {
-                    _uiState.update { it.copy(profile = active) }
+                if (active == null) return@collect
+                val previous = _uiState.value.profile
+                _uiState.update { it.copy(profile = active) }
+                // Home stays on the back stack while the profile is edited (Manage Profiles,
+                // Settings): a new rating limit / Kids mode / row layout / language must not keep
+                // showing rows built under the old rules.
+                if (previous != null && previous.homeContentSignature() != active.homeContentSignature()) {
+                    val ratingChanged = previous.effectiveRatingLimit != active.effectiveRatingLimit ||
+                        previous.kidsMode != active.kidsMode || previous.id != active.id
+                    if (ratingChanged) {
+                        lastLoadedTab = null
+                        displayedContent = null
+                        _uiState.update { it.copy(rows = emptyList(), featuredItem = null, previewStream = null) }
+                    }
+                    val s = _uiState.value
+                    loadCatalog(s.activeTab, s.selectedGenre, s.availabilityFilter)
                 }
             }
         }
@@ -413,7 +430,7 @@ class HomeViewModel @Inject constructor(
                 )
             }
             showActionFeedback(strings.homeLayoutSaved)
-            loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre, _uiState.value.availabilityFilter)
+            // The active-profile collector reloads the rows when the layout actually changed.
         }
     }
 
@@ -755,7 +772,11 @@ class HomeViewModel @Inject constructor(
                 ?: cwStrings.rowContinueWatching
             val hiddenRows = profile.hiddenHomeRowIds.toSet()
             _uiState.update { s ->
-                if (s.activeTab != tab || s.isLoading) return@update s
+                // The page may have changed to a filtered / genre view (or another tab) meanwhile.
+                if (s.activeTab != tab || s.isLoading || lastLoadedTab != tab ||
+                    s.availabilityFilter != AvailabilityFilter.ALL ||
+                    s.selectedGenre.id != GenreFilterOption.ALL_GENRES.first().id
+                ) return@update s
                 var updated = s.rows.toMutableList()
                 val cwIdx = updated.indexOfFirst { it.id == "continue_watching" }
                 when {
@@ -793,6 +814,14 @@ class HomeViewModel @Inject constructor(
                     }
                 }
                 if (updated == s.rows) s else s.copy(rows = updated)
+            }
+            // Keep the launcher's Watch Next row in step with the progress just made (it was
+            // only refreshed on a full Home load).
+            if (tab == HomeTab.HOME) {
+                val rows = _uiState.value.rows
+                val channelItems = rows.firstOrNull { it.id == "trending_now" }?.items
+                    ?: rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
+                com.seerflix.tv.core.player.runCatchingCancellable { tvChannelSyncManager.syncHomeChannels(cwItems, channelItems) }
             }
         }
     }
@@ -1217,10 +1246,25 @@ class HomeViewModel @Inject constructor(
         /** Server-pushed refresh: keep the current page on screen until the new rows arrive. */
         background: Boolean = false
     ) {
+        // Main-confined: it is also called from IO (init, Customize Home, DVR changes), and the
+        // job / generation bookkeeping below must not interleave with a tab press on Main.
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            viewModelScope.launch(Dispatchers.Main.immediate) {
+                loadCatalog(tab, genre, availabilityFilter, forceRefresh, background)
+            }
+            return
+        }
         // Cancel any in-flight load so rapid tab/filter switching can't race and let a stale
         // (slower) response overwrite the rows of the tab the user actually selected.
         catalogJob?.cancel()
+        // A Continue Watching refresh in flight belongs to the page being left.
+        continueWatchingJob?.cancel()
         val generation = ++catalogGeneration
+        // Snapshot in-place edits (My List, watched, removed CW) of the page being left NOW: the
+        // job below clears the rows on a tab switch before it could read them.
+        val editedContent = displayedContent?.let { (key, original) ->
+            _uiState.value.rows.takeIf { it !== original && it.isNotEmpty() }?.let { key to it }
+        }
         // Switching tabs: the previous tab's rows must not sit under the new tab while it loads
         // (they'd be focusable, then swapped out from under the focused card).
         val clearPreviousTab = !background && lastLoadedTab != null && lastLoadedTab != tab
@@ -1252,7 +1296,10 @@ class HomeViewModel @Inject constructor(
             // Stale-while-revalidate: paint the last good content for this exact view right away
             // (no spinner), then swap in the fresh rows below. A user-initiated Refresh skips it.
             val cacheKey = homeCacheKeyFor(profile, tab, genre, availabilityFilter, serverConfig)
-            saveLocallyEditedRows()
+            editedContent?.let { (key, rows) ->
+                if (displayedContent?.first == key) displayedContent = key to rows
+                runCatching { homeContentCache.write(key, rows, currentJellyfinBase()) }
+            }
             var showingCachedContent = false
             if (cacheKey != null && !forceRefresh && !background) {
                 val cachedRows = try {
@@ -1262,6 +1309,7 @@ class HomeViewModel @Inject constructor(
                 } catch (e: Exception) {
                     null
                 }
+                    ?.withoutDeleted()
                 ensureActive()
                 if (!cachedRows.isNullOrEmpty() && generation == catalogGeneration) {
                     val cachedFeatured = pickInitialFeatured(cachedRows)
@@ -1352,7 +1400,8 @@ class HomeViewModel @Inject constructor(
                         }
                     }
 
-                    val rows = rowsDeferred.await()
+                    // The library index can lag a deletion: never bring a deleted title back.
+                    val rows = rowsDeferred.await().withoutDeleted()
                     CatalogLoadBundle(
                         rows = rows,
                         collections = collectionsDeferred.await(),
@@ -1484,16 +1533,14 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private fun saveLocallyEditedRows() {
-        val shown = displayedContent ?: return
-        val current = _uiState.value.rows
-        if (current === shown.second || current.isEmpty()) return
-        displayedContent = shown.first to current
-        try {
-            homeContentCache.write(shown.first, current, currentJellyfinBase())
-        } catch (_: Exception) {
-            // Best effort.
-        }
+    /** Drops titles deleted this session (cached rows and a lagging index would show them). */
+    private fun List<CatalogRow>.withoutDeleted(): List<CatalogRow> {
+        val deleted = catalogRepository.deletedItemIds.value
+        if (deleted.isEmpty()) return this
+        return map { row ->
+            val kept = row.items.filterNot { it.jellyfinId in deleted }
+            if (kept.size == row.items.size) row else row.copy(items = kept)
+        }.filter { it.items.isNotEmpty() }
     }
 
     private fun pickInitialFeatured(rows: List<CatalogRow>): UnifiedMediaItem? =
@@ -1540,3 +1587,9 @@ class HomeViewModel @Inject constructor(
 private const val LIBRARY_CHANGE_DEBOUNCE_MS = 8_000L
 private const val USER_DATA_DEBOUNCE_MS = 3_000L
 private const val LIVE_TV_STALE_MS = 5 * 60_000L
+
+/** The profile fields that change what Home shows. */
+private fun UserProfile.homeContentSignature(): List<Any?> = listOf(
+    id, jellyfinUserId, effectiveRatingLimit, kidsMode, allowKidsRequests, hiddenHomeRowIds, homeRowOrder,
+    pinnedLibraryIds, mergeNextUpIntoContinueWatching, metadataLanguage
+)

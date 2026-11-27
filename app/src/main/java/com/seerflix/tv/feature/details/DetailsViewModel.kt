@@ -120,6 +120,8 @@ class DetailsViewModel @Inject constructor(
         get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private var pollingJob: Job? = null
+    /** The status refresh started on return from the player; cancelled when hidden again. */
+    private var visibleRefreshJob: Job? = null
     private var seasonJob: Job? = null
     private var loadJob: Job? = null
     private var activeUserId: String = ""
@@ -140,7 +142,10 @@ class DetailsViewModel @Inject constructor(
         if (hasBeenHidden) {
             hasBeenHidden = false
             // Returning from the player: pick up new resume position / watched state.
-            viewModelScope.launch(Dispatchers.IO) { refreshStatusSilently() }
+            // Tracked: hidden/visible twice in a row must not run two refreshes that each start
+            // a polling loop (one would be orphaned and poll under the player).
+            visibleRefreshJob?.cancel()
+            visibleRefreshJob = viewModelScope.launch(Dispatchers.IO) { refreshStatusSilently() }
         } else {
             startLivePollingIfNeeded(item)
         }
@@ -150,9 +155,11 @@ class DetailsViewModel @Inject constructor(
      * Called when the screen is covered (player, another Details page) or the app is backgrounded:
      * stop the 15s Seerr/Jellyfin polling instead of letting it run under the player.
      */
+    @Synchronized
     fun onScreenHidden() {
         isScreenVisible = false
         hasBeenHidden = true
+        visibleRefreshJob?.cancel()
         pollingJob?.cancel()
         pollingJob = null
     }
@@ -957,6 +964,8 @@ class DetailsViewModel @Inject constructor(
             item.hdDownload != null ||
             item.uhdDownload != null
 
+    // Called from Main and from IO (after a refresh): one polling loop at a time.
+    @Synchronized
     private fun startLivePollingIfNeeded(initial: UnifiedMediaItem) {
         pollingJob?.cancel()
         // Only poll while something is actually requested/downloading. Previously any title not in
