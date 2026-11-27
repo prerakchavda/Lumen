@@ -67,7 +67,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -278,6 +284,14 @@ fun DetailsContent(
         modifier = Modifier
             .fillMaxSize()
             .background(colors.background)
+            .onPreviewKeyEvent { event ->
+                // Only directional keys count as the user choosing where focus goes; OK pressed
+                // before Play is attached must not cancel the initial focus.
+                if (event.type == KeyEventType.KeyDown && event.key in DPAD_DIRECTION_KEYS) {
+                    focusMemory.userMovedFocus = true
+                }
+                false
+            }
     ) {
         when {
             state.isLoading -> {
@@ -1199,6 +1213,10 @@ private fun DetailsHeaderSection(
                 .background(if (backFocused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
                 .then(if (backFocused) Modifier.border(2.dp, colors.focusBorder, backCorner) else Modifier)
                 .onFocusChanged { backFocused = it.isFocused }
+                // When Details opens, Compose/the View system hands focus to the first focusable,
+                // which is this button (top-left). An OK press meant for Play then went Back. Keep it
+                // out of focus until the primary action has been focused.
+                .focusProperties { canFocus = focusMemory.initialFocusDone }
                 .clickable(onClick = onBack)
                 .padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
@@ -1324,11 +1342,12 @@ private fun DetailsHeaderSection(
             // and later poll updates never pull focus back after the user has moved it.
             LaunchedEffect(primaryKey) {
                 if (primaryKey == null || focusMemory.initialFocusDone) return@LaunchedEffect
-                repeat(5) { attempt ->
+                // Up to ~1.5 s: on a slow box (or a cold start) the button may attach late.
+                repeat(30) { attempt ->
                     delay(if (attempt == 0) 60L else 50L)
                     if (focusMemory.initialFocusDone) return@LaunchedEffect
-                    if (focusTracker.focusedKey != null || backFocused) {
-                        // The user already navigated somewhere in the header; leave focus there.
+                    if (focusMemory.userMovedFocus) {
+                        // The user already navigated somewhere; leave focus there.
                         focusMemory.initialFocusDone = true
                         return@LaunchedEffect
                     }
@@ -1338,6 +1357,8 @@ private fun DetailsHeaderSection(
                         return@LaunchedEffect
                     }
                 }
+                // Never leave Back unfocusable.
+                focusMemory.initialFocusDone = true
             }
             val hasMoreActions = actionsReady && (canPlay || showWatched || showRemind || showTrailer ||
                 showIssue || showRmProgress || showCancelReq)
@@ -2248,12 +2269,17 @@ private class ActionFocusTracker {
     var focusedKey: String? = null
 }
 
-/** Whether the screen has already placed its initial focus; deliberately not snapshot state. */
+/** Initial-focus bookkeeping for one Details screen. */
 private class DetailsFocusMemory {
-    var initialFocusDone: Boolean = false
+    /** State so the Back button becomes focusable once the primary action has focus. */
+    var initialFocusDone: Boolean by mutableStateOf(false)
+    /** The user pressed a D-pad direction since the screen opened (not snapshot state). */
+    var userMovedFocus: Boolean = false
     /** Selected section tab; state so switching tabs recomposes the list. */
     var section: DetailsSection? by mutableStateOf(null)
 }
+
+private val DPAD_DIRECTION_KEYS = setOf(Key.DirectionUp, Key.DirectionDown, Key.DirectionLeft, Key.DirectionRight)
 
 private enum class DetailsSection {
     EPISODES, VERSIONS, EXTRAS, TRAILERS, CAST, COLLECTION, MORE_LIKE_THIS

@@ -38,7 +38,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -169,6 +175,25 @@ class JellyfinPlaybackManager @Inject constructor(
      * survive the PlayerScreen being disposed and its ViewModel being cleared.
      */
     private val reportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** "Stopped" reports still in flight, keyed by play session. */
+    private val pendingStops = ConcurrentHashMap<String, Job>()
+
+    private val _stopReported = MutableSharedFlow<String>(extraBufferCapacity = 8)
+
+    /** Scoped item id of every item whose "stopped" report has finished (sent or failed). */
+    val stopReported: SharedFlow<String> = _stopReported.asSharedFlow()
+
+    /**
+     * Waits (bounded) for in-flight "stopped" reports. Jellyfin only saves the resume position once
+     * it has processed the stop (after killing any transcode, which can take a few seconds), so
+     * anything that reads the resume position right after leaving the player must wait for it.
+     */
+    suspend fun awaitPendingStops(timeoutMs: Long = PENDING_STOP_TIMEOUT_MS) {
+        val jobs = pendingStops.values.toList()
+        if (jobs.isEmpty()) return
+        withTimeoutOrNull(timeoutMs) { jobs.forEach { it.join() } }
+    }
 
     /**
      * Resolves a playable session. Only the calls needed to start the stream are awaited; media
@@ -303,6 +328,9 @@ class JellyfinPlaybackManager @Inject constructor(
             // Series/Season the speculative request is dropped once the episode is resolved.
             val requestedRawId = requestedSession.raw(itemId)
             val speculativePlayback = playbackInfoAsync(requestedSession, requestedRawId, requestedSourceId)
+            // Re-opening a title right after leaving it: the server hasn't stored the position
+            // from the previous session yet, so the item would come back with the old one.
+            awaitPendingStops()
             val requested = requestedSession.api.getItemDetails(
                 requestedSession.userId, requestedRawId, fields = PLAYBACK_ITEM_FIELDS
             )
@@ -883,7 +911,13 @@ class JellyfinPlaybackManager @Inject constructor(
         positionTicks: Long,
         reportState: PlaybackReportState? = null
     ) {
-        reportScope.launch { reportStopped(session, positionTicks, reportState) }
+        val key = session.playSessionId
+        val job = reportScope.launch { reportStopped(session, positionTicks, reportState) }
+        pendingStops[key] = job
+        job.invokeOnCompletion {
+            pendingStops.remove(key, job)
+            _stopReported.tryEmit(session.itemId)
+        }
     }
 
     suspend fun reportStopped(
@@ -907,6 +941,8 @@ class JellyfinPlaybackManager @Inject constructor(
 
         /** Episodes requested after the current one; enough to skip a few interleaved specials. */
         const val NEXT_EPISODE_LOOKAHEAD = 8
+
+        const val PENDING_STOP_TIMEOUT_MS = 4_000L
 
         /**
          * Picks the next episode from [following] (episodes after [current] in the server's

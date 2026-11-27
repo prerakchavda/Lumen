@@ -192,6 +192,9 @@ class UnifiedCatalogRepository @Inject constructor(
         detailsCache.clear()
     }
 
+    /** Drops cached details (resume position / watched state changed, e.g. after playback). */
+    fun invalidateCachedDetails() = invalidateDetailsCache()
+
     private val isSeerrEnabled: Boolean
         get() = prefs.isSeerrConfigured
 

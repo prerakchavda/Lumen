@@ -116,8 +116,30 @@ class DetailsViewModel @Inject constructor(
     @Volatile private var isScreenVisible = true
     @Volatile private var hasBeenHidden = false
 
+    private var returnRefreshJob: Job? = null
+
     init {
         loadAll()
+        // The player's "stopped" report can land after this screen is back on top (the Details
+        // entry is STARTED when the exit transition begins, before the player is disposed).
+        viewModelScope.launch {
+            playbackManager.stopReported.collect {
+                if (isScreenVisible && !_uiState.value.isRefining && _uiState.value.item != null) {
+                    scheduleReturnRefresh()
+                }
+            }
+        }
+    }
+
+    private fun scheduleReturnRefresh() {
+        returnRefreshJob?.cancel()
+        returnRefreshJob = viewModelScope.launch(Dispatchers.IO) {
+            // Let the player register its "stopped" report, then wait for the server to store the
+            // new resume position before reading it back.
+            delay(RETURN_REFRESH_DELAY_MS)
+            playbackManager.awaitPendingStops()
+            refreshStatusSilently()
+        }
     }
 
     /** Called by the screen when it becomes visible again (lifecycle STARTED). */
@@ -129,7 +151,7 @@ class DetailsViewModel @Inject constructor(
         if (hasBeenHidden) {
             hasBeenHidden = false
             // Returning from the player: pick up new resume position / watched state.
-            viewModelScope.launch(Dispatchers.IO) { refreshStatusSilently() }
+            scheduleReturnRefresh()
         } else {
             startLivePollingIfNeeded(item)
         }
@@ -1023,5 +1045,9 @@ class DetailsViewModel @Inject constructor(
         if (pollingJob?.isActive != true) {
             startLivePollingIfNeeded(refreshed)
         }
+    }
+
+    private companion object {
+        const val RETURN_REFRESH_DELAY_MS = 500L
     }
 }

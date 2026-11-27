@@ -1542,6 +1542,8 @@ class PlayerViewModel @Inject constructor(
         // Not viewModelScope: this is called from the screen's onDispose right before the
         // ViewModel is cleared, which would cancel the request before it is sent.
         playbackManager.reportStoppedDetached(session, positionMs.coerceAtLeast(0L) * 10_000L, full)
+        // The 120 s details cache still holds the old resume position / watched flag.
+        catalogRepository.invalidateCachedDetails()
     }
 
     private companion object {
