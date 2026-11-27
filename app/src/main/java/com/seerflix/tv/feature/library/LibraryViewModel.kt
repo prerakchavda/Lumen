@@ -5,8 +5,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.model.UnifiedMediaItem
+import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -74,8 +77,13 @@ data class LibraryUiState(
 class LibraryViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val authRepository: AuthRepository,
-    private val catalogRepository: UnifiedCatalogRepository
+    private val catalogRepository: UnifiedCatalogRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
+
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private val rootParentId: String? = savedStateHandle.get<String>("parentId")?.takeIf { it.isNotBlank() }
     private val collectionType: String? = savedStateHandle.get<String>("collectionType")?.takeIf { it.isNotBlank() }
@@ -223,7 +231,7 @@ class LibraryViewModel @Inject constructor(
         val state = _uiState.value
         val profile = authRepository.activeProfileFlow.first()
         if (profile == null) {
-            _uiState.update { it.copy(isLoading = false, isLoadingMore = false, errorMessage = "No active profile") }
+            _uiState.update { it.copy(isLoading = false, isLoadingMore = false, errorMessage = strings.commonNoActiveProfile) }
             return
         }
         val (startsWith, lessThan) = letterQuery(state.letter)
@@ -265,7 +273,7 @@ class LibraryViewModel @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            val message = UnifiedCatalogRepository.formatHttpError(e, "Couldn't load the library")
+            val message = UnifiedCatalogRepository.formatHttpError(e, strings.libraryLoadFailed)
             _uiState.update {
                 if (startIndex > 0 && it.items.isNotEmpty()) {
                     // Keep what is already on screen; offer a retry for the next page.

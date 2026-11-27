@@ -49,7 +49,9 @@ object ExternalPlayerHelper {
         streamUrl: String,
         title: String,
         positionMs: Long = 0L,
-        externalSubtitles: List<ExternalSubtitleFile> = emptyList()
+        externalSubtitles: List<ExternalSubtitleFile> = emptyList(),
+        /** Title of the app chooser shown when no known TV player is installed (UiStrings.playerOpenWithExternal). */
+        chooserTitle: String = "Open with External Player"
     ): Boolean {
         val pm = context.packageManager
         val installedPackage = KNOWN_TV_PLAYER_PACKAGES.firstOrNull { pkg ->
@@ -66,7 +68,7 @@ object ExternalPlayerHelper {
         )
         return runCatching {
             val chooser = if (installedPackage == null) {
-                Intent.createChooser(intent, "Open with External Player").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                Intent.createChooser(intent, chooserTitle).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             } else {
                 intent
             }

@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.MediaRequestSummary
 import com.seerflix.tv.core.network.SessionPreferences
@@ -65,6 +67,10 @@ class RequestsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(RequestsUiState())
     val uiState: StateFlow<RequestsUiState> = _uiState.asStateFlow()
+
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private var refreshJob: Job? = null
     private var hasBeenVisible = false
@@ -162,7 +168,7 @@ class RequestsViewModel @Inject constructor(
                         _uiState.update {
                             it.copy(
                                 isLoading = false,
-                                errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load requests")
+                                errorMessage = UnifiedCatalogRepository.formatHttpError(err, strings.requestsLoadFailed)
                             )
                         }
                     }
@@ -183,7 +189,7 @@ class RequestsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             busyRequestId = null,
-                            actionMessage = "Request #$requestId approved",
+                            actionMessage = strings.requestsApproved.format(requestId),
                             allRequests = it.allRequests.withRequestStatus(requestId, 2)
                         )
                     }
@@ -193,7 +199,7 @@ class RequestsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             busyRequestId = null,
-                            actionMessage = UnifiedCatalogRepository.formatHttpError(err, "Approve failed")
+                            actionMessage = UnifiedCatalogRepository.formatHttpError(err, strings.requestsApproveFailed)
                         )
                     }
                 }
@@ -212,7 +218,7 @@ class RequestsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             busyRequestId = null,
-                            actionMessage = "Request #$requestId declined",
+                            actionMessage = strings.requestsDeclined.format(requestId),
                             allRequests = it.allRequests.withRequestStatus(requestId, 3)
                         )
                     }
@@ -222,7 +228,7 @@ class RequestsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             busyRequestId = null,
-                            actionMessage = UnifiedCatalogRepository.formatHttpError(err, "Decline failed")
+                            actionMessage = UnifiedCatalogRepository.formatHttpError(err, strings.requestsDeclineFailed)
                         )
                     }
                 }

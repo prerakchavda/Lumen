@@ -4,6 +4,8 @@ import com.seerflix.tv.core.data.CrossServerCopies
 import com.seerflix.tv.core.data.CrossServerMerge
 import com.seerflix.tv.core.data.ItemCopy
 import com.seerflix.tv.core.data.crossServerVersions
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.AssSubtitleMode
 import com.seerflix.tv.core.model.JellyfinServer
 import com.seerflix.tv.core.model.ServerScopedId
@@ -147,6 +149,10 @@ class JellyfinPlaybackManager @Inject constructor(
     /** What is about to be played: the server it is on and the item with that server's raw ids. */
     private class Target(val session: ServerSession, val item: JellyfinItemDto)
 
+    /** UI strings for the active profile's language (error texts and fallback track labels). */
+    private val strings: UiStrings
+        get() = stringsForLanguage(prefs.cachedUiLanguage)
+
     private fun homeSession(userId: String): ServerSession =
         ServerSession(prefs.serverById(ServerScopedId.HOME) ?: HOME_SERVER, jellyfinApi, userId)
 
@@ -252,7 +258,7 @@ class JellyfinPlaybackManager @Inject constructor(
             // Ids arrive server scoped; from here on each call goes to the owning server with the
             // raw id, and only the finished session carries scoped ids again.
             val requestedSession = sessionFor(itemId, userId)
-                ?: error("Sign in again to the server this title is on to play it")
+                ?: error(strings.playerErrorSignInAgain)
             val requestedSourceId = mediaSourceId?.let { ServerScopedId.rawOf(it) }
             val capabilities = if (prefs.cachedMatchDeviceCapabilities) {
                 capabilityProvider.current()
@@ -422,7 +428,7 @@ class JellyfinPlaybackManager @Inject constructor(
             sortedEpisodes.firstOrNull { (it.userData?.playbackPositionTicks ?: 0L) > 0L }
                 ?: sortedEpisodes.firstOrNull { it.userData?.played != true }
                 ?: sortedEpisodes.firstOrNull()
-        }.getOrNull() ?: error("No playable episodes found for ${seriesOrSeason.name}")
+        }.getOrNull() ?: error(strings.playerErrorNoEpisodes.format(seriesOrSeason.name))
         return Target(session, episode)
     }
 
@@ -522,6 +528,7 @@ class JellyfinPlaybackManager @Inject constructor(
         audioStreamIndex: Int?,
         forceHls: Boolean = false
     ): Pair<PlaybackSessionData, Float?> {
+        val labels = strings
         val availableSources = playback?.mediaSources?.takeIf { it.isNotEmpty() }
             ?: item.mediaSources.takeIf { it.isNotEmpty() }
             ?: listOf(
@@ -539,7 +546,7 @@ class JellyfinPlaybackManager @Inject constructor(
                 ?: availableSources.firstOrNull()
         } else {
             availableSources.firstOrNull()
-        } ?: error("No playable media sources returned by Jellyfin")
+        } ?: error(strings.playerErrorNoSources)
 
         val playSessionId = playback?.playSessionId ?: "${System.currentTimeMillis()}"
         // Stream, subtitle and trickplay URLs go to the server that owns this copy, with its token.
@@ -579,7 +586,7 @@ class JellyfinPlaybackManager @Inject constructor(
             .map {
                 TrackOption(
                     index = it.index,
-                    label = it.displayTitle ?: it.language?.uppercase() ?: "Audio ${it.index}",
+                    label = it.displayTitle ?: it.language?.uppercase() ?: labels.playerAudioTrackN.format(it.index),
                     language = it.language,
                     codec = it.codec,
                     isDefault = it.isDefault,
@@ -605,7 +612,7 @@ class JellyfinPlaybackManager @Inject constructor(
                 }
                 ExternalSubtitleFile(
                     index = stream.index,
-                    title = stream.displayTitle ?: stream.title ?: stream.language?.uppercase() ?: "Sub ${stream.index}",
+                    title = stream.displayTitle ?: stream.title ?: stream.language?.uppercase() ?: labels.playerSubtitleTrackN.format(stream.index),
                     language = stream.language,
                     codec = stream.codec,
                     url = delivery,
@@ -620,7 +627,7 @@ class JellyfinPlaybackManager @Inject constructor(
                 val matchingExt = externalSubtitles.firstOrNull { it.index == stream.index }
                 TrackOption(
                     index = stream.index,
-                    label = stream.displayTitle ?: stream.language?.uppercase() ?: "Subtitle ${stream.index}",
+                    label = stream.displayTitle ?: stream.language?.uppercase() ?: labels.playerSubtitleTrackN.format(stream.index),
                     language = stream.language,
                     codec = stream.codec,
                     isExternal = stream.isExternal,
@@ -635,7 +642,7 @@ class JellyfinPlaybackManager @Inject constructor(
             .filter { !it.name.isNullOrBlank() || it.startPositionTicks > 0L }
             .mapIndexed { idx, ch ->
                 ChapterMarker(
-                    name = ch.name?.takeIf { it.isNotBlank() } ?: "Chapter ${idx + 1}",
+                    name = ch.name?.takeIf { it.isNotBlank() } ?: labels.playerChapterN.format(idx + 1),
                     startPositionMs = (ch.startPositionTicks / 10_000L).coerceAtLeast(0L)
                 )
             }
@@ -781,12 +788,13 @@ class JellyfinPlaybackManager @Inject constructor(
         itemId: String,
         language: String = "eng"
     ): Result<List<com.seerflix.tv.core.model.RemoteSubtitleOption>> = runCatchingCancellable {
-        val server = sessionFor(itemId, prefs.cachedHomeUserId) ?: error("Not signed in to that server")
+        val labels = strings
+        val server = sessionFor(itemId, prefs.cachedHomeUserId) ?: error(labels.playerErrorNotSignedIn)
         server.api.searchRemoteSubtitles(itemId = server.raw(itemId), language = language)
             .map { dto ->
                 com.seerflix.tv.core.model.RemoteSubtitleOption(
                     id = dto.id,
-                    name = dto.name ?: dto.comment ?: "Subtitle ${dto.id}",
+                    name = dto.name ?: dto.comment ?: labels.playerRemoteSubtitleFallback.format(dto.id),
                     language = dto.threeLetterIsoLanguageName ?: language,
                     format = dto.format,
                     providerName = dto.providerName,
@@ -806,7 +814,7 @@ class JellyfinPlaybackManager @Inject constructor(
         itemId: String,
         subtitleId: String
     ): Result<Unit> = runCatchingCancellable {
-        val server = sessionFor(itemId, prefs.cachedHomeUserId) ?: error("Not signed in to that server")
+        val server = sessionFor(itemId, prefs.cachedHomeUserId) ?: error(strings.playerErrorNotSignedIn)
         server.api.downloadRemoteSubtitle(itemId = server.raw(itemId), subtitleId = subtitleId)
     }
 

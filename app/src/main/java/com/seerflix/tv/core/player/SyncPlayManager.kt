@@ -1,6 +1,8 @@
 package com.seerflix.tv.core.player
 
 import android.util.Log
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.SyncPlayGroup
 import com.seerflix.tv.core.network.JellyfinApi
 import com.seerflix.tv.core.network.JellyfinCreateSyncPlayRequest
@@ -12,6 +14,7 @@ import com.seerflix.tv.core.network.JellyfinSyncPlayGroupDto
 import com.seerflix.tv.core.network.JellyfinSyncPlayNewQueueRequest
 import com.seerflix.tv.core.network.JellyfinSyncPlayPingRequest
 import com.seerflix.tv.core.network.ServerEvent
+import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.network.SocketState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,9 +72,14 @@ sealed interface SyncPlayAction {
 class SyncPlayManager @Inject constructor(
     private val jellyfinApi: JellyfinApi,
     private val socket: JellyfinSocketClient,
-    private val json: Json
+    private val json: Json,
+    private val prefs: SessionPreferences
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** UI strings for the active profile's language (notices and default group names). */
+    private val strings: UiStrings
+        get() = stringsForLanguage(prefs.cachedUiLanguage)
 
     private val _availableGroups = MutableStateFlow<List<SyncPlayGroup>>(emptyList())
     val availableGroups: StateFlow<List<SyncPlayGroup>> = _availableGroups.asStateFlow()
@@ -127,7 +135,7 @@ class SyncPlayManager @Inject constructor(
     }
 
     suspend fun createGroup(groupName: String): Result<SyncPlayGroup?> = runCatching {
-        val clean = groupName.trim().ifBlank { "Living Room Watch Party" }
+        val clean = groupName.trim().ifBlank { strings.syncPlayDefaultRoom }
         socket.start()
         jellyfinApi.createSyncPlayGroup(JellyfinCreateSyncPlayRequest(groupName = clean))
         val groups = jellyfinApi.getSyncPlayGroups().map { it.toModel() }
@@ -275,19 +283,19 @@ class SyncPlayManager @Inject constructor(
                 startClockSync()
             }
             "GroupLeft", "NotInGroup", "GroupDoesNotExist" -> {
-                if (_activeGroup.value != null) _notices.tryEmit("Left the watch party")
+                if (_activeGroup.value != null) _notices.tryEmit(strings.syncPlayNoticeLeft)
                 clearGroup()
             }
-            "LibraryAccessDenied" -> _notices.tryEmit("Someone in the group can't access this title")
-            "UserJoined" -> event.data.asText()?.let { _notices.tryEmit("$it joined the watch party") }
-            "UserLeft" -> event.data.asText()?.let { _notices.tryEmit("$it left the watch party") }
+            "LibraryAccessDenied" -> _notices.tryEmit(strings.syncPlayNoticeAccessDenied)
+            "UserJoined" -> event.data.asText()?.let { _notices.tryEmit(strings.syncPlayNoticeUserJoined.format(it)) }
+            "UserLeft" -> event.data.asText()?.let { _notices.tryEmit(strings.syncPlayNoticeUserLeft.format(it)) }
             "StateUpdate" -> {
                 val state = (event.data as? JsonObject)?.get("State").asText() ?: return
                 _activeGroup.value = _activeGroup.value?.copy(
                     state = state,
                     isPlaying = state.equals("Playing", ignoreCase = true)
                 )
-                if (state == "Waiting") _notices.tryEmit("Waiting for everyone to be ready...")
+                if (state == "Waiting") _notices.tryEmit(strings.syncPlayNoticeWaiting)
             }
             "PlayQueue" -> onPlayQueue(event.data as? JsonObject ?: return)
         }
@@ -311,7 +319,7 @@ class SyncPlayManager @Inject constructor(
 
     private fun JellyfinSyncPlayGroupDto.toModel(): SyncPlayGroup = SyncPlayGroup(
         groupId = groupId,
-        groupName = groupName.ifBlank { "Watch Party" },
+        groupName = groupName.ifBlank { strings.syncPlayGroupFallback },
         state = state,
         participants = participants,
         isPlaying = state.equals("Playing", ignoreCase = true)

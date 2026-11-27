@@ -571,6 +571,26 @@ data class UiStrings(
         internal set
     var syncPlayLeaveFailed: String = "Could not leave SyncPlay: %s"
         internal set
+    var syncPlayGroupFallback: String = "Watch Party"
+        internal set
+    var syncPlayNoticeLeft: String = "Left the watch party"
+        internal set
+    var syncPlayNoticeAccessDenied: String = "Someone in the group can't access this title"
+        internal set
+    var syncPlayNoticeUserJoined: String = "%s joined the watch party"
+        internal set
+    var syncPlayNoticeUserLeft: String = "%s left the watch party"
+        internal set
+    var syncPlayNoticeWaiting: String = "Waiting for everyone to be ready..."
+        internal set
+    var syncPlayStatePlaying: String = "Playing"
+        internal set
+    var syncPlayStatePaused: String = "Paused"
+        internal set
+    var syncPlayStateIdle: String = "Idle"
+        internal set
+    var syncPlayStateWaiting: String = "Waiting"
+        internal set
 
     // ---- App update dialog (0.7) ----
     var updateAvailable: String = "Lumen %s Available"
@@ -668,6 +688,50 @@ data class UiStrings(
     var playerAudioTrackN: String = "Audio %d"
         internal set
     var playerSubtitleTrackN: String = "Subtitle %d"
+        internal set
+    /** %s = the subtitle provider's id for a search result without a name. */
+    var playerRemoteSubtitleFallback: String = "Subtitle %s"
+        internal set
+    var playerChapterN: String = "Chapter %d"
+        internal set
+    var playerTrailerResolveFailed: String = "Unable to resolve trailer stream"
+        internal set
+    var playerInvalidItem: String = "Invalid media item ID"
+        internal set
+    var playerNoProfile: String = "No active Jellyfin profile"
+        internal set
+    var playerInitFailed: String = "Playback initialization failed"
+        internal set
+    /** %s = the quality the player fell back to. */
+    var playerTranscodeFallback: String = "Direct Play unsupported — switched to HLS transcode (%s)"
+        internal set
+    var playerStreamError: String = "Stream playback error"
+        internal set
+    var playerPlaybackError: String = "Playback error: %s"
+        internal set
+    var playerErrorSignInAgain: String = "Sign in again to the server this title is on to play it"
+        internal set
+    var playerErrorNoEpisodes: String = "No playable episodes found for %s"
+        internal set
+    var playerErrorNoSources: String = "No playable media sources returned by Jellyfin"
+        internal set
+    var playerErrorNotSignedIn: String = "Not signed in to that server"
+        internal set
+    /** %s = language code searched. */
+    var playerNoRemoteSubtitles: String = "No remote subtitles found for %s"
+        internal set
+    var playerSubtitleSearchFailed: String = "Subtitle search failed: %s"
+        internal set
+    var playerSubtitleDownloaded: String = "Subtitle downloaded — reloading track…"
+        internal set
+    var playerSubtitleDownloadFailed: String = "Download failed: %s"
+        internal set
+    var playerSubtitleDownloads: String = "%d downloads"
+        internal set
+    /** Channel number, channel name. */
+    var playerChannelBanner: String = "CH %1\$s · %2\$s"
+        internal set
+    var playerOpenWithExternal: String = "Open with External Player"
         internal set
     var playerAssEngine: String = "ASS / SSA Subtitle Engine"
         internal set
@@ -1812,6 +1876,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayJoinFailed = "No se pudo unir a SyncPlay: %s"
         syncPlayLeft = "Has salido de la sala de SyncPlay"
         syncPlayLeaveFailed = "No se pudo salir de SyncPlay: %s"
+        syncPlayGroupFallback = "Sesión conjunta"
+        syncPlayNoticeLeft = "Has salido de la sesión conjunta"
+        syncPlayNoticeAccessDenied = "Alguien del grupo no tiene acceso a este título"
+        syncPlayNoticeUserJoined = "%s se ha unido a la sesión"
+        syncPlayNoticeUserLeft = "%s ha salido de la sesión"
+        syncPlayNoticeWaiting = "Esperando a que todos estén listos..."
+        syncPlayStatePlaying = "Reproduciendo"
+        syncPlayStatePaused = "En pausa"
+        syncPlayStateIdle = "Inactivo"
+        syncPlayStateWaiting = "Esperando"
 
         // App update dialog (0.8)
         updateAvailable = "Lumen %s disponible"
@@ -1863,6 +1937,26 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerAudioTracks = "Pistas de audio"
         playerAudioTrackN = "Audio %d"
         playerSubtitleTrackN = "Subtítulo %d"
+        playerRemoteSubtitleFallback = "Subtítulo %s"
+        playerChapterN = "Capítulo %d"
+        playerTrailerResolveFailed = "No se pudo obtener el tráiler"
+        playerInvalidItem = "ID de elemento no válido"
+        playerNoProfile = "No hay ningún perfil de Jellyfin activo"
+        playerInitFailed = "No se pudo iniciar la reproducción"
+        playerTranscodeFallback = "Reproducción directa no compatible: se cambió a transcodificación HLS (%s)"
+        playerStreamError = "Error al reproducir la transmisión"
+        playerPlaybackError = "Error de reproducción: %s"
+        playerErrorSignInAgain = "Vuelve a iniciar sesión en el servidor que tiene este título para reproducirlo"
+        playerErrorNoEpisodes = "No se encontraron episodios reproducibles de %s"
+        playerErrorNoSources = "Jellyfin no devolvió ninguna fuente reproducible"
+        playerErrorNotSignedIn = "No has iniciado sesión en ese servidor"
+        playerNoRemoteSubtitles = "No se encontraron subtítulos en línea para %s"
+        playerSubtitleSearchFailed = "Error al buscar subtítulos: %s"
+        playerSubtitleDownloaded = "Subtítulo descargado; recargando pista…"
+        playerSubtitleDownloadFailed = "Error en la descarga: %s"
+        playerSubtitleDownloads = "%d descargas"
+        playerChannelBanner = "CANAL %1\$s · %2\$s"
+        playerOpenWithExternal = "Abrir con un reproductor externo"
         playerAssEngine = "Motor de subtítulos ASS / SSA"
         playerAssTrackN = "Pista ASS n.º %s"
         playerSubtitleSync = "Sincronía de subtítulos (%s)"
@@ -2607,6 +2701,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayJoinFailed = "Impossible de rejoindre SyncPlay : %s"
         syncPlayLeft = "Salon SyncPlay quitté"
         syncPlayLeaveFailed = "Impossible de quitter SyncPlay : %s"
+        syncPlayGroupFallback = "Séance partagée"
+        syncPlayNoticeLeft = "Vous avez quitté la séance partagée"
+        syncPlayNoticeAccessDenied = "Quelqu'un du groupe n'a pas accès à ce titre"
+        syncPlayNoticeUserJoined = "%s a rejoint la séance"
+        syncPlayNoticeUserLeft = "%s a quitté la séance"
+        syncPlayNoticeWaiting = "En attente que tout le monde soit prêt..."
+        syncPlayStatePlaying = "Lecture"
+        syncPlayStatePaused = "En pause"
+        syncPlayStateIdle = "Inactif"
+        syncPlayStateWaiting = "En attente"
 
         // App update dialog (0.8)
         updateAvailable = "Lumen %s disponible"
@@ -2658,6 +2762,26 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerAudioTracks = "Pistes audio"
         playerAudioTrackN = "Audio %d"
         playerSubtitleTrackN = "Sous-titre %d"
+        playerRemoteSubtitleFallback = "Sous-titre %s"
+        playerChapterN = "Chapitre %d"
+        playerTrailerResolveFailed = "Impossible de récupérer la bande-annonce"
+        playerInvalidItem = "Identifiant de média non valide"
+        playerNoProfile = "Aucun profil Jellyfin actif"
+        playerInitFailed = "Impossible de démarrer la lecture"
+        playerTranscodeFallback = "Lecture directe non prise en charge — passage au transcodage HLS (%s)"
+        playerStreamError = "Erreur de lecture du flux"
+        playerPlaybackError = "Erreur de lecture : %s"
+        playerErrorSignInAgain = "Reconnectez-vous au serveur qui contient ce titre pour le lire"
+        playerErrorNoEpisodes = "Aucun épisode lisible trouvé pour %s"
+        playerErrorNoSources = "Jellyfin n'a renvoyé aucune source lisible"
+        playerErrorNotSignedIn = "Vous n'êtes pas connecté à ce serveur"
+        playerNoRemoteSubtitles = "Aucun sous-titre en ligne trouvé pour %s"
+        playerSubtitleSearchFailed = "Échec de la recherche de sous-titres : %s"
+        playerSubtitleDownloaded = "Sous-titre téléchargé — rechargement de la piste…"
+        playerSubtitleDownloadFailed = "Échec du téléchargement : %s"
+        playerSubtitleDownloads = "%d téléchargements"
+        playerChannelBanner = "CH %1\$s · %2\$s"
+        playerOpenWithExternal = "Ouvrir avec un lecteur externe"
         playerAssEngine = "Moteur de sous-titres ASS / SSA"
         playerAssTrackN = "Piste ASS n° %s"
         playerSubtitleSync = "Synchro des sous-titres (%s)"
@@ -3402,6 +3526,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayJoinFailed = "SyncPlay-Beitritt fehlgeschlagen: %s"
         syncPlayLeft = "SyncPlay-Raum verlassen"
         syncPlayLeaveFailed = "SyncPlay konnte nicht verlassen werden: %s"
+        syncPlayGroupFallback = "Gemeinsamer Filmabend"
+        syncPlayNoticeLeft = "Du hast die Watch Party verlassen"
+        syncPlayNoticeAccessDenied = "Jemand in der Gruppe hat keinen Zugriff auf diesen Titel"
+        syncPlayNoticeUserJoined = "%s ist der Watch Party beigetreten"
+        syncPlayNoticeUserLeft = "%s hat die Watch Party verlassen"
+        syncPlayNoticeWaiting = "Warte, bis alle bereit sind..."
+        syncPlayStatePlaying = "Läuft"
+        syncPlayStatePaused = "Pausiert"
+        syncPlayStateIdle = "Inaktiv"
+        syncPlayStateWaiting = "Wartet"
 
         // App update dialog (0.8)
         updateAvailable = "Lumen %s verfügbar"
@@ -3453,6 +3587,26 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerAudioTracks = "Audiospuren"
         playerAudioTrackN = "Audio %d"
         playerSubtitleTrackN = "Untertitel %d"
+        playerRemoteSubtitleFallback = "Untertitel %s"
+        playerChapterN = "Kapitel %d"
+        playerTrailerResolveFailed = "Trailer-Stream konnte nicht geladen werden"
+        playerInvalidItem = "Ungültige Medien-ID"
+        playerNoProfile = "Kein aktives Jellyfin-Profil"
+        playerInitFailed = "Wiedergabe konnte nicht gestartet werden"
+        playerTranscodeFallback = "Direktwiedergabe nicht unterstützt – auf HLS-Transcodierung gewechselt (%s)"
+        playerStreamError = "Fehler bei der Stream-Wiedergabe"
+        playerPlaybackError = "Wiedergabefehler: %s"
+        playerErrorSignInAgain = "Melde dich erneut bei dem Server an, auf dem dieser Titel liegt, um ihn abzuspielen"
+        playerErrorNoEpisodes = "Keine abspielbaren Folgen für %s gefunden"
+        playerErrorNoSources = "Jellyfin hat keine abspielbaren Medienquellen geliefert"
+        playerErrorNotSignedIn = "Nicht bei diesem Server angemeldet"
+        playerNoRemoteSubtitles = "Keine Online-Untertitel für %s gefunden"
+        playerSubtitleSearchFailed = "Untertitelsuche fehlgeschlagen: %s"
+        playerSubtitleDownloaded = "Untertitel heruntergeladen – Spur wird neu geladen…"
+        playerSubtitleDownloadFailed = "Download fehlgeschlagen: %s"
+        playerSubtitleDownloads = "%d Downloads"
+        playerChannelBanner = "K %1\$s · %2\$s"
+        playerOpenWithExternal = "Mit externem Player öffnen"
         playerAssEngine = "ASS-/SSA-Untertitel"
         playerAssTrackN = "ASS-Spur %s"
         playerSubtitleSync = "Untertitel-Sync (%s)"
@@ -4197,6 +4351,16 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayJoinFailed = "SyncPlayに参加できませんでした: %s"
         syncPlayLeft = "SyncPlayルームを退出しました"
         syncPlayLeaveFailed = "SyncPlayから退出できませんでした: %s"
+        syncPlayGroupFallback = "ウォッチパーティー"
+        syncPlayNoticeLeft = "ウォッチパーティーから退出しました"
+        syncPlayNoticeAccessDenied = "グループ内にこのタイトルにアクセスできない人がいます"
+        syncPlayNoticeUserJoined = "%sがウォッチパーティーに参加しました"
+        syncPlayNoticeUserLeft = "%sがウォッチパーティーから退出しました"
+        syncPlayNoticeWaiting = "全員の準備が整うのを待っています..."
+        syncPlayStatePlaying = "再生中"
+        syncPlayStatePaused = "一時停止中"
+        syncPlayStateIdle = "待機中"
+        syncPlayStateWaiting = "準備待ち"
 
         // App update dialog (0.8)
         updateAvailable = "Lumen %s が利用可能です"
@@ -4248,6 +4412,26 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         playerAudioTracks = "音声トラック"
         playerAudioTrackN = "音声 %d"
         playerSubtitleTrackN = "字幕 %d"
+        playerRemoteSubtitleFallback = "字幕 %s"
+        playerChapterN = "チャプター %d"
+        playerTrailerResolveFailed = "予告編のストリームを取得できませんでした"
+        playerInvalidItem = "メディアIDが無効です"
+        playerNoProfile = "アクティブなJellyfinプロフィールがありません"
+        playerInitFailed = "再生を開始できませんでした"
+        playerTranscodeFallback = "ダイレクト再生に対応していないため、HLSトランスコードに切り替えました（%s）"
+        playerStreamError = "ストリームの再生エラー"
+        playerPlaybackError = "再生エラー: %s"
+        playerErrorSignInAgain = "このタイトルを再生するには、タイトルがあるサーバーに再度サインインしてください"
+        playerErrorNoEpisodes = "%sに再生できるエピソードが見つかりません"
+        playerErrorNoSources = "Jellyfinから再生可能なメディアソースが返されませんでした"
+        playerErrorNotSignedIn = "そのサーバーにサインインしていません"
+        playerNoRemoteSubtitles = "%sのオンライン字幕が見つかりません"
+        playerSubtitleSearchFailed = "字幕の検索に失敗しました: %s"
+        playerSubtitleDownloaded = "字幕をダウンロードしました。トラックを再読み込みしています…"
+        playerSubtitleDownloadFailed = "ダウンロードに失敗しました: %s"
+        playerSubtitleDownloads = "%d回ダウンロード"
+        playerChannelBanner = "CH %1\$s · %2\$s"
+        playerOpenWithExternal = "外部プレイヤーで開く"
         playerAssEngine = "ASS / SSA字幕エンジン"
         playerAssTrackN = "ASSトラック #%s"
         playerSubtitleSync = "字幕のタイミング (%s)"

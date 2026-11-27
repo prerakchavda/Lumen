@@ -685,15 +685,16 @@ private fun SeerflixNavGraph(
         }
     }
     crashReport?.let {
+        val crashStrings = com.seerflix.tv.core.i18n.AppStrings.current
         CrashReportPrompt(
             onSend = {
                 crashReport = null
                 crashScope.launch {
                     val result = diagnostics.upload()
                     serverMessage = "" to when (result) {
-                        is com.seerflix.tv.core.diagnostics.LogUploadResult.Uploaded -> "Report saved on your server as ${result.fileName}"
-                        com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer -> "Your server doesn't accept app logs (Dashboard > General > Allow client log upload)."
-                        is com.seerflix.tv.core.diagnostics.LogUploadResult.Failed -> "Couldn't send the report: ${result.message}"
+                        is com.seerflix.tv.core.diagnostics.LogUploadResult.Uploaded -> crashStrings.settingsLogsSent.format(result.fileName)
+                        com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer -> crashStrings.settingsLogsDisabled
+                        is com.seerflix.tv.core.diagnostics.LogUploadResult.Failed -> crashStrings.settingsLogsFailed.format(result.message)
                     }
                 }
             },

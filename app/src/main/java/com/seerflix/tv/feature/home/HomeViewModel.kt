@@ -431,10 +431,12 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.joinGroup(groupId)
                 .onSuccess { grp ->
-                    showActionFeedback("Joined SyncPlay: ${grp?.groupName ?: "Room"}")
+                    val s = strings
+                    showActionFeedback(s.syncPlayJoined.format(grp?.groupName ?: s.syncPlayRoomFallback))
                 }
                 .onFailure { err ->
-                    showActionFeedback("Could not join SyncPlay: ${err.message ?: "Error"}")
+                    val s = strings
+                    showActionFeedback(s.syncPlayJoinFailed.format(err.message ?: s.commonError))
                 }
         }
     }
@@ -442,10 +444,11 @@ class HomeViewModel @Inject constructor(
     fun leaveSyncPlayGroup() {
         viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.leaveGroup()
-                .onSuccess { showActionFeedback("Left SyncPlay room") }
+                .onSuccess { showActionFeedback(strings.syncPlayLeft) }
                 .onFailure { err ->
                     if (err is CancellationException) throw err
-                    showActionFeedback("Could not leave SyncPlay: ${err.message ?: "Error"}")
+                    val s = strings
+                    showActionFeedback(s.syncPlayLeaveFailed.format(err.message ?: s.commonError))
                 }
         }
     }
@@ -510,7 +513,7 @@ class HomeViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         updateInstallState = AppUpdateInstallState.Failed(
-                            e.message?.takeIf { msg -> msg.isNotBlank() } ?: "Download failed"
+                            e.message?.takeIf { msg -> msg.isNotBlank() } ?: strings.updateDownloadFailed
                         )
                     )
                 }
@@ -539,7 +542,7 @@ class HomeViewModel @Inject constructor(
                 _uiState.update { it.copy(updateInstallState = AppUpdateInstallState.ReadyToInstall(apkPath)) }
             } else {
                 _uiState.update {
-                    it.copy(updateInstallState = AppUpdateInstallState.Failed("Could not open Android package installer."))
+                    it.copy(updateInstallState = AppUpdateInstallState.Failed(strings.updateInstallerUnavailable))
                 }
             }
             return
@@ -728,9 +731,10 @@ class HomeViewModel @Inject constructor(
                 else -> allCw
             }
             val nextUpItems = if (tab == HomeTab.MOVIES) emptyList() else allNextUp
+            val cwStrings = strings
             val cwTitle = profile.name.trim().takeIf { it.isNotEmpty() }
-                ?.let { "Continue Watching for $it" }
-                ?: "Continue Watching"
+                ?.let { cwStrings.homeContinueWatchingFor.format(it) }
+                ?: cwStrings.rowContinueWatching
             val hiddenRows = profile.hiddenHomeRowIds.toSet()
             _uiState.update { s ->
                 if (s.activeTab != tab || s.isLoading) return@update s
@@ -810,13 +814,15 @@ class HomeViewModel @Inject constructor(
                         }
                         state.copy(featuredItem = updatedFeatured, rows = updatedRows)
                     }
+                    val s = strings
                     showActionFeedback(
-                        if (nextWatched) "Marked \"${item.title}\" as Watched"
-                        else "Marked \"${item.title}\" as Unwatched"
+                        if (nextWatched) s.homeMarkedWatched.format(item.title)
+                        else s.homeMarkedUnwatched.format(item.title)
                     )
                 }
                 .onFailure { err ->
-                    showActionFeedback("Failed to update watched state: ${err.message ?: "Error"}")
+                    val s = strings
+                    showActionFeedback(s.watchedUpdateFailed.format(err.message ?: s.commonError))
                 }
         }
     }
@@ -853,14 +859,16 @@ class HomeViewModel @Inject constructor(
 
                         state.copy(featuredItem = updatedFeatured, rows = updatedRows)
                     }
+                    val s = strings
                     showActionFeedback(
-                        if (inList) "Added \"${target.title}\" to My List"
-                        else "Removed \"${target.title}\" from My List"
+                        if (inList) s.homeAddedToMyList.format(target.title)
+                        else s.homeRemovedFromMyList.format(target.title)
                     )
                 }
                 .onFailure { err ->
                     if (err is CancellationException) throw err
-                    showActionFeedback("Couldn't update My List: ${err.message ?: "Error"}")
+                    val s = strings
+                    showActionFeedback(s.myListUpdateFailed.format(err.message ?: s.commonError))
                 }
         }
     }
@@ -891,11 +899,11 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(posterMenuTarget = null) }
         val profile = _uiState.value.profile
         if (!_uiState.value.isSeerrConfigured) {
-            showActionFeedback("Connect Seerr in Servers to submit requests")
+            showActionFeedback(strings.requestNeedsSeerr)
             return
         }
         if (profile != null && !profile.canSubmitRequests) {
-            showActionFeedback("Requests are locked for Kids profiles")
+            showActionFeedback(strings.requestsLockedKids)
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -922,9 +930,10 @@ class HomeViewModel @Inject constructor(
                         activeDownloadCount = state.activeDownloadCount + 1
                     )
                 }
-                showActionFeedback("Requested \"${item.title}\" (${if (is4k) "4K" else "HD"})")
+                showActionFeedback(strings.requestedTitleQualityFeedback.format(item.title, if (is4k) "4K" else "HD"))
             }.onFailure { err ->
-                showActionFeedback("Request failed: ${err.message ?: "Unknown error"}")
+                val s = strings
+                showActionFeedback(s.requestFailed.format(err.message ?: s.commonUnknownError))
             }
         }
     }
@@ -957,7 +966,8 @@ class HomeViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     if (err is CancellationException) throw err
-                    showActionFeedback("Couldn't remove from Continue Watching: ${err.message ?: "Error"}")
+                    val s = strings
+                    showActionFeedback(s.homeContinueRemoveFailed.format(err.message ?: s.commonError))
                 }
         }
     }
@@ -1013,11 +1023,11 @@ class HomeViewModel @Inject constructor(
         val tmdbId = item.tmdbId ?: return
         val profile = _uiState.value.profile
         if (!_uiState.value.isSeerrConfigured) {
-            showActionFeedback("Connect Seerr in Servers to submit requests")
+            showActionFeedback(strings.requestNeedsSeerr)
             return
         }
         if (profile != null && !profile.canSubmitRequests) {
-            showActionFeedback("Requests are locked for Kids profiles")
+            showActionFeedback(strings.requestsLockedKids)
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -1039,10 +1049,11 @@ class HomeViewModel @Inject constructor(
                             activeDownloadCount = state.activeDownloadCount + 1
                         )
                     }
-                    showActionFeedback("Requested \"${item.title}\"")
+                    showActionFeedback(strings.requestedTitleFeedback.format(item.title))
                 }
                 .onFailure { err ->
-                    showActionFeedback("Request failed: ${err.message ?: "Unknown error"}")
+                    val s = strings
+                    showActionFeedback(s.requestFailed.format(err.message ?: s.commonUnknownError))
                 }
         }
     }
@@ -1052,11 +1063,11 @@ class HomeViewModel @Inject constructor(
     fun requestAllMissingInCollection(is4k: Boolean = false) {
         val profile = _uiState.value.profile
         if (!_uiState.value.isSeerrConfigured) {
-            showActionFeedback("Connect Seerr in Servers to submit requests")
+            showActionFeedback(strings.requestNeedsSeerr)
             return
         }
         if (profile != null && !profile.canSubmitRequests) {
-            showActionFeedback("Requests are locked for Kids profiles")
+            showActionFeedback(strings.requestsLockedKids)
             return
         }
         val col = _uiState.value.activeCollectionDetails ?: return
@@ -1093,9 +1104,13 @@ class HomeViewModel @Inject constructor(
                     )
                 }
             }
+            val s = strings
             showActionFeedback(
-                if (count > 0) "Requested $count missing title${if (count == 1) "" else "s"} in ${col.name}"
-                else "Unable to submit collection requests"
+                when {
+                    count == 1 -> s.requestedMissingInOne.format(col.name)
+                    count > 1 -> s.requestedMissingInMany.format(count, col.name)
+                    else -> s.requestsSubmitFailed
+                }
             )
         }
     }
@@ -1195,7 +1210,7 @@ class HomeViewModel @Inject constructor(
             }
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null) {
-                _uiState.update { it.copy(isLoading = false, errorMessage = "No active profile selected.") }
+                _uiState.update { it.copy(isLoading = false, errorMessage = strings.commonNoActiveProfile) }
                 return@launch
             }
             val serverConfig = prefs.serverConfigFlow.first()
@@ -1368,7 +1383,7 @@ class HomeViewModel @Inject constructor(
                     }
                 }
             }.onFailure { err ->
-                val message = UnifiedCatalogRepository.formatHttpError(err, "Failed to load catalog")
+                val message = UnifiedCatalogRepository.formatHttpError(err, strings.homeLoadFailed)
                 val keepsCurrentContent = lastLoadedTab == tab
                 _uiState.update {
                     if (keepsCurrentContent) {

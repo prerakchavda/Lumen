@@ -451,9 +451,13 @@ fun DetailsContent(
                             if (!state.episodesLoading && playableSeasonEps.isNotEmpty()) {
                                 item(key = "season_actions") {
                                     val allWatched = playableSeasonEps.all { it.isWatched }
-                                    val seasonQueue = remember(playableSeasonEps) {
+                                    val queueStrings = AppStrings.current
+                                    val seasonQueue = remember(playableSeasonEps, queueStrings) {
                                         playableSeasonEps.map { ep ->
-                                            QueueEntry(itemId = ep.id, title = "S${ep.seasonNumber} E${ep.episodeNumber} · ${ep.name}")
+                                            QueueEntry(
+                                                itemId = ep.id,
+                                                title = queueStrings.episodeCodeTitle.format(ep.seasonNumber, ep.episodeNumber, ep.name)
+                                            )
                                         }
                                     }
                                     Row(
@@ -565,7 +569,7 @@ fun DetailsContent(
                                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                                             ) {
                                                 Text(
-                                                    text = saga.completionLabel,
+                                                    text = com.seerflix.tv.core.data.UpcomingDateFormatter.collectionCompletionLabel(saga.ownedCount, saga.totalCount, AppStrings.current),
                                                     color = colors.matchGreen,
                                                     fontSize = 11.sp,
                                                     fontWeight = FontWeight.Bold
@@ -2502,7 +2506,14 @@ private fun MediaInfoDialog(
                         },
                         if (s.isForced) strings.playerForcedBadge else null
                     ).distinct().joinToString(" • ")
-                    MediaInfoRow(s.type, details.ifBlank { s.title })
+                    // Jellyfin's MediaStream.Type; unknown types (EmbeddedImage, Data, ...) stay as sent.
+                    val typeLabel = when (s.type.lowercase()) {
+                        "video" -> strings.mediaInfoStreamVideo
+                        "audio" -> strings.mediaInfoStreamAudio
+                        "subtitle" -> strings.mediaInfoStreamSubtitle
+                        else -> s.type
+                    }
+                    MediaInfoRow(typeLabel, details.ifBlank { s.title })
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -2736,7 +2747,7 @@ private fun EpisodeActionDialog(
 ) {
     val strings = AppStrings.current
     DetailsMoreMenu(
-        title = "S${episode.seasonNumber} E${episode.episodeNumber} · ${episode.name}",
+        title = strings.episodeCodeTitle.format(episode.seasonNumber, episode.episodeNumber, episode.name),
         actions = buildList {
             add(MoreAction(Icons.Filled.PlayArrow, if (episode.resumePositionTicks > 0L) strings.actionResume else strings.actionPlay, onPlay))
             if (episode.resumePositionTicks > 0L) {

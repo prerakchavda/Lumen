@@ -4,10 +4,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AppUpdateChecker
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.AppUpdateInfo
 import com.seerflix.tv.core.model.DiscoveredServer
 import com.seerflix.tv.core.network.CompanionFormResult
 import com.seerflix.tv.core.network.JellyfinDiscoveryClient
+import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.network.SetupCompanionServer
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,11 +44,16 @@ data class SetupUiState(
 class SetupViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val discoveryClient: JellyfinDiscoveryClient,
-    private val appUpdateChecker: AppUpdateChecker
+    private val appUpdateChecker: AppUpdateChecker,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SetupUiState())
     val uiState: StateFlow<SetupUiState> = _uiState.asStateFlow()
+
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private val companionServer = SetupCompanionServer()
 
@@ -99,7 +107,7 @@ class SetupViewModel @Inject constructor(
                     jellyfinOnlyMode = onlyJf,
                     trustSelfSignedCerts = submitted.trustSelfSigned,
                     errorMessage = null,
-                    statusMessage = "Received settings from phone companion! Ready to connect.",
+                    statusMessage = strings.setupCompanionReceived,
                     companionUpdateCount = it.companionUpdateCount + 1
                 )
             }
@@ -142,7 +150,7 @@ class SetupViewModel @Inject constructor(
             it.copy(
                 jellyfinOnlyMode = next,
                 errorMessage = null,
-                statusMessage = if (next) "Jellyfin-Only Mode enabled (Seerr requests optional)" else null
+                statusMessage = if (next) strings.setupJellyfinOnlyEnabled else null
             )
         }
     }
@@ -155,7 +163,7 @@ class SetupViewModel @Inject constructor(
             val found = runCatching { discoveryClient.discoverServers() }.getOrDefault(emptyList())
             _uiState.update { state ->
                 val msg = when {
-                    found.isNotEmpty() -> "Found ${found.size} Jellyfin server(s) on your network."
+                    found.isNotEmpty() -> strings.setupFoundServers.format(found.size)
                     state.statusMessage != null -> state.statusMessage
                     else -> null
                 }
@@ -184,7 +192,7 @@ class SetupViewModel @Inject constructor(
                 jellyfinUrl = server.address,
                 jellyfinLocalUrl = server.address,
                 errorMessage = null,
-                statusMessage = "Selected ${server.name} (${server.address})"
+                statusMessage = strings.setupSelectedServer.format(server.name, server.address)
             )
         }
     }
@@ -196,11 +204,11 @@ class SetupViewModel @Inject constructor(
         val hasSeerr = state.seerrUrl.isNotBlank() || state.seerrLocalUrl.isNotBlank()
 
         if (!hasJf) {
-            _uiState.update { it.copy(errorMessage = "Please enter a Jellyfin URL or pick a discovered server.") }
+            _uiState.update { it.copy(errorMessage = strings.setupNeedJellyfinUrl) }
             return
         }
         if (!state.jellyfinOnlyMode && !hasSeerr) {
-            _uiState.update { it.copy(errorMessage = "Please enter a Seerr URL, or enable Jellyfin-Only Mode.") }
+            _uiState.update { it.copy(errorMessage = strings.setupNeedSeerrUrl) }
             return
         }
 
@@ -210,7 +218,7 @@ class SetupViewModel @Inject constructor(
         val effectiveSeerrApiKey = if (state.jellyfinOnlyMode) "" else state.seerrApiKey
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isTesting = true, errorMessage = null, statusMessage = "Testing server connections...") }
+            _uiState.update { it.copy(isTesting = true, errorMessage = null, statusMessage = strings.setupTesting) }
             val result = authRepository.testAndSaveServers(
                 jellyfinUrl = effectiveJfUrl,
                 seerrUrl = effectiveSeerrUrl,
@@ -220,10 +228,13 @@ class SetupViewModel @Inject constructor(
                 seerrApiKey = effectiveSeerrApiKey
             )
             result.onSuccess { (jfName, seerrVer) ->
+                val s = strings
+                // In Jellyfin-only mode the repository reports an English "Not Configured" label.
+                val seerrLabel = if (state.jellyfinOnlyMode) s.homeJellyfinOnlyMode else seerrVer
                 _uiState.update {
                     it.copy(
                         isTesting = false,
-                        statusMessage = "Connected to $jfName ($seerrVer)",
+                        statusMessage = s.setupConnected.format(jfName, seerrLabel),
                         companionUrl = null
                     )
                 }
@@ -236,7 +247,7 @@ class SetupViewModel @Inject constructor(
                     it.copy(
                         isTesting = false,
                         statusMessage = null,
-                        errorMessage = "Connection failed: ${err.message ?: "Check URLs and network"}"
+                        errorMessage = strings.setupConnectionFailed.format(err.message ?: strings.setupCheckUrls)
                     )
                 }
             }

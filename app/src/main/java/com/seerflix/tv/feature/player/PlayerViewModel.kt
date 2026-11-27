@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.AssSubtitleMode
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExternalSubtitleFile
@@ -192,6 +194,10 @@ class PlayerViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(prefs.cachedUiLanguage)
+
     private var activeUserId: String = ""
     private var activeSeriesTmdbId: Int? = null
     private var consecutiveAutoplayedEpisodes: Int = 0
@@ -217,6 +223,8 @@ class PlayerViewModel @Inject constructor(
     private var feedbackJob: Job? = null
     /** Play session already reported as stopped: no further progress / stop reports for it. */
     private var stoppedPlaySessionId: String? = null
+    /** Play session handed to an external player (reporting restarts if playback resumes here). */
+    private var externalHandoffPlaySessionId: String? = null
     /** Whether the last loadItem() asked to skip Cinema Intros / was an intro clip (for Retry). */
     private var requestedSkipCinemaIntros = false
     private var requestedIsCinemaIntroClip = false
@@ -224,6 +232,10 @@ class PlayerViewModel @Inject constructor(
     private var pendingStillWatchingEntry: QueueEntry? = null
     /** "CH n · Name" banner shown once the tuned channel has loaded. */
     private var pendingChannelBanner: Pair<String, String>? = null
+    /** Whether the current play session's subtitle pick has been applied to its tracks. */
+    private var subtitlePickApplied = false
+    /** The "now playing" entry this ViewModel published (a newer player may have replaced it). */
+    private var ownNowPlaying: QueueEntry? = null
 
     init {
         viewModelScope.launch {
@@ -244,7 +256,7 @@ class PlayerViewModel @Inject constructor(
             }
         }
         if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
-            loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
+            loadTrailer(trailerTitle ?: strings.actionTrailer, localTrailerId, trailerYoutubeKey)
         } else {
             val effectiveStartMs = when {
                 startFromBeginning -> 0L
@@ -280,7 +292,7 @@ class PlayerViewModel @Inject constructor(
             )
             if (resolved == null) {
                 _uiState.update {
-                    it.copy(isLoading = false, errorMessage = "Unable to resolve trailer stream")
+                    it.copy(isLoading = false, errorMessage = strings.playerTrailerResolveFailed)
                 }
                 return@launch
             }
@@ -289,7 +301,7 @@ class PlayerViewModel @Inject constructor(
                     session = PlaybackSessionData(
                         itemId = "trailer_${youtubeKey ?: localTrailerId ?: "clip"}",
                         title = title,
-                        subtitle = "Trailer",
+                        subtitle = strings.actionTrailer,
                         streamUrl = resolved.videoUrl,
                         isHls = false,
                         mediaSourceId = "trailer",
@@ -335,7 +347,7 @@ class PlayerViewModel @Inject constructor(
         pendingQueueEntry: QueueEntry? = null
     ) {
         if (itemId.isBlank()) {
-            _uiState.update { it.copy(isLoading = false, errorMessage = "Invalid media item ID") }
+            _uiState.update { it.copy(isLoading = false, errorMessage = strings.playerInvalidItem) }
             return
         }
         if (!isCinemaIntroClip && !skipCinemaIntros && _uiState.value.session?.itemId != itemId) {
@@ -383,6 +395,9 @@ class PlayerViewModel @Inject constructor(
             keepAssOverlay -> PlayerTrackSelection.SUBTITLE_OFF
             isSameItem -> when {
                 stateAtRequest.burnInSubtitleIndex != null -> null
+                // Reloaded before the first pick was applied (e.g. a Direct Play error before any
+                // tracks were reported): keep the pending pick / automatic choice, not "off".
+                !subtitlePickApplied -> stateAtRequest.preselectedSubtitleStreamIndex
                 else -> stateAtRequest.selectedSubtitleStreamIndex ?: PlayerTrackSelection.SUBTITLE_OFF
             }
             itemId == initialItemId -> initialSubtitleSelection
@@ -419,14 +434,14 @@ class PlayerViewModel @Inject constructor(
             if (!keepAssOverlay) assLoadJob?.cancel()
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null || profile.jellyfinUserId.isBlank()) {
-                _uiState.update { it.copy(isLoading = false, errorMessage = "No active Jellyfin profile") }
+                _uiState.update { it.copy(isLoading = false, errorMessage = strings.playerNoProfile) }
                 return@launch
             }
             activeUserId = profile.jellyfinUserId
             // Restricted profiles: check the rating before anything plays, whatever opened the player.
             if (!isCinemaIntroClip && !catalogRepository.isPlayableForProfile(itemId, profile)) {
                 _uiState.update {
-                    it.copy(isLoading = false, errorMessage = BLOCKED_FOR_PROFILE_MESSAGE)
+                    it.copy(isLoading = false, errorMessage = strings.detailsBlockedForProfile)
                 }
                 return@launch
             }
@@ -537,11 +552,13 @@ class PlayerViewModel @Inject constructor(
                                 )
                             )
                             if (step is com.seerflix.tv.core.player.CinemaIntroQueue.NextStep.PlayIntro) {
-                                playbackQueueManager.nowPlaying = QueueEntry(
+                                val entry = QueueEntry(
                                     itemId = itemId,
                                     title = adjustedSession.title,
                                     mediaSourceId = resolvedSourceId
                                 )
+                                ownNowPlaying = entry
+                                playbackQueueManager.nowPlaying = entry
                                 _uiState.update {
                                     it.copy(
                                         cinemaIntroIndex = step.index,
@@ -601,12 +618,16 @@ class PlayerViewModel @Inject constructor(
                             isLoading = false
                         )
                     }
+                    // A new play session: its subtitle pick hasn't been applied to the tracks yet.
+                    subtitlePickApplied = false
                     if (!isCinemaIntroClip) {
-                        playbackQueueManager.nowPlaying = QueueEntry(
+                        val entry = QueueEntry(
                             itemId = adjustedSession.itemId,
                             title = adjustedSession.title,
                             mediaSourceId = adjustedSession.mediaSourceId
                         )
+                        ownNowPlaying = entry
+                        playbackQueueManager.nowPlaying = entry
                     }
                     pendingChannelBanner?.let { (channelId, banner) ->
                         pendingChannelBanner = null
@@ -686,7 +707,7 @@ class PlayerViewModel @Inject constructor(
                             // A different item failed: drop the previous episode's session so the
                             // External Player button and Retry don't act on the old episode.
                             session = if (isSameItem) it.session else null,
-                            errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Playback initialization failed")
+                            errorMessage = UnifiedCatalogRepository.formatHttpError(err, strings.playerInitFailed)
                         )
                     }
                 }
@@ -729,7 +750,7 @@ class PlayerViewModel @Inject constructor(
         if (!trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()) {
             // A cached YouTube stream URL may have expired (403) — resolve a fresh one.
             trailerResolver.evict(trailerYoutubeKey)
-            loadTrailer(trailerTitle ?: "Trailer", localTrailerId, trailerYoutubeKey)
+            loadTrailer(trailerTitle ?: strings.actionTrailer, localTrailerId, trailerYoutubeKey)
         } else {
             // A failed pre-roll is skipped (reloading it as a normal item would drop the intro
             // queue and report / mark the clip as played).
@@ -765,15 +786,15 @@ class PlayerViewModel @Inject constructor(
                 qualityOverride = fallbackQuality,
                 resumeOverrideMs = currentPosMs.takeIf { it > 0L }
             )
-            showFeedback("Direct Play unsupported — switched to HLS transcode (${fallbackQuality.label})", 4000L)
+            showFeedback(strings.playerTranscodeFallback.format(fallbackQuality.label), 4000L)
         } else {
-            val detail = errorDetail?.takeIf { it.isNotBlank() } ?: "Stream playback error"
+            val detail = errorDetail?.takeIf { it.isNotBlank() } ?: strings.playerStreamError
             _uiState.update {
                 it.copy(
                     isLoading = false,
                     errorMessage = UnifiedCatalogRepository.formatHttpError(
                         IllegalStateException(detail),
-                        "Playback error: $detail"
+                        strings.playerPlaybackError.format(detail)
                     )
                 )
             }
@@ -957,12 +978,15 @@ class PlayerViewModel @Inject constructor(
             streamUrl = session.directPlayUrl ?: session.streamUrl,
             title = session.title,
             positionMs = currentPosMs,
-            externalSubtitles = session.externalSubtitleFiles
+            externalSubtitles = session.externalSubtitleFiles,
+            chooserTitle = strings.playerOpenWithExternal
         )
         if (!launched) {
             // Playback goes on here: let progress reports for this session resume.
             if (stoppedPlaySessionId == session.playSessionId) stoppedPlaySessionId = null
-            showFeedback("No compatible external video player installed")
+            showFeedback(strings.detailsNoExternalPlayer)
+        } else {
+            externalHandoffPlaySessionId = session.playSessionId
         }
     }
 
@@ -997,7 +1021,8 @@ class PlayerViewModel @Inject constructor(
 
     override fun onCleared() {
         syncPlayManager.localPlayingItemId = null
-        playbackQueueManager.nowPlaying = null
+        // The next player (remote Play Now) may already have published its own entry.
+        if (playbackQueueManager.nowPlaying === ownNowPlaying) playbackQueueManager.nowPlaying = null
         super.onCleared()
     }
 
@@ -1242,7 +1267,7 @@ class PlayerViewModel @Inject constructor(
                         it.copy(
                             remoteSubtitles = results,
                             remoteSubtitlesLoading = false,
-                            subtitleSearchMessage = if (results.isEmpty()) "No remote subtitles found for $language" else null
+                            subtitleSearchMessage = if (results.isEmpty()) strings.playerNoRemoteSubtitles.format(language) else null
                         )
                     }
                 }
@@ -1250,7 +1275,7 @@ class PlayerViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             remoteSubtitlesLoading = false,
-                            subtitleSearchMessage = "Subtitle search failed: ${err.message ?: "Unknown error"}"
+                            subtitleSearchMessage = strings.playerSubtitleSearchFailed.format(err.message ?: strings.commonUnknownError)
                         )
                     }
                 }
@@ -1274,7 +1299,7 @@ class PlayerViewModel @Inject constructor(
                         it.copy(
                             downloadingSubtitleId = null,
                             preferredSubtitleLang = searchLang,
-                            subtitleSearchMessage = "Subtitle downloaded — reloading track…"
+                            subtitleSearchMessage = strings.playerSubtitleDownloaded
                         )
                     }
                     reportStopped(currentPosMs)
@@ -1288,7 +1313,7 @@ class PlayerViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             downloadingSubtitleId = null,
-                            subtitleSearchMessage = "Download failed: ${err.message ?: "Unknown error"}"
+                            subtitleSearchMessage = strings.playerSubtitleDownloadFailed.format(err.message ?: strings.commonUnknownError)
                         )
                     }
                 }
@@ -1328,6 +1353,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun consumePreselectedSubtitle(): Int? {
+        subtitlePickApplied = true
         val idx = _uiState.value.preselectedSubtitleStreamIndex
         if (idx != null) {
             _uiState.update { it.copy(preselectedSubtitleStreamIndex = null) }
@@ -1447,7 +1473,7 @@ class PlayerViewModel @Inject constructor(
         currentPosMs: Long,
         reportState: PlaybackReportState? = null
     ) {
-        val label = if (!channel.number.isNullOrBlank()) "CH ${channel.number} · ${channel.name}" else channel.name
+        val label = if (!channel.number.isNullOrBlank()) strings.playerChannelBanner.format(channel.number, channel.name) else channel.name
         // Shown once the channel has loaded (loading a different item clears the HUD message).
         pendingChannelBanner = channel.id to label
         // Ends the old channel's session so the server frees its tuner / live transcode.
@@ -1491,7 +1517,15 @@ class PlayerViewModel @Inject constructor(
         // a late progress report would resurrect it on the server. Same while the "Still watching?"
         // prompt holds the next item back after this one was reported stopped.
         if (session.isTrailer || session.isCinemaIntro || state.isLoading || state.errorMessage != null) return
-        if (state.showStillWatchingPrompt || session.playSessionId == stoppedPlaySessionId) return
+        if (state.showStillWatchingPrompt) return
+        if (session.playSessionId == stoppedPlaySessionId) {
+            // Handed to an external player, then resumed here: report this session again.
+            if (externalHandoffPlaySessionId != session.playSessionId || isPaused) return
+            externalHandoffPlaySessionId = null
+            stoppedPlaySessionId = null
+            reportStart(positionMs, reportState)
+            return
+        }
         val full = buildDefaultReportState(reportState)
         viewModelScope.launch {
             playbackManager.reportProgress(session, positionMs * 10_000L, isPaused, full)
@@ -1521,7 +1555,6 @@ class PlayerViewModel @Inject constructor(
         const val KEEP_SUBTITLE = Int.MIN_VALUE
         const val FEEDBACK_MS = 4_000L
         const val CHANNEL_BANNER_MS = 3_000L
-        const val BLOCKED_FOR_PROFILE_MESSAGE = "This title isn't available on this profile."
     }
 }
 

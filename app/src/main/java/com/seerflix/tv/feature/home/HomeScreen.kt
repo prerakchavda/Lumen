@@ -125,6 +125,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.seerflix.tv.core.data.AppUpdateInstallState
+import com.seerflix.tv.core.data.StreamingService
+import com.seerflix.tv.core.data.UpcomingDateFormatter
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.model.AppUpdateInfo
@@ -182,6 +184,131 @@ private fun GenreFilterOption.localizedLabel(s: UiStrings): String = when (id) {
     "history" -> s.genreHistory
     "music" -> s.genreMusic
     else -> label
+}
+
+/**
+ * The catalog (UnifiedCatalogRepository) builds Home row titles in English. Resolve the shown
+ * title from the row id instead; ids that carry no known meaning (server library names,
+ * collections, anything new) keep the catalog's title.
+ */
+private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): String {
+    genreRowTitle(id, s)?.let { return it }
+    StreamingService.entries.firstOrNull { it.newAndPopularRowId == id }?.let {
+        return s.rowTop10OnService.format(it.displayName)
+    }
+    return when (id) {
+        "continue_watching" -> when {
+            title.startsWith(CONTINUE_WATCHING_FOR_PREFIX) ->
+                s.homeContinueWatchingFor.format(title.removePrefix(CONTINUE_WATCHING_FOR_PREFIX))
+            title == "Continue Watching" -> s.rowContinueWatching
+            else -> title // already localized by HomeViewModel
+        }
+        "next_up" -> s.rowNextUp
+        "ready_to_watch" -> s.rowReadyToWatch
+        "gems_for_you" -> s.rowGemsForYou
+        "todays_top_picks" -> s.rowTodaysTopPicks
+        "award_winning_tv" -> s.rowAwardWinningTv
+        "top10_tv_now", "np_top10_tv_now" ->
+            regionalTop10Title(title, "Top 10 TV Shows", s.rowTop10TvToday, s.rowTop10TvIn, s)
+        "top10_movies_now", "np_top10_movies_now" ->
+            regionalTop10Title(title, "Top 10 Movies", s.rowTop10MoviesToday, s.rowTop10MoviesIn, s)
+        "my_list", "my_list_page" -> s.navMyList
+        "my_list_shows" -> s.rowSavedShows
+        "my_list_movies" -> s.rowSavedMovies
+        "because_you_watched" ->
+            if (title.startsWith(BECAUSE_YOU_WATCHED_PREFIX)) {
+                s.rowBecauseYouWatched.format(title.removePrefix(BECAUSE_YOU_WATCHED_PREFIX))
+            } else title
+        "seasonal_picks" -> when (title) {
+            "Date Night & Romance" -> s.rowSeasonalRomance
+            "Summer Blockbusters" -> s.rowSeasonalSummer
+            "Spooky Season Picks" -> s.rowSeasonalSpooky
+            "Cozy Autumn & Thanksgiving Picks" -> s.rowSeasonalAutumn
+            "Holiday Favorites" -> s.rowSeasonalHoliday
+            "Critically Acclaimed Films" -> s.rowSeasonalAcclaimed
+            else -> title
+        }
+        "new_on_digital", "np_new_on_digital" -> s.rowNewOnDigital
+        // The TV tab reuses this id for its "New on Lumen" row.
+        "recently_added" -> if (title == "New on Lumen") s.rowNewOnLumen else s.rowRecentlyAdded
+        "need_a_good_laugh" -> s.rowNeedALaugh
+        "animation_critics_love" -> s.rowAnimationCriticsLove
+        "blockbuster_movies" -> s.rowBlockbusterMovies
+        "movie_comedies" -> s.rowMovieComedies
+        "movie_action_adventure" -> s.rowMovieActionAdventure
+        "movie_horror" -> s.rowMovieHorror
+        "movie_drama" -> s.rowMovieDrama
+        "movie_family_animation" -> s.rowMovieFamilyAnimation
+        "movie_scifi" -> s.rowMovieSciFi
+        "award_winning_tv_dramas" -> s.rowAwardWinningTvDramas
+        "thirty_minute_hits" -> s.rowThirtyMinuteHits
+        "imaginative_tv" -> s.rowImaginativeTv
+        "familiar_tv_favorites" -> s.rowFamiliarTvFavorites
+        "tv_comedies" -> s.rowTvComedies
+        "tv_reality" -> s.genreReality
+        "tv_crime" -> s.rowTvCrime
+        "collections" -> s.navCollections
+        "airing_this_week", "np_airing_this_week" -> s.rowAiringThisWeek
+        "coming_to_streaming_dvd", "np_coming_streaming_dvd" -> s.rowComingToStreamingDvd
+        "coming_soon_tv", "np_coming_tv" -> s.rowComingSoonTv
+        "watch_it_again" -> s.rowWatchItAgain
+        "jellyfin_movies" -> s.rowLibraryMovies
+        "jellyfin_series" -> s.rowLibraryShows
+        "np_trending" -> s.rowTrendingNow
+        "np_latest" -> s.rowJustAddedToServer
+        else -> title
+    }
+}
+
+private const val CONTINUE_WATCHING_FOR_PREFIX = "Continue Watching for "
+private const val BECAUSE_YOU_WATCHED_PREFIX = "Because you watched "
+
+/** Per-genre rows: `genre_<kind>_<genreId>`, with the genre label localized. */
+private fun genreRowTitle(id: String, s: UiStrings): String? {
+    val (prefix, format) = listOf(
+        "genre_library_" to s.rowGenreInLibrary,
+        "genre_top10_movies_" to s.rowGenreTop10Movies,
+        "genre_more_movies_" to s.rowGenreMoreMovies,
+        "genre_top10_tv_" to s.rowGenreTop10Tv,
+        "genre_more_tv_" to s.rowGenreMoreTv
+    ).firstOrNull { id.startsWith(it.first) } ?: return null
+    val genreId = id.removePrefix(prefix)
+    val genre = GenreFilterOption.ALL_GENRES.firstOrNull { it.id == genreId } ?: return null
+    return format.format(genre.localizedLabel(s))
+}
+
+/** English region suffixes the catalog appends to Top 10 titles, by ISO country code. */
+private val TOP10_REGION_SUFFIXES = mapOf(
+    "in the U.S. Today" to "US",
+    "in the UK Today" to "GB",
+    "in Canada Today" to "CA",
+    "in Australia Today" to "AU",
+    "in Germany Today" to "DE",
+    "in France Today" to "FR",
+    "in Spain Today" to "ES",
+    "in Japan Today" to "JP"
+)
+
+/** "Top 10 Movies in the UK Today" -> the localized title with the country name in the UI language. */
+private fun regionalTop10Title(
+    title: String,
+    englishPrefix: String,
+    todayTitle: String,
+    regionFormat: String,
+    s: UiStrings
+): String {
+    // Not a catalog title (e.g. a hidden row in Customize Home, named from its id).
+    if (!title.startsWith(englishPrefix)) return todayTitle
+    val suffix = title.removePrefix(englishPrefix).trim()
+    if (suffix == "Today") return todayTitle
+    val region = TOP10_REGION_SUFFIXES[suffix] ?: return title
+    // English keeps the catalog's own wording ("in the U.S.").
+    if (s.languageCode == "en") return title
+    val country = runCatching {
+        java.util.Locale.Builder().setRegion(region).build()
+            .getDisplayCountry(java.util.Locale.forLanguageTag(s.languageCode))
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: return title
+    return regionFormat.format(country)
 }
 
 @Composable
@@ -2115,7 +2242,7 @@ private fun CatalogRowSection(
     ) {
         val strings = AppStrings.current
         Text(
-            text = if (row.id == "next_up") strings.rowNextUp else row.title,
+            text = localizedHomeRowTitle(row.id, row.title, strings),
             color = colors.textPrimary,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
@@ -2678,7 +2805,7 @@ private fun CollectionsHubContent(
                                     .padding(horizontal = 7.dp, vertical = 3.dp)
                             ) {
                                 Text(
-                                    text = col.completionLabel,
+                                    text = UpcomingDateFormatter.collectionCompletionLabel(col.ownedCount, col.totalCount, AppStrings.current),
                                     color = colors.white,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold
@@ -3044,7 +3171,7 @@ private fun CollectionDetailsDialog(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = collection.completionLabel,
+                        text = UpcomingDateFormatter.collectionCompletionLabel(collection.ownedCount, collection.totalCount, AppStrings.current),
                         color = colors.matchGreen,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
@@ -4054,7 +4181,7 @@ private fun CustomizeHomeDialog(
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         ) {
                             Text(
-                                text = rowTitle,
+                                text = localizedHomeRowTitle(rowId, rowTitle, strings),
                                 color = if (hidden) colors.textMuted else colors.white,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,

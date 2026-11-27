@@ -55,6 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.seerflix.tv.core.data.UpcomingDateFormatter
 import com.seerflix.tv.core.i18n.AppStrings
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.UiPreset
@@ -442,9 +443,12 @@ fun NetflixPosterCard(
 
         // Upcoming countdown / completion pill OR Netflix centered bottom status ribbon
         if (hasUpcomingBadge) {
-            val isHighlight = item.upcomingBadgeLabel.equals("Now in Library", ignoreCase = true) ||
-                item.upcomingBadgeLabel?.contains("Tonight", ignoreCase = true) == true ||
-                item.upcomingBadgeLabel?.equals("Today", ignoreCase = true) == true
+            // Highlight comes from the parsed badge (arrived reminder / airing today), not its text.
+            val isHighlight = UpcomingDateFormatter.isHighlightBadge(item.upcomingBadgeLabel)
+            val badgeStrings = AppStrings.current
+            val badgeText = remember(item.upcomingBadgeLabel, badgeStrings) {
+                UpcomingDateFormatter.localizeBadge(item.upcomingBadgeLabel!!, badgeStrings)
+            }
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
@@ -462,7 +466,7 @@ fun NetflixPosterCard(
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
-                    text = item.upcomingBadgeLabel!!,
+                    text = badgeText,
                     color = colors.white,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
@@ -557,8 +561,15 @@ fun NetflixBottomRibbon(
             .background(colors.accent)
             .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
+        val strings = AppStrings.current
         Text(
-            text = label,
+            // The catalog stores these status labels in English.
+            text = when (label) {
+                "Recently Added" -> strings.badgeRecentlyAdded
+                "New Season" -> strings.badgeNewSeason
+                "New Episode" -> strings.badgeNewEpisode
+                else -> label
+            },
             color = colors.white,
             fontSize = 9.5.sp,
             fontWeight = FontWeight.Bold,

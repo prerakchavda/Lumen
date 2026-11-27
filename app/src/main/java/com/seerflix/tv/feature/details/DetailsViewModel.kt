@@ -7,7 +7,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.DetailsSeedCache
+import com.seerflix.tv.core.data.PlaylistServerMismatchException
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityTier
 import com.seerflix.tv.core.model.CollectionSummary
@@ -101,6 +104,10 @@ class DetailsViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(DetailsUiState())
     val uiState: StateFlow<DetailsUiState> = _uiState.asStateFlow()
 
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
+
     private var pollingJob: Job? = null
     private var seasonJob: Job? = null
     private var loadJob: Job? = null
@@ -148,7 +155,7 @@ class DetailsViewModel @Inject constructor(
             }
             val profile = authRepository.activeProfileFlow.first()
             if (profile == null) {
-                _uiState.update { it.copy(item = null, isLoading = false, isRefining = false, errorMessage = "No active profile") }
+                _uiState.update { it.copy(item = null, isLoading = false, isRefining = false, errorMessage = strings.commonNoActiveProfile) }
                 return@launch
             }
             activeUserId = profile.jellyfinUserId
@@ -217,7 +224,7 @@ class DetailsViewModel @Inject constructor(
                             item = null,
                             isLoading = false,
                             isRefining = false,
-                            errorMessage = "This title isn't available on this profile.",
+                            errorMessage = strings.detailsBlockedForProfile,
                             isBlockedByParentalControls = true
                         )
                     }
@@ -293,7 +300,7 @@ class DetailsViewModel @Inject constructor(
                         item = null,
                         isLoading = false,
                         isRefining = false,
-                        errorMessage = UnifiedCatalogRepository.formatHttpError(err, "Failed to load details")
+                        errorMessage = UnifiedCatalogRepository.formatHttpError(err, strings.detailsLoadFailed)
                     )
                 }
             }
@@ -390,11 +397,11 @@ class DetailsViewModel @Inject constructor(
         // Request eligibility depends on real availability data, which a seed doesn't have.
         if (_uiState.value.isRefining) return
         if (!_uiState.value.isSeerrConfigured) {
-            _uiState.update { it.copy(feedbackBanner = "Connect Seerr in Server Settings to submit requests.") }
+            _uiState.update { it.copy(feedbackBanner = strings.requestNeedsSeerr) }
             return
         }
         if (!_uiState.value.canSubmitRequests) {
-            _uiState.update { it.copy(feedbackBanner = "Requests are locked in Kids Mode for this profile.") }
+            _uiState.update { it.copy(feedbackBanner = strings.requestsLockedKids) }
             return
         }
         val item = _uiState.value.item ?: return
@@ -426,7 +433,7 @@ class DetailsViewModel @Inject constructor(
         val item = _uiState.value.item ?: return
         val tmdbId = item.tmdbId ?: return
         if (!_uiState.value.canSubmitRequests) {
-            _uiState.update { it.copy(showRequestModal = false, feedbackBanner = "Requests locked in Kids Mode") }
+            _uiState.update { it.copy(showRequestModal = false, feedbackBanner = strings.requestsLockedKids) }
             return
         }
         // Double OK-press on "Send Request" must not fire duplicate requests (Seerr answers 409).
@@ -463,11 +470,12 @@ class DetailsViewModel @Inject constructor(
                     .onFailure { lastError = it.message }
             }
 
+            val s = strings
             _uiState.update {
                 it.copy(
                     isSubmittingRequest = false,
                     showRequestModal = false,
-                    feedbackBanner = if (anySuccess) "Request sent to Seerr!" else "Request failed: ${lastError ?: "Unknown error"}"
+                    feedbackBanner = if (anySuccess) s.detailsRequestSent else s.requestFailed.format(lastError ?: s.commonUnknownError)
                 )
             }
             if (anySuccess) {
@@ -499,13 +507,14 @@ class DetailsViewModel @Inject constructor(
                             )
                             else -> cur
                         }
-                        state.copy(item = updated, feedbackBanner = "Request cancelled")
+                        state.copy(item = updated, feedbackBanner = strings.detailsRequestCancelled)
                     }
                     pollingJob?.cancel()
                     pollingJob = null
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = "Cancel failed: ${err.message}") }
+                    val s = strings
+                    _uiState.update { it.copy(feedbackBanner = s.detailsCancelFailed.format(err.message ?: s.commonUnknownError)) }
                 }
         }
     }
@@ -513,7 +522,7 @@ class DetailsViewModel @Inject constructor(
     fun openReportIssueModal() {
         if (_uiState.value.isRefining) return
         if (!_uiState.value.isSeerrConfigured) {
-            _uiState.update { it.copy(feedbackBanner = "Issue reporting requires Seerr.") }
+            _uiState.update { it.copy(feedbackBanner = strings.detailsIssueNeedsSeerr) }
             return
         }
         _uiState.update { it.copy(showReportIssueModal = true, feedbackBanner = null) }
@@ -539,7 +548,7 @@ class DetailsViewModel @Inject constructor(
                         it.copy(
                             isReportingIssue = false,
                             showReportIssueModal = false,
-                            feedbackBanner = "Issue reported to Seerr"
+                            feedbackBanner = strings.detailsIssueReported
                         )
                     }
                 }
@@ -548,7 +557,7 @@ class DetailsViewModel @Inject constructor(
                         it.copy(
                             isReportingIssue = false,
                             showReportIssueModal = false,
-                            feedbackBanner = "Failed to report issue: ${err.message}"
+                            feedbackBanner = strings.detailsIssueFailed.format(err.message ?: strings.commonUnknownError)
                         )
                     }
                 }
@@ -585,12 +594,13 @@ class DetailsViewModel @Inject constructor(
                             } else {
                                 it.episodes
                             },
-                            feedbackBanner = if (nextWatched) "Marked as watched" else "Marked as unwatched"
+                            feedbackBanner = if (nextWatched) strings.detailsMarkedWatched else strings.detailsMarkedUnwatched
                         )
                     }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = "Update failed: ${err.message}") }
+                    val s = strings
+                    _uiState.update { it.copy(feedbackBanner = s.watchedUpdateFailed.format(err.message ?: s.commonUnknownError)) }
                 }
         }
     }
@@ -608,7 +618,7 @@ class DetailsViewModel @Inject constructor(
         if (activeUserId.isBlank()) return
 
         viewModelScope.launch {
-            _uiState.update { it.copy(feedbackBanner = "Opening external player...") }
+            _uiState.update { it.copy(feedbackBanner = strings.detailsOpeningExternalPlayer) }
             val sourceId = _uiState.value.selectedMediaSourceId
             // A version that lives on another server is played as that server's copy.
             val versionItemId = sourceId?.let { id -> item.mediaVersions.firstOrNull { it.id == id }?.itemId }
@@ -623,16 +633,18 @@ class DetailsViewModel @Inject constructor(
                         streamUrl = session.directPlayUrl ?: session.streamUrl,
                         title = session.title,
                         positionMs = session.resumeTicks / 10_000L,
-                        externalSubtitles = session.externalSubtitleFiles
+                        externalSubtitles = session.externalSubtitleFiles,
+                        chooserTitle = strings.playerOpenWithExternal
                     )
                     _uiState.update {
                         it.copy(
-                            feedbackBanner = if (launched) null else "No compatible external video player installed"
+                            feedbackBanner = if (launched) null else strings.detailsNoExternalPlayer
                         )
                     }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = "External player failed: ${err.message}") }
+                    val s = strings
+                    _uiState.update { it.copy(feedbackBanner = s.detailsExternalPlayerFailed.format(err.message ?: s.commonUnknownError)) }
                 }
         }
     }
@@ -655,13 +667,13 @@ class DetailsViewModel @Inject constructor(
                         }
                         state.copy(
                             collectionSaga = updatedSaga,
-                            feedbackBanner = "Requested \"${part.title}\""
+                            feedbackBanner = strings.requestedTitleFeedback.format(part.title)
                         )
                     }
                 }
                 .onFailure { err ->
                     _uiState.update {
-                        it.copy(feedbackBanner = "Request failed: ${err.message ?: "Unknown error"}")
+                        it.copy(feedbackBanner = strings.requestFailed.format(err.message ?: strings.commonUnknownError))
                     }
                 }
         }
@@ -701,7 +713,11 @@ class DetailsViewModel @Inject constructor(
                 } else state.collectionSaga
                 state.copy(
                     collectionSaga = updatedSaga,
-                    feedbackBanner = if (count > 0) "Requested $count missing title${if (count == 1) "" else "s"}" else "Unable to submit requests"
+                    feedbackBanner = when {
+                        count == 1 -> strings.requestedMissingOne
+                        count > 1 -> strings.requestedMissingMany.format(count)
+                        else -> strings.requestsSubmitFailed
+                    }
                 )
             }
         }
@@ -717,12 +733,13 @@ class DetailsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             item = it.item?.copy(isInMyList = inList),
-                            feedbackBanner = if (inList) "Added to My List" else "Removed from My List"
+                            feedbackBanner = if (inList) strings.detailsAddedToMyList else strings.detailsRemovedFromMyList
                         )
                     }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = "My List update failed: ${err.message}") }
+                    val s = strings
+                    _uiState.update { it.copy(feedbackBanner = s.myListUpdateFailed.format(err.message ?: s.commonUnknownError)) }
                 }
         }
     }
@@ -736,7 +753,7 @@ class DetailsViewModel @Inject constructor(
             _uiState.update {
                 it.copy(
                     item = it.item?.copy(isReminderSet = set),
-                    feedbackBanner = if (set) "Reminder set for release" else "Reminder removed"
+                    feedbackBanner = if (set) strings.detailsReminderAdded else strings.detailsReminderRemoved
                 )
             }
         }
@@ -753,7 +770,7 @@ class DetailsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             item = it.item?.copy(resumePositionTicks = 0L),
-                            feedbackBanner = "Removed from Continue Watching"
+                            feedbackBanner = strings.detailsRemovedFromContinue
                         )
                     }
                 }
@@ -782,10 +799,12 @@ class DetailsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.addToPlaylist(activeUserId, playlistId, listOf(jfId))
                 .onSuccess {
-                    _uiState.update { it.copy(feedbackBanner = "Added to $playlistName") }
+                    _uiState.update { it.copy(feedbackBanner = strings.playlistAddedFeedback.format(playlistName)) }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = err.message ?: "Failed to add to playlist") }
+                    val s = strings
+                    val msg = if (err is PlaylistServerMismatchException) s.playlistWrongServer else err.message ?: s.playlistAddFailed
+                    _uiState.update { it.copy(feedbackBanner = msg) }
                 }
         }
     }
@@ -798,10 +817,12 @@ class DetailsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.createPlaylist(activeUserId, clean, listOfNotNull(jfId))
                 .onSuccess {
-                    _uiState.update { it.copy(feedbackBanner = "Created playlist $clean") }
+                    _uiState.update { it.copy(feedbackBanner = strings.playlistCreatedFeedback.format(clean)) }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = err.message ?: "Failed to create playlist") }
+                    val s = strings
+                    val msg = if (err is PlaylistServerMismatchException) s.playlistWrongServer else err.message ?: s.playlistCreateFailed
+                    _uiState.update { it.copy(feedbackBanner = msg) }
                 }
         }
     }
@@ -839,10 +860,10 @@ class DetailsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.deleteItem(activeUserId, jfId)
                 .onSuccess {
-                    _uiState.update { it.copy(itemDeleted = true, feedbackBanner = "Deleted from server") }
+                    _uiState.update { it.copy(itemDeleted = true, feedbackBanner = strings.deleteSuccessFeedback) }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = err.message ?: "Failed to delete item") }
+                    _uiState.update { it.copy(feedbackBanner = err.message ?: strings.deleteFailed) }
                 }
         }
     }
@@ -877,7 +898,7 @@ class DetailsViewModel @Inject constructor(
                     }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(feedbackBanner = "Couldn't update watched status: ${err.message.orEmpty()}") }
+                    _uiState.update { it.copy(feedbackBanner = strings.watchedUpdateFailed.format(err.message.orEmpty())) }
                 }
         }
     }
@@ -917,7 +938,7 @@ class DetailsViewModel @Inject constructor(
                 // Resume / Mark Watched on the header follow the series' new state.
                 runCatching { refreshStatusSilently() }
             }.onFailure { err ->
-                _uiState.update { it.copy(feedbackBanner = "Couldn't update watched status: ${err.message.orEmpty()}") }
+                _uiState.update { it.copy(feedbackBanner = strings.watchedUpdateFailed.format(err.message.orEmpty())) }
             }
         }
     }
@@ -963,7 +984,7 @@ class DetailsViewModel @Inject constructor(
             _uiState.update {
                 it.copy(
                     item = null,
-                    errorMessage = "This title isn't available on this profile.",
+                    errorMessage = strings.detailsBlockedForProfile,
                     isBlockedByParentalControls = true
                 )
             }

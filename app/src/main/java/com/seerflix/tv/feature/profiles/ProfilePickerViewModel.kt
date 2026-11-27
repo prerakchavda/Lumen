@@ -3,6 +3,8 @@ package com.seerflix.tv.feature.profiles
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.core.network.SessionPreferences
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,11 +43,16 @@ data class ProfilePickerUiState(
 
 @HiltViewModel
 class ProfilePickerViewModel @Inject constructor(
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val sessionPreferences: SessionPreferences
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfilePickerUiState())
     val uiState: StateFlow<ProfilePickerUiState> = _uiState.asStateFlow()
+
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private var qcPollingJob: Job? = null
     private var pinFailedAttempts = 0
@@ -157,7 +164,7 @@ class ProfilePickerViewModel @Inject constructor(
         if (isPinLockedOut()) return
         val pin = _uiState.value.pinEntryInput
         if (pin.length != 4) {
-            _uiState.update { it.copy(pinError = "Enter 4 digits") }
+            _uiState.update { it.copy(pinError = strings.profilePinInvalid) }
             return
         }
         val verified = if (_uiState.value.pinChallengeGuardian) {
@@ -198,9 +205,9 @@ class ProfilePickerViewModel @Inject constructor(
             val error = if (pinFailedAttempts >= MAX_PIN_ATTEMPTS) {
                 pinFailedAttempts = 0
                 pinLockedUntilMs = System.currentTimeMillis() + PIN_LOCKOUT_MS
-                "Too many incorrect attempts. Try again in ${PIN_LOCKOUT_MS / 1000}s."
+                strings.profilePinLockedOut.format(PIN_LOCKOUT_MS / 1000)
             } else {
-                "Incorrect PIN. Try again."
+                strings.profilePinIncorrect
             }
             _uiState.update { it.copy(pinEntryInput = "", pinError = error) }
         }
@@ -212,7 +219,7 @@ class ProfilePickerViewModel @Inject constructor(
         if (remainingMs <= 0L) return false
         val secs = (remainingMs + 999L) / 1000L
         _uiState.update {
-            it.copy(pinEntryInput = "", pinError = "Too many incorrect attempts. Try again in ${secs}s.")
+            it.copy(pinEntryInput = "", pinError = strings.profilePinLockedOut.format(secs))
         }
         return true
     }
@@ -332,7 +339,7 @@ class ProfilePickerViewModel @Inject constructor(
         val u = _uiState.value.username
         val p = _uiState.value.password
         if (u.isBlank()) {
-            _uiState.update { it.copy(errorMessage = "Enter your Jellyfin username") }
+            _uiState.update { it.copy(errorMessage = strings.addServerErrorUsername) }
             return
         }
         viewModelScope.launch {
@@ -344,11 +351,12 @@ class ProfilePickerViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     val raw = err.message.orEmpty()
+                    val s = strings
                     val friendly = when {
-                        raw.contains("401") -> "Invalid Jellyfin username or password."
-                        raw.contains("403") -> "Sign-in forbidden (HTTP 403). Check account permissions."
+                        raw.contains("401") -> s.profileInvalidCredentials
+                        raw.contains("403") -> s.profileSignInForbidden
                         raw.isNotBlank() -> raw
-                        else -> "Sign-in failed"
+                        else -> s.profileSignInFailed
                     }
                     _uiState.update {
                         it.copy(
@@ -373,7 +381,7 @@ class ProfilePickerViewModel @Inject constructor(
                     it.copy(
                         isAuthenticating = false,
                         usePasswordMode = true,
-                        errorMessage = "Quick Connect is not enabled on this server — sign in with your password below."
+                        errorMessage = strings.profileQuickConnectDisabled
                     )
                 }
                 return@launch
@@ -409,7 +417,7 @@ class ProfilePickerViewModel @Inject constructor(
                             it.copy(
                                 quickConnectCode = null,
                                 quickConnectSecret = null,
-                                errorMessage = "Quick Connect code expired or the server stopped responding — sign in with your password, or switch back to Quick Connect for a new code."
+                                errorMessage = strings.profileQuickConnectExpired
                             )
                         }
                         break

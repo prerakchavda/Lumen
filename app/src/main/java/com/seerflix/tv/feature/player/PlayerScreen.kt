@@ -979,7 +979,9 @@ fun PlayerScreen(
             val s = state.session
             val pos = currentPosMs
             val dur = durationMs
-            val hasNext = s != null && !s.isCinemaIntro && !s.isTrailer &&
+            // Never on Live TV: a channel has no "end", and a live window's duration would trip the
+            // last-25 s test and switch away from the channel.
+            val hasNext = s != null && !s.isCinemaIntro && !s.isTrailer && !s.isLiveTv &&
                 (state.hasQueueNext || s.nextEpisodeId != null)
             // Last 25 s, or the last fifth for short episodes (a fixed 25 s window with a 60 s
             // minimum never showed Up Next for short-form shows), or once playback has ended.
@@ -1001,10 +1003,11 @@ fun PlayerScreen(
 
     // Keyed on isLoading so the countdown stops once "Play Now"/Next already started loading the
     // next episode (otherwise it fired a second stopped report + loadItem).
-    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading, state.sleepTimerOption, state.hasQueueNext) {
-        val hasNext = state.hasQueueNext || state.session?.nextEpisodeId != null
+    LaunchedEffect(showNextEpisode, session?.itemId, state.autoplayNextEpisode, state.autoplayCancelled, state.isLoading, state.sleepTimerOption, state.hasQueueNext, state.showStillWatchingPrompt) {
+        val hasNext = state.session?.isLiveTv != true && (state.hasQueueNext || state.session?.nextEpisodeId != null)
         val blockedBySleepEnd = state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO
-        if (showNextEpisode && !state.isLoading && state.autoplayNextEpisode && !state.autoplayCancelled && !blockedBySleepEnd && hasNext) {
+        // While "Still watching?" is up, only the user's answer moves on (never the countdown).
+        if (showNextEpisode && !state.isLoading && !state.showStillWatchingPrompt && state.autoplayNextEpisode && !state.autoplayCancelled && !blockedBySleepEnd && hasNext) {
             nextEpisodeCountdown = 5
             while (nextEpisodeCountdown > 0) {
                 delay(1000L)
@@ -3166,7 +3169,7 @@ private fun CaptionsSideSheet(
                     remoteSubtitles.take(5).forEach { sub ->
                         val details = listOfNotNull(
                             sub.format?.uppercase(),
-                            sub.downloadCount?.let { "$it dl" },
+                            sub.downloadCount?.let { strings.playerSubtitleDownloads.format(it) },
                             if (sub.communityRating != null) String.format(Locale.US, "★%.1f", sub.communityRating) else null
                         ).joinToString(" • ")
                         val label = if (details.isBlank()) sub.name else "${sub.name} ($details)"

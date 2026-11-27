@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.GenreFilterOption
 import com.seerflix.tv.core.model.PersonSearchResult
 import com.seerflix.tv.core.model.UnifiedMediaItem
@@ -65,7 +66,9 @@ class SearchViewModel @Inject constructor(
             initialPersonId != null || initialJfPersonId != null -> selectPerson(
                 personId = initialPersonId,
                 jellyfinPersonId = initialJfPersonId,
-                name = initialPersonName ?: initialQuery.ifBlank { "Filmography" }
+                name = initialPersonName ?: initialQuery.ifBlank {
+                    stringsForLanguage(sessionPreferences.cachedUiLanguage).searchFilmographyFallback
+                }
             )
             initialQuery.trim().length >= 2 -> onQueryChange(initialQuery)
         }
