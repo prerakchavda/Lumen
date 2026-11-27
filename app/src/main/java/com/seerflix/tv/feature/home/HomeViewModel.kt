@@ -9,6 +9,8 @@ import com.seerflix.tv.core.data.AppUpdateInstaller
 import com.seerflix.tv.core.data.AuthRepository
 import com.seerflix.tv.core.data.HomeContentCache
 import com.seerflix.tv.core.data.UnifiedCatalogRepository
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.AppUpdateInfo
 import com.seerflix.tv.core.model.AvailabilityFilter
 import com.seerflix.tv.core.model.AvailabilityTier
@@ -161,6 +163,10 @@ class HomeViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
+    /** UI strings for the active profile's language, read when a message is produced. */
+    private val strings: UiStrings
+        get() = stringsForLanguage(prefs.cachedUiLanguage)
+
     private var focusPreviewJob: Job? = null
     private var feedbackJob: Job? = null
     private var catalogJob: Job? = null
@@ -296,7 +302,7 @@ class HomeViewModel @Inject constructor(
         _uiState.update { it.copy(showAppearanceDialog = false) }
         viewModelScope.launch(Dispatchers.IO) {
             authRepository.updateActiveUiPreset(preset)
-            showActionFeedback("Switched UI preset to ${preset.displayName}")
+            showActionFeedback(strings.homePresetSwitched.format(preset.displayName))
         }
     }
 
@@ -367,7 +373,7 @@ class HomeViewModel @Inject constructor(
                             )
                         }
                     }
-                    showActionFeedback("Removed from playlist")
+                    showActionFeedback(strings.playlistRemovedFeedback)
                 }
         }
     }
@@ -388,7 +394,7 @@ class HomeViewModel @Inject constructor(
                 defaultStartupTab = defaultStartupTab
             )
             authRepository.updateProfilePreferences(updated)
-            showActionFeedback("Saved Home layout customization")
+            showActionFeedback(strings.homeLayoutSaved)
             loadCatalog(_uiState.value.activeTab, _uiState.value.selectedGenre, _uiState.value.availabilityFilter)
         }
     }
@@ -412,10 +418,11 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             syncPlayManager.createGroup(name)
                 .onSuccess { grp ->
-                    showActionFeedback("Started SyncPlay room: ${grp?.groupName ?: name}")
+                    showActionFeedback(strings.syncPlayStarted.format(grp?.groupName ?: name))
                 }
                 .onFailure { err ->
-                    showActionFeedback("SyncPlay unavailable: ${err.message ?: "Check Jellyfin"}")
+                    val s = strings
+                    showActionFeedback(s.syncPlayUnavailable.format(err.message ?: s.syncPlayCheckJellyfin))
                 }
         }
     }
