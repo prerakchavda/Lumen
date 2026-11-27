@@ -4,6 +4,7 @@ import android.app.SearchManager
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -86,18 +87,50 @@ class MainActivity : ComponentActivity() {
     lateinit var diagnostics: DiagnosticsRepository
 
     private var latestIntentState by mutableStateOf<Intent?>(null)
-    private val lastUserInputTick = androidx.compose.runtime.mutableLongStateOf(0L)
+    /** When the user last pressed a key / interacted ([android.os.SystemClock.elapsedRealtime]). */
+    @Volatile
+    private var lastUserInputAtMs: Long = android.os.SystemClock.elapsedRealtime()
+    private var screensaverVisible by mutableStateOf(false)
+    /** Key whose remaining events (repeats + key-up) belong to the press that woke the screensaver. */
+    private var swallowedWakeKeyCode: Int = android.view.KeyEvent.KEYCODE_UNKNOWN
+
+    private fun markUserInput() {
+        lastUserInputAtMs = android.os.SystemClock.elapsedRealtime()
+    }
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            lastUserInputTick.longValue += 1
+        markUserInput()
+        // The screensaver never takes focus (so the card underneath keeps it and Back keeps
+        // working); the key that wakes it is consumed here, including its repeats and key-up.
+        if (event.keyCode == swallowedWakeKeyCode) {
+            if (event.action == android.view.KeyEvent.ACTION_UP) swallowedWakeKeyCode = android.view.KeyEvent.KEYCODE_UNKNOWN
+            if (event.action != android.view.KeyEvent.ACTION_DOWN || event.repeatCount > 0) return true
+            swallowedWakeKeyCode = android.view.KeyEvent.KEYCODE_UNKNOWN
+        }
+        if (screensaverVisible && event.action == android.view.KeyEvent.ACTION_DOWN) {
+            screensaverVisible = false
+            swallowedWakeKeyCode = event.keyCode
+            return true
         }
         return super.dispatchKeyEvent(event)
     }
 
     override fun onUserInteraction() {
         super.onUserInteraction()
-        lastUserInputTick.longValue += 1
+        markUserInput()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Time spent in the background (remote Home button) is not idle time on our screen.
+        markUserInput()
+        screensaverVisible = false
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // A dialog window took or returned focus: its keys never reach dispatchKeyEvent here.
+        markUserInput()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -121,6 +154,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+                androidx.compose.runtime.CompositionLocalProvider(
+                    com.seerflix.tv.ui.components.LocalScreensaverVisible provides screensaverVisible
+                ) {
                 SeerflixNavGraph(
                     authRepository = authRepository,
                     socketClient = socketClient,
@@ -129,11 +165,17 @@ class MainActivity : ComponentActivity() {
                     catalogRepository = catalogRepository,
                     diagnostics = diagnostics,
                     activeProfile = activeProfile,
-                    lastUserInputTick = { lastUserInputTick.longValue },
-                    onBumpUserInput = { lastUserInputTick.longValue += 1 },
+                    lastUserInputAtMs = { lastUserInputAtMs },
+                    hasWindowFocus = { hasWindowFocus() },
+                    screensaverVisible = { screensaverVisible },
+                    setScreensaverVisible = { visible ->
+                        markUserInput()
+                        screensaverVisible = visible
+                    },
                     incomingIntent = latestIntentState,
                     onIntentHandled = { latestIntentState = null }
                 )
+                }
             }
         }
     }
@@ -268,8 +310,10 @@ private fun SeerflixNavGraph(
     catalogRepository: UnifiedCatalogRepository,
     diagnostics: DiagnosticsRepository,
     activeProfile: com.seerflix.tv.core.model.UserProfile?,
-    lastUserInputTick: () -> Long,
-    onBumpUserInput: () -> Unit,
+    lastUserInputAtMs: () -> Long,
+    hasWindowFocus: () -> Boolean,
+    screensaverVisible: () -> Boolean,
+    setScreensaverVisible: (Boolean) -> Unit,
     incomingIntent: Intent?,
     onIntentHandled: () -> Unit
 ) {
@@ -679,7 +723,7 @@ private fun SeerflixNavGraph(
     }
 
     // OLED Backdrop / Clock Screensaver on browse & details screens (PlayerScreen handles paused playback itself).
-    var showScreensaver by remember { mutableStateOf(false) }
+    val showScreensaver = screensaverVisible()
     var screensaverSlides by remember(activeProfile?.id) {
         mutableStateOf<List<com.seerflix.tv.core.model.ScreensaverSlide>>(emptyList())
     }
@@ -689,36 +733,43 @@ private fun SeerflixNavGraph(
         currentRoute != Routes.PLAYER &&
         currentRoute != Routes.TRAILER
     val screensaverTimeoutMin = activeProfile?.screensaverTimeoutMinutes ?: 0
+    val screensaverLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(screensaverEligible, screensaverTimeoutMin, activeProfile?.id, showScreensaver) {
         if (!screensaverEligible || screensaverTimeoutMin <= 0 || activeProfile == null) {
-            showScreensaver = false
+            if (showScreensaver) setScreensaverVisible(false)
             return@LaunchedEffect
         }
         if (showScreensaver) return@LaunchedEffect
         val timeoutMs = screensaverTimeoutMin * 60_000L
-        var observedTick = lastUserInputTick()
-        while (true) {
-            kotlinx.coroutines.delay(timeoutMs)
-            val nowTick = lastUserInputTick()
-            if (nowTick == observedTick) {
+        // Only counts while Lumen is on screen; idle time is measured from the last key press.
+        screensaverLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            while (true) {
+                val idleMs = android.os.SystemClock.elapsedRealtime() - lastUserInputAtMs()
+                if (idleMs < timeoutMs) {
+                    kotlinx.coroutines.delay(timeoutMs - idleMs)
+                    continue
+                }
+                // A dialog has the focus (its keys don't reach the activity): not idle.
+                if (!hasWindowFocus()) {
+                    kotlinx.coroutines.delay(5_000L)
+                    continue
+                }
                 if (screensaverSlides.isEmpty()) {
                     screensaverSlides = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        catalogRepository.loadScreensaverBackdrops(activeProfile.jellyfinUserId, activeProfile)
+                        runCatching {
+                            catalogRepository.loadScreensaverBackdrops(activeProfile.jellyfinUserId, activeProfile)
+                        }.getOrDefault(emptyList())
                     }
                 }
-                showScreensaver = true
-                return@LaunchedEffect
+                setScreensaverVisible(true)
+                break
             }
-            observedTick = nowTick
         }
     }
     if (showScreensaver && screensaverEligible) {
         com.seerflix.tv.ui.components.ScreensaverOverlay(
             slides = screensaverSlides,
-            onDismiss = {
-                onBumpUserInput()
-                showScreensaver = false
-            }
+            onDismiss = { setScreensaverVisible(false) }
         )
     }
     }

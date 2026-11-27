@@ -241,7 +241,11 @@ class TvChannelSyncManager @Inject constructor(
             }
             val builder = WatchNextProgram.Builder()
                 .setType(type)
-                .setWatchNextType(TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE)
+                .setWatchNextType(
+                    // An unstarted Next Up episode is "next", not something to continue.
+                    if (item.isNextUp && item.resumePositionTicks <= 0L) TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_NEXT
+                    else TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE
+                )
                 .setLastEngagementTimeUtcMillis(System.currentTimeMillis())
                 .setTitle(item.title)
                 .setDescription(item.overview.take(200))

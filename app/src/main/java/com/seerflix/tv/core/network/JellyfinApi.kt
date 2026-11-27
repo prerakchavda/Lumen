@@ -252,6 +252,7 @@ interface JellyfinApi {
         @Query("UserId") userId: String,
         @Query("HasAired") hasAired: Boolean = false,
         @Query("Limit") limit: Int = 500,
+        @Query("StartIndex") startIndex: Int? = null,
         @Query("Fields") fields: String = "Overview,ChannelInfo",
         @Query("MinEndDate") minEndDate: String? = null,
         @Query("MaxStartDate") maxStartDate: String? = null,
@@ -263,7 +264,7 @@ interface JellyfinApi {
     suspend fun getLiveTvRecordings(
         @Query("UserId") userId: String,
         @Query("Limit") limit: Int = 40,
-        @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData"
+        @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData,Genres"
     ): JellyfinItemsResponse
 
     @GET("SyncPlay/List")

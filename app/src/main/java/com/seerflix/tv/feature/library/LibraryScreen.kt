@@ -95,6 +95,21 @@ fun LibraryScreen(
             runCatching { firstItemFocus.requestFocus() }
         }
     }
+    // A full reload (into / out of a folder, new sort or filter) empties the grid, which drops the
+    // focused card: once the new first page is in, start at the top (or on the folder we came
+    // back out of) and put focus there instead of leaving it nowhere.
+    val restoreFocus = remember { FocusRequester() }
+    var handledGeneration by remember { mutableStateOf(state.reloadGeneration) }
+    LaunchedEffect(state.reloadGeneration, state.items.isNotEmpty()) {
+        if (state.items.isEmpty() || state.reloadGeneration == handledGeneration) return@LaunchedEffect
+        handledGeneration = state.reloadGeneration
+        if (!focusedFirstPage) return@LaunchedEffect
+        val targetIndex = state.focusTargetId?.let { id -> state.items.indexOfFirst { it.jellyfinId == id } } ?: -1
+        runCatching { gridState.scrollToItem(targetIndex.coerceAtLeast(0)) }
+        if (!state.refocusGrid || showFilterPanel) return@LaunchedEffect
+        delay(60L)
+        runCatching { if (targetIndex > 0) restoreFocus.requestFocus() else firstItemFocus.requestFocus() }
+    }
 
     val sortLabels = listOf(
         LibrarySort.NAME to strings.sortName,
@@ -217,7 +232,11 @@ fun LibraryScreen(
                                     }
                                 },
                                 forcePortrait = true,
-                                modifier = if (index == 0) Modifier.focusRequester(firstItemFocus) else Modifier
+                                modifier = when {
+                                    index == 0 -> Modifier.focusRequester(firstItemFocus)
+                                    state.focusTargetId != null && item.jellyfinId == state.focusTargetId -> Modifier.focusRequester(restoreFocus)
+                                    else -> Modifier
+                                }
                             )
                         }
                         if (state.loadMoreFailed) {

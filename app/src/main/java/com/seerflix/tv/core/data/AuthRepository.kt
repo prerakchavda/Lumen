@@ -121,9 +121,10 @@ class AuthRepository @Inject constructor(
                 }
             }
         }
-        val serverCfg = jfAuth.user.configuration ?: runCatchingCancellable {
-            jellyfinApi.getUser(jfAuth.user.id).configuration
-        }.getOrNull()
+        // AuthenticateByName returns the user's Configuration. If it ever doesn't, the sync that runs
+        // once this profile is active fills the track defaults in (a lookup here would still go out
+        // with the previous profile's token).
+        val serverCfg = jfAuth.user.configuration
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
@@ -183,9 +184,10 @@ class AuthRepository @Inject constructor(
         }
 
         val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
-        val serverCfg = jfAuth.user.configuration ?: runCatchingCancellable {
-            jellyfinApi.getUser(jfAuth.user.id).configuration
-        }.getOrNull()
+        // AuthenticateByName returns the user's Configuration. If it ever doesn't, the sync that runs
+        // once this profile is active fills the track defaults in (a lookup here would still go out
+        // with the previous profile's token).
+        val serverCfg = jfAuth.user.configuration
         val profile = UserProfile(
             id = jfAuth.user.id,
             name = jfAuth.user.name,
@@ -217,15 +219,13 @@ class AuthRepository @Inject constructor(
         val cfg = runCatchingCancellable {
             jellyfinApi.getUser(profile.jellyfinUserId).configuration
         }.getOrNull() ?: return
-        val synced = profile.copy(
-            preferredAudioLang = cfg.audioLanguagePreference?.takeIf { it.isNotBlank() } ?: profile.preferredAudioLang,
-            preferredSubtitleLang = cfg.subtitleLanguagePreference?.takeIf { it.isNotBlank() } ?: profile.preferredSubtitleLang,
-            subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(cfg.subtitleMode),
+        prefs.applyServerTrackDefaults(
+            profileId = profile.id,
+            audioLang = cfg.audioLanguagePreference,
+            subtitleLang = cfg.subtitleLanguagePreference,
+            subtitleMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(cfg.subtitleMode),
             playDefaultAudioTrack = cfg.playDefaultAudioTrack
         )
-        if (synced != profile) {
-            prefs.updateProfilePreferences(synced)
-        }
     }
 
     suspend fun switchProfile(profileId: String) {

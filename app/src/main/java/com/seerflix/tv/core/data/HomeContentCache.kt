@@ -115,7 +115,7 @@ class HomeContentCache internal constructor(
 
     companion object {
         private const val DIR_NAME = "home_cache"
-        internal const val VERSION = 2
+        internal const val VERSION = 3
         internal const val MAX_ROWS = 30
         internal const val MAX_ITEMS_PER_ROW = 40
         private const val MAX_FILES = 40
@@ -153,6 +153,7 @@ class HomeContentCache internal constructor(
                 "h=${profile.hiddenHomeRowIds.joinToString(",")}",
                 "o=${profile.homeRowOrder.joinToString(",")}",
                 "l=${profile.pinnedLibraryIds.joinToString(",")}",
+                "n=${profile.mergeNextUpIntoContinueWatching}",
                 "s=$seerrConfigured",
                 "j=${normalizeBase(jellyfinServer)}",
                 "e=${normalizeBase(seerrServer)}",
@@ -258,7 +259,11 @@ internal data class CachedItem(
     @SerialName("bx") val boxSetId: String? = null,
     @SerialName("yt") val youtubeTrailerKey: String? = null,
     @SerialName("lt") val localTrailerItemId: String? = null,
-    @SerialName("ad") val isAdult: Boolean = false
+    @SerialName("ad") val isAdult: Boolean = false,
+    @SerialName("nu") val isNextUp: Boolean = false,
+    @SerialName("fo") val isFolder: Boolean = false,
+    @SerialName("pi") val playlistItemId: String? = null,
+    @SerialName("cd") val canDelete: Boolean = false
 ) {
     fun toItem(): UnifiedMediaItem? {
         val type = MediaType.entries.firstOrNull { it.name == mediaType } ?: return null
@@ -304,7 +309,11 @@ internal data class CachedItem(
             boxSetId = boxSetId,
             youtubeTrailerKey = youtubeTrailerKey,
             localTrailerItemId = localTrailerItemId,
-            isAdult = isAdult
+            isAdult = isAdult,
+            isNextUp = isNextUp,
+            isFolder = isFolder,
+            playlistItemId = playlistItemId,
+            canDelete = canDelete
         )
     }
 
@@ -383,5 +392,9 @@ private fun UnifiedMediaItem.toCached() = CachedItem(
     boxSetId = boxSetId,
     youtubeTrailerKey = youtubeTrailerKey,
     localTrailerItemId = localTrailerItemId,
-    isAdult = isAdult
+    isAdult = isAdult,
+    isNextUp = isNextUp,
+    isFolder = isFolder,
+    playlistItemId = playlistItemId,
+    canDelete = canDelete
 )

@@ -139,9 +139,14 @@ class RequestsViewModel @Inject constructor(
             ensureActive()
             result
                 .onSuccess { list ->
+                    // Requests carry no rating: a Kids / rating-limited profile only sees its own,
+                    // never the posters and titles the rest of the household asked for.
+                    val visible = if (profile?.isRestricted == true) {
+                        list.filter { req -> req.requestedByJellyfinUsername.equals(profile.name, ignoreCase = true) }
+                    } else list
                     _uiState.update {
                         it.copy(
-                            allRequests = list.distinctBy { req -> req.requestId },
+                            allRequests = visible.distinctBy { req -> req.requestId },
                             isAdmin = isAdmin,
                             isSeerrConfigured = true,
                             isKidsLocked = false,

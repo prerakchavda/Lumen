@@ -183,6 +183,8 @@ class HomeViewModel @Inject constructor(
     /** Tab whose content is currently held in [HomeUiState.rows]/collections/live TV. */
     @Volatile
     private var lastLoadedTab: HomeTab? = null
+    /** When the current tab's data last came from the network ([android.os.SystemClock.elapsedRealtime]). */
+    private var lastNetworkLoadAtMs: Long = 0L
 
     /** True while Home is the screen on top (resumed). */
     @Volatile
@@ -193,6 +195,23 @@ class HomeViewModel @Inject constructor(
     private var pendingLibraryRefresh = false
 
     init {
+        // A title deleted from its Details page disappears from Home right away.
+        viewModelScope.launch {
+            catalogRepository.deletedItemIds.collect { deleted ->
+                if (deleted.isEmpty()) return@collect
+                _uiState.update { state ->
+                    val rows = state.rows.map { row ->
+                        val kept = row.items.filterNot { it.jellyfinId in deleted }
+                        if (kept.size == row.items.size) row else row.copy(items = kept)
+                    }.filter { it.items.isNotEmpty() }
+                    state.copy(
+                        rows = rows,
+                        featuredItem = state.featuredItem?.takeUnless { it.jellyfinId in deleted }
+                            ?: if (state.featuredItem != null) rows.firstOrNull()?.items?.firstOrNull() else null
+                    )
+                }
+            }
+        }
         // Live updates pushed by the server: new / removed titles (debounced, a library scan
         // sends bursts) and watch state changed on another device.
         viewModelScope.launch {
@@ -593,17 +612,21 @@ class HomeViewModel @Inject constructor(
     fun toggleLiveTvChannelFavorite(channel: LiveTvChannel) {
         val userId = _uiState.value.profile?.jellyfinUserId?.takeIf { it.isNotBlank() } ?: return
         val newFav = !channel.isFavorite
-        _uiState.update { state ->
+        fun applyFavorite(favorite: Boolean) = _uiState.update { state ->
+            // Not re-sorted here: the focused row would jump elsewhere in the guide. The server's
+            // favourites-first order applies on the next load.
             val updatedChannels = state.liveTvChannels.map {
-                if (it.id == channel.id) it.copy(isFavorite = newFav) else it
-            }.sortedByDescending { it.isFavorite }
+                if (it.id == channel.id) it.copy(isFavorite = favorite) else it
+            }
             val updatedMenu = state.liveTvMenuChannel?.let {
-                if (it.id == channel.id) it.copy(isFavorite = newFav) else it
+                if (it.id == channel.id) it.copy(isFavorite = favorite) else it
             }
             state.copy(liveTvChannels = updatedChannels, liveTvMenuChannel = updatedMenu)
         }
+        applyFavorite(newFav)
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.toggleLiveTvChannelFavorite(userId, channel.id, newFav)
+                .onFailure { applyFavorite(!newFav) }
         }
     }
 
@@ -621,6 +644,8 @@ class HomeViewModel @Inject constructor(
     fun cancelSeriesRecording(seriesTimerId: String) =
         changeRecording("cancelled") { catalogRepository.cancelSeriesRecording(seriesTimerId) }
 
+    private var dvrFeedbackClearJob: Job? = null
+
     private fun changeRecording(successMessage: String, action: suspend () -> Unit) {
         _uiState.update { it.copy(liveTvMenuChannel = null, liveTvMenuProgram = null) }
         viewModelScope.launch(Dispatchers.IO) {
@@ -628,14 +653,21 @@ class HomeViewModel @Inject constructor(
             _uiState.update { it.copy(dvrFeedback = if (result.isSuccess) successMessage else "error:${result.exceptionOrNull()?.message.orEmpty()}") }
             // Pick up the new REC badges / scheduled list without a spinner.
             if (_uiState.value.activeTab == HomeTab.LIVE_TV) refreshInBackground()
-            delay(3500L)
-            _uiState.update { it.copy(dvrFeedback = null) }
+            // A newer message restarts the timer instead of being cleared by the older one.
+            dvrFeedbackClearJob?.cancel()
+            dvrFeedbackClearJob = viewModelScope.launch {
+                delay(3500L)
+                _uiState.update { it.copy(dvrFeedback = null) }
+            }
         }
     }
 
     fun onScreenResumed() {
         isScreenVisible = true
-        if (pendingLibraryRefresh) {
+        val liveTvStale = _uiState.value.activeTab == HomeTab.LIVE_TV &&
+            android.os.SystemClock.elapsedRealtime() - lastNetworkLoadAtMs > LIVE_TV_STALE_MS
+        if (pendingLibraryRefresh || liveTvStale) {
+            // Live TV: "On now" / the guide move on while the user is watching a channel.
             pendingLibraryRefresh = false
             refreshInBackground()
         } else {
@@ -668,7 +700,9 @@ class HomeViewModel @Inject constructor(
         val state = _uiState.value
         val tab = state.activeTab
         if ((tab != HomeTab.HOME && tab != HomeTab.MOVIES && tab != HomeTab.SHOWS) ||
-            state.availabilityFilter != AvailabilityFilter.ALL
+            state.availabilityFilter != AvailabilityFilter.ALL ||
+            // A genre page has no Continue Watching row; don't inject an unfiltered one.
+            state.selectedGenre.id != GenreFilterOption.ALL_GENRES.first().id
         ) return
         if (lastLoadedTab != tab || state.isLoading || catalogJob?.isActive == true) return
         if (continueWatchingJob?.isActive == true) return
@@ -1135,12 +1169,18 @@ class HomeViewModel @Inject constructor(
         // (slower) response overwrite the rows of the tab the user actually selected.
         catalogJob?.cancel()
         val generation = ++catalogGeneration
+        // Switching tabs: the previous tab's rows must not sit under the new tab while it loads
+        // (they'd be focusable, then swapped out from under the focused card).
+        val clearPreviousTab = !background && lastLoadedTab != null && lastLoadedTab != tab
+        if (clearPreviousTab) lastLoadedTab = null
         catalogJob = viewModelScope.launch(Dispatchers.IO) {
             _uiState.update {
                 it.copy(
                     activeTab = tab,
                     selectedGenre = genre,
                     availabilityFilter = availabilityFilter,
+                    rows = if (clearPreviousTab) emptyList() else it.rows,
+                    featuredItem = if (clearPreviousTab) null else it.featuredItem,
                     isLoading = if (background) it.isLoading else true,
                     errorMessage = null,
                     previewStream = if (background) it.previewStream else null
@@ -1202,7 +1242,11 @@ class HomeViewModel @Inject constructor(
                     }
                     val liveTvRecordingsDeferred = async {
                         if (tab == HomeTab.LIVE_TV) {
-                            catalogRepository.loadLiveTvRecordings(profile.jellyfinUserId)
+                            // Recordings are library items like any other: same rating rules.
+                            com.seerflix.tv.core.model.ContentRatingHelper.filterForProfile(
+                                catalogRepository.loadLiveTvRecordings(profile.jellyfinUserId),
+                                profile
+                            )
                         } else emptyList()
                     }
                     val playlistsDeferred = async {
@@ -1281,6 +1325,7 @@ class HomeViewModel @Inject constructor(
 
             result.onSuccess { bundle ->
                 lastLoadedTab = tab
+                lastNetworkLoadAtMs = android.os.SystemClock.elapsedRealtime()
                 // Background swap over cached content: keep the hero (and its enrichment / preview)
                 // when the title the user is looking at is still on the page, so nothing jumps.
                 val currentFeaturedId = _uiState.value.featuredItem?.id
@@ -1442,3 +1487,4 @@ class HomeViewModel @Inject constructor(
 
 private const val LIBRARY_CHANGE_DEBOUNCE_MS = 8_000L
 private const val USER_DATA_DEBOUNCE_MS = 3_000L
+private const val LIVE_TV_STALE_MS = 5 * 60_000L

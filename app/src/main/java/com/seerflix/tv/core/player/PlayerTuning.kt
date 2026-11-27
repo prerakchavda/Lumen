@@ -78,7 +78,13 @@ object PlayerTuning {
     fun buildRenderersFactory(
         context: Context,
         enableSoftwareAudioDecoding: Boolean = true,
-        audioDelayProcessor: AudioDelayProcessor? = null
+        audioDelayProcessor: AudioDelayProcessor? = null,
+        /**
+         * False: ignore the HDMI sink's encoded-audio capabilities so AC3 / E-AC3 / DTS are decoded
+         * to PCM locally (which is also what lets the PCM audio-delay processor act on them).
+         * Changing it requires a new player: the audio sink is built with the renderers.
+         */
+        audioPassthroughEnabled: Boolean = true
     ): DefaultRenderersFactory {
         val extMode = if (enableSoftwareAudioDecoding && FfmpegAudioSupport.isAvailable()) {
             DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
@@ -91,7 +97,16 @@ object PlayerTuning {
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean
             ): androidx.media3.exoplayer.audio.AudioSink {
-                val builder = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                // A context-built sink always queries the HDMI capabilities (and ignores
+                // setAudioCapabilities), so the PCM-only sink is built without a context.
+                @Suppress("DEPRECATION")
+                val builder = if (audioPassthroughEnabled) {
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                } else {
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.Builder()
+                        .setAudioCapabilities(androidx.media3.exoplayer.audio.AudioCapabilities.DEFAULT_AUDIO_CAPABILITIES)
+                }
+                builder
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 if (audioDelayProcessor != null) {

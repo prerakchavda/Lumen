@@ -837,7 +837,9 @@ class JellyfinPlaybackManager @Inject constructor(
                     subtitleStreamIndex = reportState?.subtitleStreamIndex ?: session.burnedInSubtitleIndex,
                     isMuted = reportState?.isMuted,
                     volumeLevel = reportState?.volumeLevel,
-                    playbackRate = reportState?.playbackRate
+                    playbackRate = reportState?.playbackRate,
+                    // Live TV can't be seeked; everything else can (remote-control seek bars).
+                    canSeek = !session.isLiveTv
                 )
             )
         }

@@ -31,6 +31,7 @@ import com.seerflix.tv.core.player.NextEpisodeInfo
 import com.seerflix.tv.core.player.PlaybackQueueManager
 import com.seerflix.tv.core.player.PlaybackReportState
 import com.seerflix.tv.core.player.PlaybackSegments
+import com.seerflix.tv.core.player.QueueEntry
 import com.seerflix.tv.core.player.SubtitleTrackSelector
 import com.seerflix.tv.core.player.SyncPlayAction
 import com.seerflix.tv.core.player.SyncPlayManager
@@ -71,6 +72,14 @@ data class LiveStreamStats(
     val droppedFrames: Int = 0
 )
 
+/** Route / preselection values for the player's track arguments. */
+object PlayerTrackSelection {
+    /** No explicit choice: the profile's defaults pick the track. */
+    const val AUTO = -1
+    /** Subtitles explicitly turned off (e.g. "Off" in the pre-playback picker). */
+    const val SUBTITLE_OFF = -2
+}
+
 data class PlayerUiState(
     val session: PlaybackSessionData? = null,
     val selectedSpeed: Float = 1.0f,
@@ -78,7 +87,13 @@ data class PlayerUiState(
     val selectedMediaSourceId: String? = null,
     val selectedAudioStreamIndex: Int? = null,
     val selectedSubtitleStreamIndex: Int? = null,
+    /**
+     * Subtitle to apply once when the new play session's tracks are known: a Jellyfin stream index,
+     * [PlayerTrackSelection.SUBTITLE_OFF], or null for the profile's automatic selection.
+     */
     val preselectedSubtitleStreamIndex: Int? = null,
+    /** Jellyfin audio stream index explicitly asked for (picker / audio switch); applied to Direct Play once. */
+    val requestedAudioStreamIndex: Int? = null,
     val subtitleFontScale: Float = 1.0f,
     val subtitleBackgroundAlpha: Float = 0.6f,
     val subtitleTextColor: com.seerflix.tv.core.model.SubtitleTextColor = com.seerflix.tv.core.model.SubtitleTextColor.WHITE,
@@ -156,7 +171,9 @@ class PlayerViewModel @Inject constructor(
     private val initialItemId: String = savedStateHandle.get<String>("itemId").orEmpty()
     private val initialMediaSourceId: String? = savedStateHandle.get<String>("mediaSourceId")?.takeIf { it.isNotBlank() }
     private val initialAudioStreamIndex: Int? = savedStateHandle.get<String>("audioIndex")?.toIntOrNull()?.takeIf { it >= 0 }
-    private val initialSubtitleStreamIndex: Int? = savedStateHandle.get<String>("subtitleIndex")?.toIntOrNull()?.takeIf { it >= 0 }
+    /** A Jellyfin subtitle index, [PlayerTrackSelection.SUBTITLE_OFF], or null (automatic). */
+    private val initialSubtitleSelection: Int? = savedStateHandle.get<String>("subtitleIndex")?.toIntOrNull()
+        ?.takeIf { it >= 0 || it == PlayerTrackSelection.SUBTITLE_OFF }
     private val trailerYoutubeKey: String? = savedStateHandle.get<String>("youtubeKey")?.takeIf { it.isNotBlank() && it != "none" }
     private val localTrailerId: String? = savedStateHandle.get<String>("localTrailerId")?.takeIf { it.isNotBlank() && it != "none" }
     private val trailerTitle: String? = savedStateHandle.get<String>("title")?.takeIf { it.isNotBlank() }
@@ -172,7 +189,7 @@ class PlayerViewModel @Inject constructor(
     /** Remote-control commands from other Jellyfin apps that act on the player. */
     val remotePlaystate: Flow<ServerEvent.Playstate> = socketClient.events.filterIsInstance<ServerEvent.Playstate>()
 
-    private val _uiState = MutableStateFlow(PlayerUiState(preselectedSubtitleStreamIndex = initialSubtitleStreamIndex))
+    private val _uiState = MutableStateFlow(PlayerUiState())
     val uiState: StateFlow<PlayerUiState> = _uiState.asStateFlow()
 
     private var activeUserId: String = ""
@@ -191,6 +208,22 @@ class PlayerViewModel @Inject constructor(
     private var drawerJob: Job? = null
     private var pendingDrawerRequest: Pair<String, String?>? = null
     private val cinemaIntroQueue = com.seerflix.tv.core.player.CinemaIntroQueue()
+    /** Season loads of the episodes drawer; a newer pick cancels the previous request. */
+    private var drawerSeasonJob: Job? = null
+    /** Remote subtitle search / download for the current item; cancelled when another item loads. */
+    private var remoteSubtitleSearchJob: Job? = null
+    private var remoteSubtitleDownloadJob: Job? = null
+    /** Timed clear of [PlayerUiState.feedbackMessage]. */
+    private var feedbackJob: Job? = null
+    /** Play session already reported as stopped: no further progress / stop reports for it. */
+    private var stoppedPlaySessionId: String? = null
+    /** Whether the last loadItem() asked to skip Cinema Intros / was an intro clip (for Retry). */
+    private var requestedSkipCinemaIntros = false
+    private var requestedIsCinemaIntroClip = false
+    /** Queue entry held back by the "Still watching?" prompt (replayed with its version / start). */
+    private var pendingStillWatchingEntry: QueueEntry? = null
+    /** "CH n · Name" banner shown once the tuned channel has loaded. */
+    private var pendingChannelBanner: Pair<String, String>? = null
 
     init {
         viewModelScope.launch {

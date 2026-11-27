@@ -629,6 +629,39 @@ class SessionPreferences private constructor(
         }
     }
 
+    /**
+     * Applies the server's track defaults (Jellyfin `/Users/{id}` configuration) to [profileId] in one
+     * atomic edit, re-reading the stored profile so concurrent changes (a subtitle mode picked while
+     * the request was in flight, a refreshed Seerr cookie) are never overwritten. Skipped once the
+     * user has chosen track preferences locally.
+     */
+    suspend fun applyServerTrackDefaults(
+        profileId: String,
+        audioLang: String?,
+        subtitleLang: String?,
+        subtitleMode: com.seerflix.tv.core.model.SubtitleSelectionMode,
+        playDefaultAudioTrack: Boolean
+    ) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrNull()
+            } ?: return@edit
+            var changed = false
+            val updated = current.map {
+                if (it.id != profileId || it.hasLocalTrackPreferenceOverride) return@map it
+                val synced = it.copy(
+                    preferredAudioLang = audioLang?.takeIf { l -> l.isNotBlank() } ?: it.preferredAudioLang,
+                    preferredSubtitleLang = subtitleLang?.takeIf { l -> l.isNotBlank() } ?: it.preferredSubtitleLang,
+                    subtitleSelectionMode = subtitleMode,
+                    playDefaultAudioTrack = playDefaultAudioTrack
+                )
+                if (synced != it) changed = true
+                synced
+            }
+            if (changed) prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+        }
+    }
+
     suspend fun updateSubtitleAppearance(fontScale: Float, backgroundAlpha: Float) {
         dataStore.edit { prefs ->
             val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit

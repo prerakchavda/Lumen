@@ -296,6 +296,7 @@ class UnifiedCatalogRepositoryFeaturesTest {
             userId: String,
             hasAired: Boolean,
             limit: Int,
+            startIndex: Int?,
             fields: String,
             minEndDate: String?,
             maxStartDate: String?,

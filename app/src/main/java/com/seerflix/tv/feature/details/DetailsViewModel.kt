@@ -58,6 +58,8 @@ data class DetailsUiState(
     val isReportingIssue: Boolean = false,
     val isSeerrConfigured: Boolean = true,
     val canSubmitRequests: Boolean = true,
+    /** Kids / rating-limited profiles never get destructive actions, whatever the Jellyfin account may do. */
+    val isRestrictedProfile: Boolean = false,
     val feedbackBanner: String? = null,
     val isLoading: Boolean = true,
     /**
@@ -166,7 +168,8 @@ class DetailsViewModel @Inject constructor(
                                 isLoading = false,
                                 isRefining = true,
                                 isSeerrConfigured = seerrConfigured,
-                                canSubmitRequests = profile.canSubmitRequests
+                                canSubmitRequests = profile.canSubmitRequests,
+                                isRestrictedProfile = profile.isRestricted
                             )
                         }
                     }
@@ -229,6 +232,7 @@ class DetailsViewModel @Inject constructor(
                         selectedMediaSourceId = it.selectedMediaSourceId ?: item.mediaVersions.firstOrNull()?.id,
                         isSeerrConfigured = seerrConfigured,
                         canSubmitRequests = profile.canSubmitRequests,
+                        isRestrictedProfile = profile.isRestricted,
                         isLoading = false,
                         isRefining = false
                     )
@@ -819,7 +823,7 @@ class DetailsViewModel @Inject constructor(
     }
 
     fun openDeleteConfirmDialog() {
-        if (_uiState.value.item?.canDelete != true) return
+        if (_uiState.value.item?.canDelete != true || activeProfile?.isRestricted == true) return
         _uiState.update { it.copy(showDeleteConfirmDialog = true) }
     }
 
@@ -830,7 +834,7 @@ class DetailsViewModel @Inject constructor(
     fun confirmDeleteItem() {
         val item = _uiState.value.item ?: return
         val jfId = item.jellyfinId ?: return
-        if (!item.canDelete || activeUserId.isBlank()) return
+        if (!item.canDelete || activeUserId.isBlank() || activeProfile?.isRestricted == true) return
         _uiState.update { it.copy(showDeleteConfirmDialog = false) }
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.deleteItem(activeUserId, jfId)
@@ -872,6 +876,9 @@ class DetailsViewModel @Inject constructor(
                         )
                     }
                 }
+                .onFailure { err ->
+                    _uiState.update { it.copy(feedbackBanner = "Couldn't update watched status: ${err.message.orEmpty()}") }
+                }
         }
     }
 
@@ -882,18 +889,23 @@ class DetailsViewModel @Inject constructor(
         val playableEps = state.episodes.filter { it.isAvailableInJellyfin }
         if (playableEps.isEmpty()) return
         val nextWatched = !playableEps.all { it.isWatched }
-        val season = item.seasons.firstOrNull { it.seasonNumber == state.selectedSeasonNumber }
+        val seasonNumber = state.selectedSeasonNumber
+        val season = item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
+        val episodeIds = playableEps.map { it.id }
+        val episodeIdSet = episodeIds.toSet()
         viewModelScope.launch(Dispatchers.IO) {
             catalogRepository.markSeasonWatched(
                 userId = activeUserId,
                 jellyfinSeasonId = season?.jellyfinSeasonId,
-                episodeIds = playableEps.map { it.id },
+                episodeIds = episodeIds,
                 watched = nextWatched
             ).onSuccess {
                 _uiState.update { cur ->
+                    // The user may have switched seasons meanwhile: only touch the episodes marked.
+                    if (cur.selectedSeasonNumber != seasonNumber) return@update cur
                     cur.copy(
                         episodes = cur.episodes.map { ep ->
-                            if (ep.isAvailableInJellyfin) {
+                            if (ep.id in episodeIdSet) {
                                 ep.copy(
                                     isWatched = nextWatched,
                                     resumePositionTicks = if (nextWatched) 0L else ep.resumePositionTicks
@@ -902,6 +914,10 @@ class DetailsViewModel @Inject constructor(
                         }
                     )
                 }
+                // Resume / Mark Watched on the header follow the series' new state.
+                runCatching { refreshStatusSilently() }
+            }.onFailure { err ->
+                _uiState.update { it.copy(feedbackBanner = "Couldn't update watched status: ${err.message.orEmpty()}") }
             }
         }
     }

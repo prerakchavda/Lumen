@@ -65,6 +65,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -790,11 +791,18 @@ class UnifiedCatalogRepository @Inject constructor(
         episodeIds: List<String>,
         watched: Boolean
     ): Result<Unit> = runCatchingCancellable {
-        if (!jellyfinSeasonId.isNullOrBlank()) {
-            markWatched(userId, jellyfinSeasonId, watched).getOrThrow()
+        // A series merged across servers can list episodes that only exist on another server; the
+        // season id only covers its own server, so mark those episodes one by one instead.
+        val seasonServer = ServerScopedId.serverOf(jellyfinSeasonId)
+        val seasonCoversAll = !jellyfinSeasonId.isNullOrBlank() &&
+            episodeIds.all { ServerScopedId.serverOf(it) == seasonServer }
+        if (seasonCoversAll) {
+            markWatched(userId, jellyfinSeasonId!!, watched).getOrThrow()
         } else {
-            episodeIds.forEach { epId ->
-                markWatched(userId, epId, watched).getOrThrow()
+            coroutineScope {
+                episodeIds.distinct()
+                    .map { epId -> async { markWatched(userId, epId, watched).getOrThrow() } }
+                    .awaitAll()
             }
         }
     }
@@ -804,7 +812,12 @@ class UnifiedCatalogRepository @Inject constructor(
         val session = requireSession(itemId, userId)
         session.api.deleteItem(session.raw(itemId))
         invalidateDetailsCache()
+        _deletedItemIds.update { it + itemId }
     }
+
+    private val _deletedItemIds = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
+    /** Titles deleted from the server in this session: screens still showing them drop the cards. */
+    val deletedItemIds: kotlinx.coroutines.flow.StateFlow<Set<String>> = _deletedItemIds
 
     /**
      * Loads all video-capable Jellyfin libraries across the home server and any extra connected
@@ -884,9 +897,12 @@ class UnifiedCatalogRepository @Inject constructor(
         name: String,
         initialItemIds: List<String> = emptyList()
     ): Result<String> = runCatchingCancellable {
+        // Playlists live on the home server: use each title's home copy.
         val rawIds = initialItemIds
-            .filter { ServerScopedId.isHome(it) }
+            .mapNotNull { id -> links.copiesOf(id).firstOrNull { ServerScopedId.isHome(it) } }
             .map { ServerScopedId.rawOf(it) }
+            .distinct()
+        if (initialItemIds.isNotEmpty() && rawIds.isEmpty()) throw PlaylistServerMismatchException()
         val resp = jellyfinApi.createPlaylist(
             JellyfinCreatePlaylistRequest(
                 name = name.trim(),
@@ -904,8 +920,17 @@ class UnifiedCatalogRepository @Inject constructor(
         itemIds: List<String>
     ): Result<Unit> = runCatchingCancellable {
         val session = requireSession(playlistId, userId)
-        val rawIds = itemIds.map { session.raw(it) }.filter { it.isNotBlank() }
-        if (rawIds.isEmpty()) return@runCatchingCancellable
+        // An id from another server means nothing to the playlist's server: use that server's
+        // copy of the title, and fail loudly instead of a silent no-op when it has none.
+        val rawIds = itemIds
+            .mapNotNull { id -> links.copiesOf(id).firstOrNull { session.owns(it) } }
+            .map { session.raw(it) }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (rawIds.isEmpty()) {
+            if (itemIds.isNotEmpty()) throw PlaylistServerMismatchException()
+            return@runCatchingCancellable
+        }
         session.api.addItemsToPlaylist(
             playlistId = session.raw(playlistId),
             ids = rawIds.joinToString(","),
@@ -3222,7 +3247,8 @@ class UnifiedCatalogRepository @Inject constructor(
         activeProfile: UserProfile? = null
     ): List<UnifiedMediaItem> = coroutineScope {
         // 1. Prefer Seerr / TMDB credits when Seerr is configured and we have a numeric TMDB person ID
-        if (isSeerrEnabled && personId != null && personId > 0 && jellyfinPersonId.isNullOrBlank()) {
+        //    (full filmography, requestable). The Jellyfin person id is only the fallback below.
+        if (isSeerrEnabled && personId != null && personId > 0) {
             ensureLibraryIndex(userId)
             val credits = runCatchingCancellable { seerrApi.getPersonCredits(personId, language = metaLang) }.getOrNull()
             if (credits != null) {
@@ -3505,7 +3531,8 @@ class UnifiedCatalogRepository @Inject constructor(
                             ?: req.requestedBy?.username
                             ?: "User",
                         createdAt = req.createdAt.orEmpty(),
-                        downloadProgress = downloadProgress
+                        downloadProgress = downloadProgress,
+                        requestedByJellyfinUsername = req.requestedBy?.jellyfinUsername
                     )
                 }
             }.map { it.await() }
@@ -3522,17 +3549,29 @@ class UnifiedCatalogRepository @Inject constructor(
             }.getOrDefault(emptyList())
         }
         val programsDeferred = async {
-            runCatchingCancellable {
-                jellyfinApi.getLiveTvPrograms(
-                    userId = userId,
-                    hasAired = false,
-                    limit = 800,
-                    minEndDate = minEndIso,
-                    maxStartDate = maxStartIso,
-                    sortBy = "StartDate",
-                    enableTotalRecordCount = false
-                ).items
-            }.getOrDefault(emptyList())
+            // One request is sorted by start time across *all* channels, so a single page of a
+            // few hundred programmes only covers the first few hours on a large lineup. Page
+            // through the whole 36-hour window (bounded, so a huge IPTV guide can't run forever).
+            val collected = mutableListOf<JellyfinItemDto>()
+            var startIndex = 0
+            while (startIndex < LIVE_TV_PROGRAM_MAX) {
+                val page = runCatchingCancellable {
+                    jellyfinApi.getLiveTvPrograms(
+                        userId = userId,
+                        hasAired = false,
+                        limit = LIVE_TV_PROGRAM_PAGE,
+                        startIndex = startIndex.takeIf { it > 0 },
+                        minEndDate = minEndIso,
+                        maxStartDate = maxStartIso,
+                        sortBy = "StartDate",
+                        enableTotalRecordCount = false
+                    ).items
+                }.getOrNull() ?: break
+                collected += page
+                if (page.size < LIVE_TV_PROGRAM_PAGE) break
+                startIndex += page.size
+            }
+            collected.distinctBy { it.id }
         }
         val channels = channelsDeferred.await()
         val programsByChannel = programsDeferred.await().groupBy { it.channelId }
@@ -3698,8 +3737,9 @@ class UnifiedCatalogRepository @Inject constructor(
         }.getOrDefault(emptyList())
         val base = jfBaseUrl
         return items.asSequence()
+            // Same rules as every other row (rating rank *and* the Kids-mode genre exclusions).
             .filter { dto ->
-                limit == ContentRatingLimit.ALL || ContentRatingHelper.ratingRank(dto.officialRating) <= limit.maxRank
+                limit == ContentRatingLimit.ALL || ContentRatingHelper.isAllowed(mapJellyfinItem(dto), activeProfile)
             }
             .filter { dto -> dto.backdropImageTags.isNotEmpty() || dto.imageTags.containsKey("Backdrop") }
             .mapNotNull { dto ->
@@ -4487,6 +4527,9 @@ class UnifiedCatalogRepository @Inject constructor(
         private const val LIBRARY_INDEX_TTL_MS = 180_000L
         private const val BACKGROUND_INDEX_REFRESH_DELAY_MS = 4_000L
         private const val OVERVIEW_BACKFILL_LIMIT = 60
+        /** Live TV guide: programmes per request, and the most fetched for the 36-hour window. */
+        private const val LIVE_TV_PROGRAM_PAGE = 1000
+        private const val LIVE_TV_PROGRAM_MAX = 12_000
 
         // Several servers
         private val HOME_SERVER = JellyfinServer(id = ServerScopedId.HOME, isHome = true)
@@ -4635,11 +4678,11 @@ class UnifiedCatalogRepository @Inject constructor(
             options: DvrTimerOptions
         ): JsonObject {
             val map = defaults.toMutableMap()
-            map["PrePaddingSeconds"] = JsonPrimitive(options.prePaddingSeconds.coerceAtLeast(0))
-            map["PostPaddingSeconds"] = JsonPrimitive(options.postPaddingSeconds.coerceAtLeast(0))
+            options.prePaddingSeconds?.let { map["PrePaddingSeconds"] = JsonPrimitive(it.coerceAtLeast(0)) }
+            options.postPaddingSeconds?.let { map["PostPaddingSeconds"] = JsonPrimitive(it.coerceAtLeast(0)) }
             if (series) {
-                map["RecordNewOnly"] = JsonPrimitive(options.recordNewOnly)
-                map["RecordAnyChannel"] = JsonPrimitive(options.recordAnyChannel)
+                options.recordNewOnly?.let { map["RecordNewOnly"] = JsonPrimitive(it) }
+                options.recordAnyChannel?.let { map["RecordAnyChannel"] = JsonPrimitive(it) }
             }
             return JsonObject(map)
         }
@@ -4658,6 +4701,9 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 }
+
+/** The title isn't on the server that holds the playlist (playlists live on the home server). */
+class PlaylistServerMismatchException : IllegalStateException("Title is not on the playlist's server")
 
 /**
  * Like [runCatching], but never swallows coroutine cancellation: a cancelled caller must not get a

@@ -3,8 +3,7 @@ package com.seerflix.tv.ui.components
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,13 +21,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -41,6 +36,9 @@ import kotlinx.coroutines.delay
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
+/** True while the browse screensaver covers the screen: background trailers / theme songs pause. */
+val LocalScreensaverVisible = androidx.compose.runtime.compositionLocalOf { false }
+
 /**
  * OLED-safe living-room ambient screensaver: dims to rotating high-resolution library backdrops
  * with a softly drifting clock and title to avoid static burn-in, and wakes on any key press.
@@ -52,23 +50,27 @@ fun ScreensaverOverlay(
     modifier: Modifier = Modifier
 ) {
     val strings = AppStrings.current
-    val focusRequester = remember { FocusRequester() }
     var slideIndex by remember { mutableIntStateOf(0) }
     var driftPositionIndex by remember { mutableIntStateOf(0) }
-    var nowText by remember { mutableStateOf(formatClockNow()) }
-    var dateText by remember { mutableStateOf(formatDateNow()) }
-
-    LaunchedEffect(Unit) {
-        runCatching { focusRequester.requestFocus() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Clock/date follow the app language and the TV's 12/24-hour setting.
+    val (clockFmt, dateFmt) = remember(strings.languageCode) {
+        val locale = java.util.Locale.forLanguageTag(strings.languageCode)
+        val is24h = android.text.format.DateFormat.is24HourFormat(context)
+        val timePattern = android.text.format.DateFormat.getBestDateTimePattern(locale, if (is24h) "Hm" else "hm")
+        val datePattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "EEEEdMMM")
+        DateTimeFormatter.ofPattern(timePattern, locale) to DateTimeFormatter.ofPattern(datePattern, locale)
     }
+    var nowText by remember(clockFmt) { mutableStateOf(LocalDateTime.now().format(clockFmt)) }
+    var dateText by remember(dateFmt) { mutableStateOf(LocalDateTime.now().format(dateFmt)) }
 
     // Update clock every 15s and drift corner every 30s for OLED burn-in protection.
-    LaunchedEffect(Unit) {
+    LaunchedEffect(clockFmt, dateFmt) {
         var tick = 0
         while (true) {
             delay(15_000L)
-            nowText = formatClockNow()
-            dateText = formatDateNow()
+            nowText = LocalDateTime.now().format(clockFmt)
+            dateText = LocalDateTime.now().format(dateFmt)
             tick++
             if (tick % 2 == 0) {
                 driftPositionIndex = (driftPositionIndex + 1) % DRIFT_ALIGNMENTS.size
@@ -92,17 +94,10 @@ fun ScreensaverOverlay(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .focusRequester(focusRequester)
-            .focusable()
-            .onPreviewKeyEvent { keyEvent ->
-                if (keyEvent.type == KeyEventType.KeyDown) {
-                    onDismiss()
-                    true
-                } else {
-                    true
-                }
-            }
-            .clickable(onClick = onDismiss)
+            // Never focusable: the card underneath keeps focus, so Back and the D-pad carry on
+            // from where the user was. Keys are intercepted (and the wake press consumed) by
+            // MainActivity.dispatchKeyEvent; a tap still wakes it on touch devices.
+            .pointerInput(Unit) { detectTapGestures { onDismiss() } }
     ) {
         if (currentSlide != null) {
             Crossfade(
@@ -199,8 +194,3 @@ private val DRIFT_ALIGNMENTS = listOf(
     Alignment.TopStart
 )
 
-private val CLOCK_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-private val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE, d MMM")
-
-private fun formatClockNow(): String = LocalDateTime.now().format(CLOCK_FMT)
-private fun formatDateNow(): String = LocalDateTime.now().format(DATE_FMT)

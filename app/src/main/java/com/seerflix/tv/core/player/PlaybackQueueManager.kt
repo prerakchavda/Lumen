@@ -44,6 +44,13 @@ class PlaybackQueueManager @Inject constructor() {
     private val _state = MutableStateFlow(PlaybackQueueState())
     val state: StateFlow<PlaybackQueueState> = _state.asStateFlow()
 
+    /**
+     * What the open player is playing (set by the player, null while no player is open), so a
+     * remote `PlayNext` / `PlayLast` without an active queue can keep it as the current entry.
+     */
+    @Volatile
+    var nowPlaying: QueueEntry? = null
+
     @Synchronized
     fun setQueue(
         entries: List<QueueEntry>,
@@ -69,13 +76,17 @@ class PlaybackQueueManager @Inject constructor() {
         return ordered[index]
     }
 
-    /** Inserts [entries] right after the currently playing item (remote `PlayNext` command). */
+    /**
+     * Inserts [entries] right after the currently playing item (remote `PlayNext` command).
+     * Without an active queue the queue becomes [current] followed by [entries], with [current]
+     * (the item already playing) as the current entry; with no [current] the first entry is current.
+     */
     @Synchronized
-    fun enqueueNext(entries: List<QueueEntry>) {
+    fun enqueueNext(entries: List<QueueEntry>, current: QueueEntry? = null) {
         if (entries.isEmpty()) return
         val cur = _state.value
         if (!cur.isActive) {
-            setQueue(entries, startIndex = 0, shuffle = false)
+            startQueueWith(current, entries)
             return
         }
         val insertAt = (cur.currentIndex + 1).coerceAtMost(cur.items.size)
@@ -83,16 +94,21 @@ class PlaybackQueueManager @Inject constructor() {
         _state.value = cur.copy(items = updated)
     }
 
-    /** Appends [entries] to the end of the current queue (remote `PlayLast` command). */
+    /** Appends [entries] to the end of the current queue (remote `PlayLast` command). See [enqueueNext]. */
     @Synchronized
-    fun enqueueLast(entries: List<QueueEntry>) {
+    fun enqueueLast(entries: List<QueueEntry>, current: QueueEntry? = null) {
         if (entries.isEmpty()) return
         val cur = _state.value
         if (!cur.isActive) {
-            setQueue(entries, startIndex = 0, shuffle = false)
+            startQueueWith(current, entries)
             return
         }
         _state.value = cur.copy(items = cur.items + entries)
+    }
+
+    private fun startQueueWith(current: QueueEntry?, entries: List<QueueEntry>) {
+        val items = if (current != null) listOf(current) + entries else entries
+        setQueue(items, startIndex = 0, shuffle = false)
     }
 
     /** Advances to the next entry and returns it, or null if at the end of the queue. */

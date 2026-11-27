@@ -20,10 +20,14 @@ object LiveTvEpgHelper {
         val isCurrent: Boolean
     )
 
-    /** Floor [epochMs] down to the nearest half-hour boundary (e.g. 14:22 -> 14:00, 14:45 -> 14:30). */
-    fun floorToHalfHour(epochMs: Long): Long {
+    /**
+     * Floor [epochMs] down to the nearest half-hour boundary in local time (e.g. 14:22 -> 14:00,
+     * 14:45 -> 14:30), so zones with a :15/:45 UTC offset still get :00/:30 slots.
+     */
+    fun floorToHalfHour(epochMs: Long, zone: java.util.TimeZone = java.util.TimeZone.getDefault()): Long {
         if (epochMs <= 0L) return 0L
-        return (epochMs / HALF_HOUR_MS) * HALF_HOUR_MS
+        val offset = zone.getOffset(epochMs).toLong()
+        return Math.floorDiv(epochMs + offset, HALF_HOUR_MS) * HALF_HOUR_MS - offset
     }
 
     /** Returns the [GRID_SLOTS] half-hour start timestamps starting at [windowStartMs]. */

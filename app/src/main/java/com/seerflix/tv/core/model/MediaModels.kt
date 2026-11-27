@@ -242,7 +242,9 @@ data class MediaRequestSummary(
     val mediaStatus: AvailabilityTier,
     val requestedBy: String,
     val createdAt: String,
-    val downloadProgress: DownloadProgressInfo?
+    val downloadProgress: DownloadProgressInfo?,
+    /** The requester's Jellyfin user name (null for Seerr-local accounts). */
+    val requestedByJellyfinUsername: String? = null
 ) {
     val statusBadgeText: String
         get() = when {
@@ -586,12 +588,16 @@ enum class LiveTvFilter {
     }
 }
 
+/**
+ * The user's DVR choices for one recording. `null` keeps the server's default
+ * (Dashboard → Live TV), so pressing Record without touching anything behaves like Jellyfin web.
+ */
 @Immutable
 data class DvrTimerOptions(
-    val prePaddingSeconds: Int = 0,
-    val postPaddingSeconds: Int = 0,
-    val recordNewOnly: Boolean = false,
-    val recordAnyChannel: Boolean = false
+    val prePaddingSeconds: Int? = null,
+    val postPaddingSeconds: Int? = null,
+    val recordNewOnly: Boolean? = null,
+    val recordAnyChannel: Boolean? = null
 )
 
 @Immutable

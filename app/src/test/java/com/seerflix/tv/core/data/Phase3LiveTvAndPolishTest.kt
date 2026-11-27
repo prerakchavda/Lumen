@@ -66,6 +66,18 @@ class Phase3LiveTvAndPolishTest {
         assertEquals(600, series["PostPaddingSeconds"]?.jsonPrimitive?.intOrNull)
         assertEquals(true, series["RecordNewOnly"]?.jsonPrimitive?.booleanOrNull)
         assertEquals(false, series["RecordAnyChannel"]?.jsonPrimitive?.booleanOrNull)
+
+        // Untouched options keep the server's own recording defaults.
+        val serverDefaults = JsonObject(
+            mapOf(
+                "PrePaddingSeconds" to JsonPrimitive(120),
+                "PostPaddingSeconds" to JsonPrimitive(300),
+                "RecordNewOnly" to JsonPrimitive(true),
+                "RecordAnyChannel" to JsonPrimitive(false)
+            )
+        )
+        val untouched = UnifiedCatalogRepository.patchTimerDefaults(serverDefaults, series = true, options = DvrTimerOptions())
+        assertEquals(serverDefaults, untouched)
     }
 
     @Test
@@ -109,8 +121,13 @@ class Phase3LiveTvAndPolishTest {
 
     @Test
     fun `LiveTvEpgHelper computes half-hour slots, clips program cells with gap fill, and wraps channel surfing`() {
-        val base = LiveTvEpgHelper.floorToHalfHour(1_700_000_900_000L)
+        val base = LiveTvEpgHelper.floorToHalfHour(1_700_000_900_000L, java.util.TimeZone.getTimeZone("UTC"))
         assertEquals(0L, base % LiveTvEpgHelper.HALF_HOUR_MS)
+        // UTC+5:45 (Nepal): slots still land on local :00 / :30.
+        val nepal = java.util.TimeZone.getTimeZone("Asia/Kathmandu")
+        val nepalBase = LiveTvEpgHelper.floorToHalfHour(1_700_000_900_000L, nepal)
+        assertEquals(0L, (nepalBase + nepal.getOffset(nepalBase)) % LiveTvEpgHelper.HALF_HOUR_MS)
+        assertTrue(1_700_000_900_000L - nepalBase in 0 until LiveTvEpgHelper.HALF_HOUR_MS)
 
         val slots = LiveTvEpgHelper.timeSlots(base)
         assertEquals(LiveTvEpgHelper.GRID_SLOTS, slots.size)

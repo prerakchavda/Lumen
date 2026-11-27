@@ -2023,14 +2023,19 @@ private fun ContinueWatchingOptionsDialog(
                 Text(it, color = colors.textSecondary, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.height(4.dp))
+            // An unstarted Next Up episode has nothing to resume or remove (clearing a position
+            // that is already 0 doesn't stick: Jellyfin lists it again on the next refresh).
+            val isUnstartedNextUp = item.isNextUp && item.resumePositionTicks <= 0L
             ContextActionRow(
                 icon = Icons.Filled.PlayArrow,
-                label = strings.actionResume,
+                label = if (isUnstartedNextUp) strings.actionPlay else strings.actionResume,
                 onClick = onResume,
                 modifier = Modifier.focusRequester(firstActionFocusRequester)
             )
             ContextActionRow(Icons.Filled.Info, strings.actionMoreInfo, onViewDetails)
-            ContextActionRow(Icons.Filled.DeleteOutline, strings.homeRemoveFromContinue, onRemove)
+            if (!isUnstartedNextUp) {
+                ContextActionRow(Icons.Filled.DeleteOutline, strings.homeRemoveFromContinue, onRemove)
+            }
         }
     }
 }
@@ -3360,18 +3365,39 @@ private fun LiveTvGuideContent(
 
     var isGridMode by rememberSaveable { mutableStateOf(false) }
     var selectedFilter by rememberSaveable { mutableStateOf(com.seerflix.tv.core.model.LiveTvFilter.ALL) }
-    val baseWindowStartMs = remember { com.seerflix.tv.core.data.LiveTvEpgHelper.floorToHalfHour(System.currentTimeMillis()) }
+    // "Now" moves on while the guide is open: tick every minute so the now-marker, the current
+    // programme highlight and the first window follow the clock.
+    val nowMs by androidx.compose.runtime.produceState(System.currentTimeMillis()) {
+        while (true) {
+            kotlinx.coroutines.delay(60_000L - System.currentTimeMillis() % 60_000L)
+            value = System.currentTimeMillis()
+        }
+    }
+    val baseWindowStartMs = com.seerflix.tv.core.data.LiveTvEpgHelper.floorToHalfHour(nowMs)
     var windowOffsetHours by rememberSaveable { mutableStateOf(0) }
     val windowStartMs = baseWindowStartMs + windowOffsetHours * 3_600_000L
     val timeSlots = remember(windowStartMs) { com.seerflix.tv.core.data.LiveTvEpgHelper.timeSlots(windowStartMs) }
-    val slotTimeFmt = remember {
-        java.time.format.DateTimeFormatter.ofPattern("HH:mm").withZone(java.time.ZoneId.systemDefault())
+    val epgContext = androidx.compose.ui.platform.LocalContext.current
+    // App language + the TV's 12/24-hour setting (not a hard-coded "HH:mm" / device locale).
+    val slotTimeFmt = remember(strings.languageCode) {
+        val locale = java.util.Locale.forLanguageTag(strings.languageCode)
+        val skeleton = if (android.text.format.DateFormat.is24HourFormat(epgContext)) "Hm" else "hm"
+        java.time.format.DateTimeFormatter
+            .ofPattern(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
+            .withZone(java.time.ZoneId.systemDefault())
     }
-    val dayFmt = remember {
-        java.time.format.DateTimeFormatter.ofPattern("EEE d MMM").withZone(java.time.ZoneId.systemDefault())
+    val dayFmt = remember(strings.languageCode) {
+        val locale = java.util.Locale.forLanguageTag(strings.languageCode)
+        java.time.format.DateTimeFormatter
+            .ofPattern(android.text.format.DateFormat.getBestDateTimePattern(locale, "EEEdMMM"), locale)
+            .withZone(java.time.ZoneId.systemDefault())
     }
+    // Rows shown under the current filter stay until the filter changes: un-favouriting the
+    // focused channel under "Favorites" must not pull the row (and focus) out from under the user.
+    val shownUnderFilter = remember(selectedFilter) { mutableSetOf<String>() }
     val filteredChannels = remember(channels, selectedFilter) {
-        channels.filter { selectedFilter.matches(it) }
+        channels.filter { selectedFilter.matches(it) || it.id in shownUnderFilter }
+            .also { list -> list.forEach { shownUnderFilter += it.id } }
     }
 
     LazyColumn(
@@ -3501,8 +3527,8 @@ private fun LiveTvGuideContent(
             }
 
             items(filteredChannels, key = { "grid_${it.id}" }, contentType = { "epg_row" }) { ch ->
-                val cells = remember(ch, windowStartMs) {
-                    com.seerflix.tv.core.data.LiveTvEpgHelper.cellsForWindow(ch, windowStartMs)
+                val cells = remember(ch, windowStartMs, nowMs) {
+                    com.seerflix.tv.core.data.LiveTvEpgHelper.cellsForWindow(ch, windowStartMs, nowMs)
                 }
                 var chFocused by remember { mutableStateOf(false) }
                 Row(
@@ -4545,10 +4571,22 @@ private fun LiveTvProgramDialog(
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
     val firstFocus = remember { FocusRequester() }
-    var prePaddingMin by remember { mutableStateOf(0) }
-    var postPaddingMin by remember { mutableStateOf(0) }
-    var recordNewOnly by remember { mutableStateOf(false) }
-    var recordAnyChannel by remember { mutableStateOf(false) }
+    // null = keep the server's recording defaults (Dashboard → Live TV).
+    var prePaddingMin by remember { mutableStateOf<Int?>(null) }
+    var postPaddingMin by remember { mutableStateOf<Int?>(null) }
+    var recordNewOnly by remember { mutableStateOf<Boolean?>(null) }
+    var recordAnyChannel by remember { mutableStateOf<Boolean?>(null) }
+    fun toggleLabel(value: Boolean?) = when (value) {
+        null -> strings.commonDefault
+        true -> strings.optionOn
+        false -> strings.optionOff
+    }
+    // Default → On → Off → Default
+    fun nextToggle(value: Boolean?): Boolean? = when (value) {
+        null -> true
+        true -> false
+        false -> null
+    }
 
     val programs = remember(channel, selectedProgram) {
         if (selectedProgram != null) listOf(selectedProgram)
@@ -4558,8 +4596,8 @@ private fun LiveTvProgramDialog(
     val hasRecordableProgram = remember(programs) { programs.any { it.timerId.isNullOrBlank() || (it.isSeries && it.seriesTimerId.isNullOrBlank()) } }
 
     fun currentOptions() = com.seerflix.tv.core.model.DvrTimerOptions(
-        prePaddingSeconds = prePaddingMin * 60,
-        postPaddingSeconds = postPaddingMin * 60,
+        prePaddingSeconds = prePaddingMin?.let { it * 60 },
+        postPaddingSeconds = postPaddingMin?.let { it * 60 },
         recordNewOnly = recordNewOnly,
         recordAnyChannel = recordAnyChannel
     )
@@ -4599,6 +4637,11 @@ private fun LiveTvProgramDialog(
                 // Pre-padding selector
                 Text(strings.dvrPrePadding, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LiveTvChipButton(
+                        label = strings.commonDefault,
+                        selected = prePaddingMin == null,
+                        onClick = { prePaddingMin = null }
+                    )
                     DVR_PRE_PADDING_MINUTES.forEach { mins ->
                         LiveTvChipButton(
                             label = strings.dvrPaddingMinutes.format(mins),
@@ -4610,6 +4653,11 @@ private fun LiveTvProgramDialog(
                 // Post-padding selector
                 Text(strings.dvrPostPadding, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LiveTvChipButton(
+                        label = strings.commonDefault,
+                        selected = postPaddingMin == null,
+                        onClick = { postPaddingMin = null }
+                    )
                     DVR_POST_PADDING_MINUTES.forEach { mins ->
                         LiveTvChipButton(
                             label = strings.dvrPaddingMinutes.format(mins),
@@ -4621,14 +4669,14 @@ private fun LiveTvProgramDialog(
                 if (hasSeriesOption) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         LiveTvChipButton(
-                            label = "${strings.dvrRecordNewOnly}: ${if (recordNewOnly) strings.optionOn else strings.optionOff}",
-                            selected = recordNewOnly,
-                            onClick = { recordNewOnly = !recordNewOnly }
+                            label = "${strings.dvrRecordNewOnly}: ${toggleLabel(recordNewOnly)}",
+                            selected = recordNewOnly == true,
+                            onClick = { recordNewOnly = nextToggle(recordNewOnly) }
                         )
                         LiveTvChipButton(
-                            label = "${strings.dvrRecordAnyChannel}: ${if (recordAnyChannel) strings.optionOn else strings.optionOff}",
-                            selected = recordAnyChannel,
-                            onClick = { recordAnyChannel = !recordAnyChannel }
+                            label = "${strings.dvrRecordAnyChannel}: ${toggleLabel(recordAnyChannel)}",
+                            selected = recordAnyChannel == true,
+                            onClick = { recordAnyChannel = nextToggle(recordAnyChannel) }
                         )
                     }
                 }

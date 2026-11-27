@@ -524,8 +524,10 @@ private fun HeroPreviewVideoLayer(
     // Home stays composed while the activity is stopped (remote Home button / screensaver), so
     // without this the trailer kept playing — with audio if unmuted — in the background.
     // Declared after the release effect so it is disposed (paused) before the player is released.
-    LifecycleResumeEffect(previewPlayer) {
-        previewPlayer.playWhenReady = true
+    // The in-app screensaver is an overlay (the activity stays resumed): pause under it too.
+    val screensaverVisible = LocalScreensaverVisible.current
+    LifecycleResumeEffect(previewPlayer, screensaverVisible) {
+        previewPlayer.playWhenReady = !screensaverVisible
         onPauseOrDispose { previewPlayer.playWhenReady = false }
     }
 

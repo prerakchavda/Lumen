@@ -52,7 +52,13 @@ data class LibraryUiState(
     /** A "load more" page failed; the grid stays and shows a retry at the end. */
     val loadMoreFailed: Boolean = false,
     /** Server-side offset of the next page (items can be dropped by the on-device profile filter). */
-    val nextServerIndex: Int = 0
+    val nextServerIndex: Int = 0,
+    /** Bumped on every full reload (folder change, sort, filter): the grid scrolls to the top and refocuses. */
+    val reloadGeneration: Int = 0,
+    /** After going back up a folder level: the folder card to land on (if it is on the first page). */
+    val focusTargetId: String? = null,
+    /** Folder navigation: move focus into the new grid (sort / filter / A–Z keep focus where it is). */
+    val refocusGrid: Boolean = false
 ) {
     val canLoadMore: Boolean get() = nextServerIndex < totalCount
     val displayTitle: String
@@ -101,6 +107,17 @@ class LibraryViewModel @Inject constructor(
     }
 
     init {
+        // A title deleted from its Details page leaves the grid right away (no 404 card).
+        viewModelScope.launch {
+            catalogRepository.deletedItemIds.collect { deleted ->
+                if (deleted.isEmpty()) return@collect
+                _uiState.update { state ->
+                    val kept = state.items.filterNot { it.jellyfinId in deleted }
+                    if (kept.size == state.items.size) state
+                    else state.copy(items = kept, totalCount = (state.totalCount - (state.items.size - kept.size)).coerceAtLeast(kept.size))
+                }
+            }
+        }
         viewModelScope.launch {
             val profile = authRepository.activeProfileFlow.first() ?: return@launch
             val genres = catalogRepository.loadGenres(profile.jellyfinUserId, rootParentId, baseIncludeTypes)
@@ -132,17 +149,17 @@ class LibraryViewModel @Inject constructor(
                 folderBreadcrumbs = folderStack.map { f -> f.second }
             )
         }
-        reload()
+        reload(refocusGrid = true)
     }
 
     /** Navigates up one subfolder level; returns true if handled, false if already at library root. */
     fun navigateUpFolder(): Boolean {
         if (folderStack.isEmpty()) return false
-        folderStack.removeAt(folderStack.lastIndex)
+        val leftFolderId = folderStack.removeAt(folderStack.lastIndex).first
         _uiState.update {
             it.copy(folderBreadcrumbs = folderStack.map { f -> f.second })
         }
-        reload()
+        reload(focusTargetId = leftFolderId, refocusGrid = true)
         return true
     }
 
@@ -170,10 +187,15 @@ class LibraryViewModel @Inject constructor(
         reload()
     }
 
-    private fun reload() {
+    private fun reload(focusTargetId: String? = null, refocusGrid: Boolean = false) {
         loadJob?.cancel()
         _uiState.update {
-            it.copy(isLoading = true, errorMessage = null, loadMoreFailed = false, items = emptyList(), totalCount = 0, nextServerIndex = 0)
+            it.copy(
+                isLoading = true, errorMessage = null, loadMoreFailed = false, items = emptyList(), totalCount = 0, nextServerIndex = 0,
+                reloadGeneration = it.reloadGeneration + 1,
+                focusTargetId = focusTargetId,
+                refocusGrid = refocusGrid
+            )
         }
         loadJob = viewModelScope.launch { loadPage(startIndex = 0) }
     }

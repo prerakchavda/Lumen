@@ -39,7 +39,8 @@ class RequestReadyWorker(
         val repo = entryPoint.catalogRepository()
         val tvSync = entryPoint.tvChannelSyncManager()
 
-        repo.refreshLibraryIndex(activeProfile.jellyfinUserId)
+        // With the profile: an index rebuilt without it carries no rating cap.
+        repo.refreshLibraryIndex(activeProfile.jellyfinUserId, activeProfile = activeProfile)
         val requests = repo.loadRequestsHub().getOrNull() ?: return Result.success()
 
         val previouslyTracked = prefs.getTrackedPendingRequestIds()
@@ -66,7 +67,9 @@ class RequestReadyWorker(
                 )
             }
             prefs.addReadyRequestAlerts(alerts)
-            alerts.forEach { tvSync.promoteNewReleaseToWatchNext(it) }
+            // The launcher's Watch Next row is shared by every profile: never put another
+            // member's request there while a restricted (Kids / rating-limited) profile is active.
+            if (!activeProfile.isRestricted) alerts.forEach { tvSync.promoteNewReleaseToWatchNext(it) }
         }
 
         prefs.saveTrackedPendingRequestIds(currentlyPendingOrProcessing)

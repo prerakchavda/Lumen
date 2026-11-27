@@ -352,6 +352,7 @@ fun DetailsContent(
                             focusMemory = focusMemory,
                             isSeerrConfigured = state.isSeerrConfigured,
                             canSubmitRequests = state.canSubmitRequests,
+                            canDeleteItems = !state.isRestrictedProfile,
                             feedbackBanner = state.feedbackBanner,
                             onBack = onBack,
                             onPlay = {
@@ -1105,6 +1106,7 @@ private fun DetailsHeaderSection(
     canSubmitRequests: Boolean,
     feedbackBanner: String?,
     onBack: () -> Unit,
+    canDeleteItems: Boolean = true,
     onPlay: () -> Unit,
     onPlayFromBeginning: () -> Unit = {},
     onRequestClick: () -> Unit,
@@ -1456,7 +1458,7 @@ private fun DetailsHeaderSection(
                         if (showCancelReq && pendingReqId != null) {
                             add(MoreAction(Icons.Filled.Close, strings.detailsCancelRequest, close { onCancelRequest(pendingReqId) }))
                         }
-                        if (item.canDelete && item.jellyfinId != null) {
+                        if (canDeleteItems && item.canDelete && item.jellyfinId != null) {
                             add(MoreAction(Icons.Filled.DeleteOutline, strings.actionDeleteItem, close(onOpenDeleteConfirm)))
                         }
                     },
@@ -2134,18 +2136,23 @@ private fun ReportIssueModal(
                 }
             }
 
-            OutlinedTextField(
-                value = message,
-                onValueChange = { message = it },
-                label = { Text(strings.detailsIssueHint) },
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = colors.white,
-                    unfocusedTextColor = colors.textPrimary,
-                    focusedBorderColor = colors.accent,
-                    unfocusedBorderColor = colors.badgeBorder
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
+            com.seerflix.tv.ui.components.TvTextFieldContainer(
+                modifier = Modifier.fillMaxWidth(),
+                focusRingColor = colors.accent
+            ) { fieldModifier ->
+                OutlinedTextField(
+                    value = message,
+                    onValueChange = { message = it },
+                    label = { Text(strings.detailsIssueHint) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.white,
+                        unfocusedTextColor = colors.textPrimary,
+                        focusedBorderColor = colors.accent,
+                        unfocusedBorderColor = colors.badgeBorder
+                    ),
+                    modifier = fieldModifier.fillMaxWidth()
+                )
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 HeroPillButton(
@@ -2322,7 +2329,8 @@ private fun AddToPlaylistDialog(
     var newName by remember { mutableStateOf("") }
     val firstFocus = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
-        LaunchedEffect(Unit) {
+        // Re-run when the playlists arrive: the first row replaces the field as the focus target.
+        LaunchedEffect(playlists.isEmpty()) {
             delay(40L)
             runCatching { firstFocus.requestFocus() }
         }
@@ -2370,19 +2378,26 @@ private fun AddToPlaylistDialog(
             }
             Spacer(Modifier.height(4.dp))
             Text(strings.playlistCreateNew, color = colors.textSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            OutlinedTextField(
-                value = newName,
-                onValueChange = { newName = it },
-                placeholder = { Text(strings.playlistNameHint, color = colors.textMuted) },
-                singleLine = true,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = colors.white,
-                    unfocusedTextColor = colors.white,
-                    focusedBorderColor = colors.accent,
-                    unfocusedBorderColor = colors.badgeBorder
-                ),
-                modifier = (if (playlists.isEmpty()) Modifier.focusRequester(firstFocus) else Modifier).fillMaxWidth()
-            )
+            // TV-safe field: the D-pad passes over it; OK opens the keyboard.
+            com.seerflix.tv.ui.components.TvTextFieldContainer(
+                modifier = Modifier.fillMaxWidth(),
+                focusRingColor = colors.accent,
+                containerFocusRequester = if (playlists.isEmpty()) firstFocus else null
+            ) { fieldModifier ->
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    placeholder = { Text(strings.playlistNameHint, color = colors.textMuted) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = colors.white,
+                        unfocusedTextColor = colors.white,
+                        focusedBorderColor = colors.accent,
+                        unfocusedBorderColor = colors.badgeBorder
+                    ),
+                    modifier = fieldModifier.fillMaxWidth()
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 HeroPillButton(
                     text = strings.playlistCreateNew,
@@ -2716,6 +2731,8 @@ private fun ThemeSongPlayerEffect(
     lifecycleOwner: androidx.lifecycle.LifecycleOwner
 ) {
     val context = LocalContext.current
+    val screensaverVisible = com.seerflix.tv.ui.components.LocalScreensaverVisible.current
+    val playerHolder = remember { arrayOfNulls<androidx.media3.exoplayer.ExoPlayer>(1) }
     androidx.compose.runtime.DisposableEffect(themeSongUrl, lifecycleOwner) {
         if (themeSongUrl.isNullOrBlank()) {
             onDispose { }
@@ -2727,29 +2744,44 @@ private fun ThemeSongPlayerEffect(
                 .build()
                 .apply {
                     volume = 0.25f
-                    repeatMode = androidx.media3.common.Player.REPEAT_MODE_ONE
+                    // Played once per visit, like a title card: a looping song on a TV left on a
+                    // Details page (or under the screensaver) gets old fast.
+                    repeatMode = androidx.media3.common.Player.REPEAT_MODE_OFF
                     setMediaItem(androidx.media3.common.MediaItem.fromUri(themeSongUrl))
                     playWhenReady = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
                     prepare()
                 }
+            playerHolder[0] = player
             val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
                 when (event) {
-                    Lifecycle.Event.ON_RESUME -> runCatching { player.playWhenReady = true }
-                    Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP -> runCatching {
-                        player.playWhenReady = false
-                        player.pause()
+                    Lifecycle.Event.ON_RESUME -> runCatching {
+                        if (player.playbackState != androidx.media3.common.Player.STATE_ENDED) player.playWhenReady = true
                     }
+                    Lifecycle.Event.ON_PAUSE -> runCatching { player.playWhenReady = false }
+                    // Covered by the player or another screen: free the decoder and audio track.
+                    Lifecycle.Event.ON_STOP -> runCatching { player.stop() }
                     else -> Unit
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose {
                 lifecycleOwner.lifecycle.removeObserver(observer)
+                playerHolder[0] = null
                 runCatching {
                     player.stop()
                     player.release()
                 }
             }
+        }
+    }
+    LaunchedEffect(screensaverVisible) {
+        val player = playerHolder[0] ?: return@LaunchedEffect
+        if (screensaverVisible) {
+            runCatching { player.playWhenReady = false }
+        } else if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+            player.playbackState == androidx.media3.common.Player.STATE_READY
+        ) {
+            runCatching { player.playWhenReady = true }
         }
     }
 }

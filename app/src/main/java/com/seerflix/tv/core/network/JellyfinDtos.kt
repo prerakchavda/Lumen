@@ -375,7 +375,9 @@ data class JellyfinPlaybackProgressRequest(
     @SerialName("SubtitleStreamIndex") val subtitleStreamIndex: Int? = null,
     @SerialName("IsMuted") val isMuted: Boolean? = null,
     @SerialName("VolumeLevel") val volumeLevel: Int? = null,
-    @SerialName("PlaybackRate") val playbackRate: Float? = null
+    @SerialName("PlaybackRate") val playbackRate: Float? = null,
+    /** Jellyfin defaults PlayState.CanSeek to false, which disables seek bars in remote controls. */
+    @SerialName("CanSeek") val canSeek: Boolean = true
 )
 
 @Serializable

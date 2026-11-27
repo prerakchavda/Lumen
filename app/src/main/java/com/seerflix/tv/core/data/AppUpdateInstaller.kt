@@ -201,7 +201,10 @@ class AppUpdateInstaller @Inject constructor(
                 .header("Accept", "application/octet-stream")
                 .build()
             val call = client.newCall(request)
-            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion { cause ->
+            // Fire as soon as the job starts cancelling (not when it completes, which a coroutine
+            // blocked inside execute()/read() never would), so Cancel aborts a stalled download.
+            @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+            val cancelHandle = coroutineContext[Job]?.invokeOnCompletion(onCancelling = true, invokeImmediately = true) { cause ->
                 if (cause != null) call.cancel()
             }
 
