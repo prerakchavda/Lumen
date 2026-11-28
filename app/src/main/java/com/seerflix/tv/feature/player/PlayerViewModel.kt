@@ -1,6 +1,7 @@
 package com.seerflix.tv.feature.player
 
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,6 +22,7 @@ import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.SleepTimerOption
 import com.seerflix.tv.core.model.SubtitleSelectionMode
 import com.seerflix.tv.core.model.SyncPlayGroup
+import com.seerflix.tv.core.model.TrackOption
 import com.seerflix.tv.core.model.VideoResizeMode
 import com.seerflix.tv.core.network.MediaClient
 import com.seerflix.tv.core.network.SessionPreferences
@@ -72,6 +74,17 @@ data class LiveStreamStats(
     val audioDecoderName: String? = null,
     val bufferedDurationMs: Long = 0L,
     val droppedFrames: Int = 0
+)
+
+/**
+ * The tracks playing when another version (file) of the title is picked: stream indexes are per
+ * file, so the new version's matching streams are looked up by what these tracks are.
+ */
+data class VersionTrackMatch(
+    val audio: TrackOption?,
+    val subtitle: TrackOption?,
+    /** The subtitle was burned in, and should be again on the new version. */
+    val burnIn: Boolean
 )
 
 /** Route / preselection values for the player's track arguments. */
@@ -232,8 +245,6 @@ class PlayerViewModel @Inject constructor(
     /** Whether the last loadItem() asked to skip Cinema Intros / was an intro clip (for Retry). */
     private var requestedSkipCinemaIntros = false
     private var requestedIsCinemaIntroClip = false
-    /** Queue entry held back by the "Still watching?" prompt (replayed with its version / start). */
-    private var pendingStillWatchingEntry: QueueEntry? = null
     /** "CH n · Name" banner shown once the tuned channel has loaded. */
     private var pendingChannelBanner: Pair<String, String>? = null
     /** Whether the current play session's subtitle pick has been applied to its tracks. */
@@ -334,9 +345,11 @@ class PlayerViewModel @Inject constructor(
         forceHls: Boolean = false,
         /** True when the group asked for this item; otherwise a new item becomes the group's queue. */
         fromSyncPlay: Boolean = false,
-        /** True when triggered automatically by Up Next countdown / end-of-episode autoplay. */
+        /**
+         * True when triggered automatically by Up Next countdown / end-of-episode autoplay (counts
+         * toward the "Still watching?" limit that [playNextInQueueOrEpisode] checks first).
+         */
         isAutoplayAdvance: Boolean = false,
-        nextTitleForPrompt: String? = null,
         skipCinemaIntros: Boolean = false,
         isCinemaIntroClip: Boolean = false,
         /**
@@ -347,8 +360,8 @@ class PlayerViewModel @Inject constructor(
         subtitleSelection: Int? = KEEP_SUBTITLE,
         /** After a remote subtitle download: the subtitle indexes that existed before it. */
         preselectNewSubtitleExcluding: Set<Int>? = null,
-        /** The queue entry being advanced to, kept if the "Still watching?" prompt holds it back. */
-        pendingQueueEntry: QueueEntry? = null
+        /** Version switch: the previous version's tracks, to be found again on the new one. */
+        versionTrackMatch: VersionTrackMatch? = null
     ) {
         if (itemId.isBlank()) {
             _uiState.update { it.copy(isLoading = false, errorMessage = strings.playerInvalidItem) }
@@ -359,28 +372,13 @@ class PlayerViewModel @Inject constructor(
         }
         val isSameItem = _uiState.value.session?.itemId == itemId
         if (!isSameItem) {
-            if (isAutoplayAdvance) {
-                consecutiveAutoplayedEpisodes++
-                val limit = _uiState.value.bingeLimitEpisodes
-                if (limit > 0 && consecutiveAutoplayedEpisodes >= limit) {
-                    pendingStillWatchingEntry = pendingQueueEntry?.takeIf { it.itemId == itemId }
-                    _uiState.update {
-                        it.copy(
-                            showStillWatchingPrompt = true,
-                            pendingStillWatchingNextId = itemId,
-                            pendingStillWatchingNextTitle = nextTitleForPrompt ?: it.session?.nextEpisodeTitle
-                        )
-                    }
-                    return
-                }
-            } else {
-                consecutiveAutoplayedEpisodes = 0
-            }
+            // The "Still watching?" limit itself is checked before the queue / session move on
+            // (playNextInQueueOrEpisode), so declining it leaves both as they were.
+            if (isAutoplayAdvance) consecutiveAutoplayedEpisodes++ else consecutiveAutoplayedEpisodes = 0
         }
         requestedItemId = itemId
         requestedSkipCinemaIntros = skipCinemaIntros
         requestedIsCinemaIntroClip = isCinemaIntroClip
-        pendingStillWatchingEntry = null
         if (!isSameItem) {
             assLoadJob?.cancel()
             // A late search result / download must not act on the next item.
@@ -499,6 +497,14 @@ class PlayerViewModel @Inject constructor(
                 }
             }
 
+            // A prepared play session that never becomes the playing one (a newer load cancelled
+            // this one, e.g. channel surfing, or it was replaced by intros / a re-request) is
+            // released, so a live stream the server opened for it doesn't keep its tuner.
+            var preparedPlaySessionId: String? = null
+            var preparedAdopted = false
+            coroutineContext[Job]?.invokeOnCompletion {
+                if (!preparedAdopted) preparedPlaySessionId?.let(playbackManager::releaseUnusedPlaySession)
+            }
             // Returns as soon as PlaybackInfo is known; segments (skip intro/recap, credits) and the
             // next episode are fetched in this job and merged in when they arrive. Until then the
             // skip / up-next UI simply doesn't trigger.
@@ -518,6 +524,7 @@ class PlayerViewModel @Inject constructor(
                 forceHls = forceHls
             )
                 .onSuccess { prepared ->
+                    preparedPlaySessionId = prepared.session.playSessionId
                     val previousSession = _uiState.value.session
                     var adjustedSession = if (resumeOverrideMs != null) {
                         prepared.session.copy(resumeTicks = resumeOverrideMs * 10_000L)
@@ -583,6 +590,35 @@ class PlayerViewModel @Inject constructor(
                         }
                     }
 
+                    // Version switch: stream indexes are per file, so the previous version's audio /
+                    // subtitle is looked up again on this one by language, forced flag, codec, title.
+                    val mappedAudio = versionTrackMatch?.audio?.let { matchVersionTrack(it, adjustedSession.audioTracks) }
+                    val mappedSubtitle = versionTrackMatch?.subtitle?.let { matchVersionTrack(it, adjustedSession.subtitleTracks) }
+                    if (versionTrackMatch != null) {
+                        val burnIn = mappedSubtitle?.index?.takeIf { versionTrackMatch.burnIn }
+                        val serverAudio = mappedAudio?.index?.takeIf {
+                            adjustedSession.isHls && it != adjustedSession.activeAudioStreamIndex
+                        }
+                        // A burned-in subtitle and a server-converted audio track are part of the
+                        // stream itself: ask for this version again with its own stream indexes.
+                        if (burnIn != null || serverAudio != null) {
+                            loadItem(
+                                itemId = adjustedSession.itemId,
+                                qualityOverride = quality,
+                                resumeOverrideMs = resumeOverrideMs,
+                                mediaSourceIdOverride = adjustedSession.mediaSourceId,
+                                burnInSubtitleOverride = burnIn,
+                                audioStreamIndexOverride = mappedAudio?.index,
+                                forceHls = forceHls || serverAudio != null,
+                                skipCinemaIntros = true,
+                                subtitleSelection = if (burnIn != null) null else mappedSubtitle?.index ?: subtitleChoice
+                            )
+                            return@onSuccess
+                        }
+                    }
+                    // Explicit / carried-over audio pick, applied to Direct Play once its tracks are known.
+                    val effectiveAudioIndex = resolvedAudioIndex ?: mappedAudio?.index
+
                     // Reloading the same item (quality / version / audio switch): keep the markers we
                     // already had until the fresh lookups complete.
                     if (previousSession != null && !previousSession.isTrailer && previousSession.itemId == adjustedSession.itemId) {
@@ -596,7 +632,7 @@ class PlayerViewModel @Inject constructor(
                         val added = adjustedSession.subtitleTracks.filter { it.index !in before }
                         added.firstOrNull { it.isExternal } ?: added.firstOrNull()
                     }
-                    val effectiveSubtitleChoice = downloadedSubtitle?.index ?: subtitleChoice
+                    val effectiveSubtitleChoice = downloadedSubtitle?.index ?: mappedSubtitle?.index ?: subtitleChoice
                     // The episodes drawer belongs to the previous series: drop it before it can be opened.
                     if (!isSameItem && previousSession?.seriesId != adjustedSession.seriesId) {
                         drawerJob?.cancel()
@@ -610,8 +646,8 @@ class PlayerViewModel @Inject constructor(
                             session = adjustedSession,
                             selectedQuality = quality,
                             selectedMediaSourceId = adjustedSession.mediaSourceId,
-                            selectedAudioStreamIndex = resolvedAudioIndex ?: adjustedSession.activeAudioStreamIndex,
-                            requestedAudioStreamIndex = resolvedAudioIndex,
+                            selectedAudioStreamIndex = effectiveAudioIndex ?: adjustedSession.activeAudioStreamIndex,
+                            requestedAudioStreamIndex = effectiveAudioIndex,
                             selectedSubtitleStreamIndex = resolvedBurnIn ?: effectiveSubtitleChoice?.takeIf { idx -> idx >= 0 },
                             preselectedSubtitleStreamIndex = effectiveSubtitleChoice,
                             burnInSubtitleIndex = resolvedBurnIn,
@@ -622,6 +658,7 @@ class PlayerViewModel @Inject constructor(
                             isLoading = false
                         )
                     }
+                    preparedAdopted = true
                     // A new play session: its subtitle pick hasn't been applied to the tracks yet.
                     subtitlePickApplied = false
                     if (!isCinemaIntroClip) {
@@ -680,7 +717,7 @@ class PlayerViewModel @Inject constructor(
                                 _uiState.value.preferredSubtitleLang == "off" -> null
                             else -> {
                                 val activeAudio = adjustedSession.audioTracks.firstOrNull {
-                                    it.index == (resolvedAudioIndex ?: adjustedSession.activeAudioStreamIndex)
+                                    it.index == (effectiveAudioIndex ?: adjustedSession.activeAudioStreamIndex)
                                 } ?: adjustedSession.audioTracks.firstOrNull { it.isDefault } ?: adjustedSession.audioTracks.firstOrNull()
                                 SubtitleTrackSelector.selectSubtitleTrack(
                                     mode = profile.subtitleSelectionMode,
@@ -716,6 +753,26 @@ class PlayerViewModel @Inject constructor(
                     }
                 }
         }
+    }
+
+    /**
+     * The track of another version (file) of the same title that is the same as [wanted]: same
+     * language and forced flag, then the closest codec / title / channels. Null when there is none
+     * (the choice is then dropped instead of pointing at an unrelated stream).
+     */
+    private fun matchVersionTrack(wanted: TrackOption, candidates: List<TrackOption>): TrackOption? {
+        val wantedLang = SubtitleTrackSelector.normalizeLanguage(wanted.language)
+        return candidates
+            .filter { SubtitleTrackSelector.normalizeLanguage(it.language) == wantedLang && it.isForced == wanted.isForced }
+            .maxByOrNull { c ->
+                var score = 0
+                if (c.codec != null && c.codec.equals(wanted.codec, ignoreCase = true)) score += 4
+                if (c.label.equals(wanted.label, ignoreCase = true)) score += 3
+                if (c.channels != null && c.channels == wanted.channels) score += 2
+                if (c.isHearingImpaired == wanted.isHearingImpaired) score += 2
+                if (c.isExternal == wanted.isExternal) score += 1
+                score
+            }
     }
 
     private fun isAssCodec(codec: String?): Boolean =
@@ -935,18 +992,43 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun switchMediaSource(mediaSourceId: String, currentPosMs: Long) {
-        val session = _uiState.value.session ?: return
+        val state = _uiState.value
+        val session = state.session ?: return
         if (session.isTrailer || mediaSourceId == session.mediaSourceId) return
         // A version that lives on another server is a different item there: from here on that
         // copy is what plays (and what progress is reported for).
         val otherCopyId = session.mediaSources.firstOrNull { it.id == mediaSourceId }?.itemId
+        // Stream indexes belong to this version's file: the new version gets the same tracks by
+        // what they are (loadItem maps them once its streams are known), never by index.
+        val pickedSubtitleIndex = if (subtitlePickApplied) {
+            state.selectedSubtitleStreamIndex
+        } else {
+            state.preselectedSubtitleStreamIndex?.takeIf { it >= 0 }
+        }
+        val currentSubtitleIndex = state.burnInSubtitleIndex ?: state.activeAssSubtitleIndex ?: pickedSubtitleIndex
+        val subtitlesOff = currentSubtitleIndex == null &&
+            (subtitlePickApplied || state.preselectedSubtitleStreamIndex == PlayerTrackSelection.SUBTITLE_OFF)
+        // Audio only when it was picked (otherwise the new version's own default plays).
+        val pickedAudioIndex = state.requestedAudioStreamIndex
+            ?: state.selectedAudioStreamIndex?.takeIf { it != session.activeAudioStreamIndex }
+        val trackMatch = VersionTrackMatch(
+            audio = pickedAudioIndex?.let { idx -> session.audioTracks.firstOrNull { it.index == idx } },
+            subtitle = currentSubtitleIndex?.let { idx -> session.subtitleTracks.firstOrNull { it.index == idx } },
+            burnIn = state.burnInSubtitleIndex != null
+        )
         reportStopped(currentPosMs)
         // Same title, so it keeps its place in the queue (loadItem would otherwise clear it).
         if (otherCopyId != null) playbackQueueManager.replaceCurrentItemId(otherCopyId, expectedCurrentId = session.itemId)
         loadItem(
             itemId = otherCopyId ?: session.itemId,
             mediaSourceIdOverride = mediaSourceId,
-            resumeOverrideMs = currentPosMs
+            resumeOverrideMs = currentPosMs,
+            burnInSubtitleOverride = null,
+            audioStreamIndexOverride = null,
+            // Off stays off; no match on the new version falls back to the profile's choice.
+            subtitleSelection = if (subtitlesOff) PlayerTrackSelection.SUBTITLE_OFF else null,
+            skipCinemaIntros = true,
+            versionTrackMatch = trackMatch
         )
     }
 
@@ -976,24 +1058,68 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    fun openInExternalPlayer(context: Context, currentPosMs: Long) {
+    /**
+     * Hands the current item to an external player. With [launchForResult] (an activity-result
+     * launcher) the player is started for a result, so the position it returns
+     * ([onExternalPlayerResult]) becomes the Jellyfin resume point instead of the hand-off point.
+     */
+    fun openInExternalPlayer(
+        context: Context,
+        currentPosMs: Long,
+        launchForResult: ((Intent) -> Unit)? = null
+    ) {
         val session = _uiState.value.session ?: return
         reportStopped(currentPosMs)
-        val launched = ExternalPlayerHelper.launchExternalPlayer(
-            context = context,
-            streamUrl = session.directPlayUrl ?: session.streamUrl,
-            title = session.title,
-            positionMs = currentPosMs,
-            externalSubtitles = session.externalSubtitleFiles,
-            chooserTitle = strings.playerOpenWithExternal
-        )
+        val streamUrl = session.directPlayUrl ?: session.streamUrl
+        val launched = if (launchForResult != null) {
+            val intent = ExternalPlayerHelper.buildLaunchIntent(
+                context = context,
+                streamUrl = streamUrl,
+                title = session.title,
+                positionMs = currentPosMs,
+                externalSubtitles = session.externalSubtitleFiles,
+                chooserTitle = strings.playerOpenWithExternal,
+                forResult = true
+            )
+            runCatching { launchForResult(intent) }.isSuccess
+        } else {
+            ExternalPlayerHelper.launchExternalPlayer(
+                context = context,
+                streamUrl = streamUrl,
+                title = session.title,
+                positionMs = currentPosMs,
+                externalSubtitles = session.externalSubtitleFiles,
+                chooserTitle = strings.playerOpenWithExternal
+            )
+        }
         if (!launched) {
-            // Playback goes on here: let progress reports for this session resume.
-            if (stoppedPlaySessionId == session.playSessionId) stoppedPlaySessionId = null
+            // Playback goes on here: report this session as playing again (the hand-off already
+            // reported it stopped, after which the server-side reporting drops its progress).
+            if (stoppedPlaySessionId == session.playSessionId) {
+                stoppedPlaySessionId = null
+                reportStart(currentPosMs)
+            }
             showFeedback(strings.detailsNoExternalPlayer)
         } else {
             externalHandoffPlaySessionId = session.playSessionId
         }
+    }
+
+    /**
+     * The external player closed. MX Player / Just Player return "position", VLC "extra_position":
+     * that position is reported as the session's stop (the hand-off already reported one at the
+     * hand-off point, which would otherwise stay the resume point) and returned so playback here
+     * continues from it. Null when the player returned none (e.g. Kodi) — nothing changes then.
+     */
+    fun onExternalPlayerResult(data: Intent?): Long? {
+        val session = _uiState.value.session ?: return null
+        if (session.isLiveTv || externalHandoffPlaySessionId != session.playSessionId) return null
+        val positionMs = ExternalPlayerHelper.resultPositionMs(data, runtimeMs = session.runtimeTicks / 10_000L)
+            ?: return null
+        if (!session.isTrailer && !session.isCinemaIntro) {
+            playbackManager.reportStoppedDetached(session, positionMs * 10_000L, buildDefaultReportState(null))
+        }
+        return positionMs
     }
 
     /** In a SyncPlay group play/pause are requests to the group, applied when the server says so. */
@@ -1026,6 +1152,9 @@ class PlayerViewModel @Inject constructor(
     }
 
     override fun onCleared() {
+        // Safety net: a live stream still open for the current session is closed (no-op when its
+        // stop was already reported, which is the normal exit path).
+        _uiState.value.session?.let { playbackManager.releaseUnusedPlaySession(it.playSessionId) }
         syncPlayManager.localPlayingItemId = null
         // The next player (remote Play Now) may already have published its own entry.
         if (playbackQueueManager.nowPlaying === ownNowPlaying) playbackQueueManager.nowPlaying = null
@@ -1182,10 +1311,12 @@ class PlayerViewModel @Inject constructor(
         _uiState.update { it.copy(sleepTimerOption = SleepTimerOption.OFF, sleepTimerEndMs = null) }
     }
 
-    fun confirmStillWatching() {
+    /**
+     * "Still watching?" answered yes: only now does the queue move on and the current session get
+     * reported stopped (at [currentPosMs]), then the held item plays.
+     */
+    fun confirmStillWatching(currentPosMs: Long, reportState: PlaybackReportState? = null) {
         val nextId = _uiState.value.pendingStillWatchingNextId
-        val queued = pendingStillWatchingEntry?.takeIf { it.itemId == nextId }
-        pendingStillWatchingEntry = null
         consecutiveAutoplayedEpisodes = 0
         _uiState.update {
             it.copy(
@@ -1194,20 +1325,22 @@ class PlayerViewModel @Inject constructor(
                 pendingStillWatchingNextTitle = null
             )
         }
-        if (queued != null) {
-            // The queue already moved to this entry; play it with its version / start position.
-            loadItem(
-                itemId = queued.itemId,
-                mediaSourceIdOverride = queued.mediaSourceId,
-                resumeOverrideMs = queued.startPositionMs.takeIf { it > 0L }
-            )
-        } else if (!nextId.isNullOrBlank()) {
+        if (nextId.isNullOrBlank()) return
+        val upcoming = playbackQueueManager.state.value.nextEntry?.itemId ?: _uiState.value.session?.nextEpisodeId
+        if (upcoming == nextId) {
+            advanceToNext(currentPosMs, reportState, isAutoplayAdvance = false)
+        } else {
+            // The queue changed while the prompt was up: play what the prompt named.
+            reportStopped(currentPosMs, reportState)
             loadItem(nextId)
         }
     }
 
+    /**
+     * "Still watching?" declined: nothing moved while it was up, so the held item is still next
+     * in the queue (Up Next / Play Now) and the current session keeps reporting until exit.
+     */
     fun dismissStillWatching() {
-        pendingStillWatchingEntry = null
         _uiState.update {
             it.copy(
                 showStillWatchingPrompt = false,
@@ -1376,6 +1509,33 @@ class PlayerViewModel @Inject constructor(
         reportState: PlaybackReportState? = null,
         fromAutoplay: Boolean = false
     ): Boolean {
+        val session = _uiState.value.session
+        val queueNext = playbackQueueManager.state.value.nextEntry
+        val nextId = queueNext?.itemId ?: session?.nextEpisodeId ?: return false
+        val bingeLimit = _uiState.value.bingeLimitEpisodes
+        if (fromAutoplay && bingeLimit > 0 && nextId != session?.itemId &&
+            consecutiveAutoplayedEpisodes + 1 >= bingeLimit
+        ) {
+            // Asked before anything moves on: until it is answered the queue stays on the current
+            // entry and the current session keeps reporting (confirm advances, exit stops it).
+            _uiState.update {
+                it.copy(
+                    showStillWatchingPrompt = true,
+                    pendingStillWatchingNextId = nextId,
+                    pendingStillWatchingNextTitle = queueNext?.title ?: session?.nextEpisodeTitle
+                )
+            }
+            return true
+        }
+        return advanceToNext(currentPosMs, reportState, isAutoplayAdvance = fromAutoplay)
+    }
+
+    /** Moves the queue on (or to the next episode), stops the current session and loads the next item. */
+    private fun advanceToNext(
+        currentPosMs: Long,
+        reportState: PlaybackReportState?,
+        isAutoplayAdvance: Boolean
+    ): Boolean {
         val nextQueue = playbackQueueManager.advanceNext()
         if (nextQueue != null) {
             reportStopped(currentPosMs, reportState)
@@ -1383,19 +1543,13 @@ class PlayerViewModel @Inject constructor(
                 itemId = nextQueue.itemId,
                 mediaSourceIdOverride = nextQueue.mediaSourceId,
                 resumeOverrideMs = nextQueue.startPositionMs.takeIf { it > 0L },
-                isAutoplayAdvance = fromAutoplay,
-                nextTitleForPrompt = nextQueue.title,
-                pendingQueueEntry = nextQueue
+                isAutoplayAdvance = isAutoplayAdvance
             )
             return true
         }
         val nextEpId = _uiState.value.session?.nextEpisodeId ?: return false
         reportStopped(currentPosMs, reportState)
-        loadItem(
-            nextEpId,
-            isAutoplayAdvance = fromAutoplay,
-            nextTitleForPrompt = _uiState.value.session?.nextEpisodeTitle
-        )
+        loadItem(nextEpId, isAutoplayAdvance = isAutoplayAdvance)
         return true
     }
 
@@ -1510,6 +1664,10 @@ class PlayerViewModel @Inject constructor(
     fun reportStart(positionMs: Long, reportState: PlaybackReportState? = null) {
         val session = _uiState.value.session ?: return
         if (session.isTrailer || session.isCinemaIntro) return
+        // Already reported stopped (e.g. the next channel was tuned before this one's stream was
+        // set up): a start now would bring it back on the server with nothing left to stop it.
+        // An external-player hand-off resumed here clears this first (reportProgress).
+        if (session.playSessionId == stoppedPlaySessionId) return
         val full = buildDefaultReportState(reportState)
         playbackManager.enqueueStart(session, positionMs * 10_000L, full)
     }
@@ -1518,10 +1676,9 @@ class PlayerViewModel @Inject constructor(
         val state = _uiState.value
         val session = state.session ?: return
         // While a new item/version is loading the old session has already been reported as stopped;
-        // a late progress report would resurrect it on the server. Same while the "Still watching?"
-        // prompt holds the next item back after this one was reported stopped.
+        // a late progress report would resurrect it on the server. (The "Still watching?" prompt
+        // doesn't stop the session: it keeps reporting, paused, while the prompt is up.)
         if (session.isTrailer || session.isCinemaIntro || state.isLoading || state.errorMessage != null) return
-        if (state.showStillWatchingPrompt) return
         if (session.playSessionId == stoppedPlaySessionId) {
             // Handed to an external player, then resumed here: report this session again.
             if (externalHandoffPlaySessionId != session.playSessionId || isPaused) return

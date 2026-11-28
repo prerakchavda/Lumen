@@ -229,7 +229,14 @@ data class JellyfinPlaybackInfoRequest(
     @SerialName("MaxAudioChannels") val maxAudioChannels: Int? = null,
     @SerialName("DeviceProfile") val deviceProfile: JellyfinDeviceProfileDto,
     /** null = server default (allowed); false forces a remux / transcode. */
-    @SerialName("EnableDirectPlay") val enableDirectPlay: Boolean? = null
+    @SerialName("EnableDirectPlay") val enableDirectPlay: Boolean? = null,
+    /**
+     * Live TV: have the server open the tuner now and return its LiveStreamId, which the stop
+     * report needs to close it again (jellyfin-web sends this for every playback request; it has
+     * no effect on items that don't need opening).
+     */
+    @SerialName("AutoOpenLiveStream") val autoOpenLiveStream: Boolean = true,
+    @SerialName("IsPlayback") val isPlayback: Boolean = true
 )
 
 @Serializable
@@ -319,7 +326,12 @@ data class JellyfinMediaSourceDto(
     @SerialName("DefaultAudioStreamIndex") val defaultAudioStreamIndex: Int? = null,
     @SerialName("DefaultSubtitleStreamIndex") val defaultSubtitleStreamIndex: Int? = null,
     @SerialName("RunTimeTicks") val runTimeTicks: Long? = null,
-    @SerialName("MediaStreams") val mediaStreams: List<JellyfinMediaStreamDto> = emptyList()
+    @SerialName("MediaStreams") val mediaStreams: List<JellyfinMediaStreamDto> = emptyList(),
+    /**
+     * Set when the server opened a live stream (Live TV tuner / M3U connection) for this source.
+     * It stays open until a stop report carrying it, or `POST /LiveStreams/Close`, releases it.
+     */
+    @SerialName("LiveStreamId") val liveStreamId: String? = null
 )
 
 @Serializable
@@ -377,7 +389,9 @@ data class JellyfinPlaybackProgressRequest(
     @SerialName("VolumeLevel") val volumeLevel: Int? = null,
     @SerialName("PlaybackRate") val playbackRate: Float? = null,
     /** Jellyfin defaults PlayState.CanSeek to false, which disables seek bars in remote controls. */
-    @SerialName("CanSeek") val canSeek: Boolean = true
+    @SerialName("CanSeek") val canSeek: Boolean = true,
+    /** The play session's open live stream: a stop report carrying it makes the server close it. */
+    @SerialName("LiveStreamId") val liveStreamId: String? = null
 )
 
 @Serializable

@@ -50,6 +50,13 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 > *Note: UI screenshots above are rendered from the real Jetpack Compose TV layouts via CashApp Paparazzi (`./gradlew testDebugUnitTest`) using synthetic poster/backdrop preview artwork.*
 
 ## Key Features
+- **Safer & More Correct (new in 0.9.7)**:
+  - **Profiles & parental controls**: signing in as a user whose profile is PIN-locked (Add Profile) now asks for that profile's PIN instead of opening it. Restricted profiles no longer see "Ready" titles that were promoted under an adult profile in the launcher's Watch Next row.
+  - **Remote control off means off**: with "Allow remote control" turned off, Play, pause/seek and navigation commands from other Jellyfin apps are ignored and the TV no longer offers itself as a "Play on" target. Admin messages still show.
+  - **Credentials stay with Seerr**: the Seerr API key and session cookie are only sent to your Seerr server, never to a host a redirect points at. The phone setup page no longer shows the saved API key and stops listening after 10 minutes without use.
+  - **Live TV**: changing channel now closes the previous live stream on the server, so tuners are freed (including direct-streamed channels and fast surfing). The guide loads the full 36 hours on large lineups, and every programme time follows the TV's 12/24-hour setting.
+  - **Playback**: dismissing "Still watching?" keeps your queue and keeps saving your position. Switching versions keeps your audio and subtitle by language instead of by track number. The sleep timer keeps the next item paused. A Direct Play audio pick is applied even when the track lists differ. Resume points are taken from external players that report them (such as MX Player and VLC).
+  - **Home & Library**: deleting a series also removes its episodes from Continue Watching and Next Up, and the library grid no longer skips a title after a delete. Error messages are translated.
 - **Faster & Sturdier (new in 0.9.6)**:
   - **Faster Home**: Seerr and Jellyfin calls now run up to 16 at a time instead of 5, the same title's details are fetched once even when several rows ask for it, and a slow or failing extra server no longer makes every screen wait on a full library reload. Trailers are only looked up while the banner is on screen.
   - **Smoother player**: playback starts without blocking on device detection, the player is built once (not twice) when passthrough is off, and the seek bar, chapters, stats and Up Next countdown no longer redraw the whole screen several times a second. Chapters no longer pull focus back while you scroll them.
