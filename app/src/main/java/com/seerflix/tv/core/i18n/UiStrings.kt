@@ -499,7 +499,7 @@ data class UiStrings(
         internal set
     var liveGuideTitle: String = "Live TV & DVR Guide"
         internal set
-    var liveChannelCount: String = "%d channel(s) available • Select any channel to tune in live."
+    var liveChannelCount: String = "Channels: %d • Select any channel to tune in live."
         internal set
     var liveStream: String = "Live Stream"
         internal set
@@ -539,7 +539,7 @@ data class UiStrings(
         internal set
     var syncPlayActiveRoom: String = "Active Room: %s"
         internal set
-    var syncPlayViewers: String = "%1\$d viewer(s) • %2\$s"
+    var syncPlayViewers: String = "Viewers: %1\$d • %2\$s"
         internal set
     var syncPlayLeave: String = "Leave Room"
         internal set
@@ -551,7 +551,7 @@ data class UiStrings(
         internal set
     var syncPlayNoRooms: String = "No active rooms yet. Create one above and start playing!"
         internal set
-    var syncPlayParticipants: String = "%1\$d participant(s) • %2\$s"
+    var syncPlayParticipants: String = "Participants: %1\$d • %2\$s"
         internal set
     var syncPlayJoin: String = "Join"
         internal set
@@ -1003,7 +1003,7 @@ data class UiStrings(
         internal set
     var setupJellyfinOnlyEnabled: String = "Jellyfin-Only Mode enabled (Seerr requests optional)"
         internal set
-    var setupFoundServers: String = "Found %d Jellyfin server(s) on your network."
+    var setupFoundServers: String = "Jellyfin servers found on your network: %d"
         internal set
     var setupSelectedServer: String = "Selected %1\$s (%2\$s)"
         internal set
@@ -1842,7 +1842,7 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         liveNoChannels = "No se encontraron canales de TV en vivo"
         liveNoChannelsHint = "Configura un sintonizador IPTV / HDHomeRun y una guía XMLTV en Panel de Jellyfin → TV en vivo."
         liveGuideTitle = "Guía de TV en vivo y grabaciones"
-        liveChannelCount = "%d canal(es) disponible(s) • Elige un canal para verlo en directo."
+        liveChannelCount = "Canales: %d • Elige un canal para verlo en directo."
         liveStream = "Emisión en directo"
         liveOnNow = "AHORA • %s"
         liveUpNext = "A CONTINUACIÓN"
@@ -1864,13 +1864,13 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayTitle = "SyncPlay • Ver juntos"
         syncPlayDefaultRoom = "Noche de cine"
         syncPlayActiveRoom = "Sala activa: %s"
-        syncPlayViewers = "%1\$d espectador(es) • %2\$s"
+        syncPlayViewers = "Espectadores: %1\$d • %2\$s"
         syncPlayLeave = "Salir de la sala"
         syncPlayNewName = "Nombre de la nueva sala"
         syncPlayCreate = "Crear sala"
         syncPlayRooms = "Salas de SyncPlay activas en Jellyfin"
         syncPlayNoRooms = "Aún no hay salas activas. ¡Crea una arriba y empieza a ver!"
-        syncPlayParticipants = "%1\$d participante(s) • %2\$s"
+        syncPlayParticipants = "Participantes: %1\$d • %2\$s"
         syncPlayJoin = "Unirse"
         syncPlayStarted = "Sala de SyncPlay creada: %s"
         syncPlayUnavailable = "SyncPlay no disponible: %s"
@@ -2101,7 +2101,7 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         setupScan = "Buscar"
         setupCompanionReceived = "¡Ajustes recibidos desde el móvil! Listo para conectar."
         setupJellyfinOnlyEnabled = "Modo solo Jellyfin activado (las solicitudes de Seerr son opcionales)"
-        setupFoundServers = "Se encontraron %d servidor(es) Jellyfin en tu red."
+        setupFoundServers = "Servidores Jellyfin en tu red: %d"
         setupSelectedServer = "Seleccionado: %1\$s (%2\$s)"
         setupNeedJellyfinUrl = "Introduce una URL de Jellyfin o elige un servidor encontrado."
         setupNeedSeerrUrl = "Introduce una URL de Seerr o activa el modo solo Jellyfin."
@@ -2669,7 +2669,7 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         liveNoChannels = "Aucune chaîne TV en direct trouvée"
         liveNoChannelsHint = "Configurez un tuner IPTV / HDHomeRun et un guide XMLTV dans Tableau de bord Jellyfin → TV en direct."
         liveGuideTitle = "Guide TV en direct et enregistrements"
-        liveChannelCount = "%d chaîne(s) disponible(s) • Choisissez une chaîne pour la regarder en direct."
+        liveChannelCount = "Chaînes : %d • Choisissez une chaîne pour la regarder en direct."
         liveStream = "Direct"
         liveOnNow = "EN CE MOMENT • %s"
         liveUpNext = "ENSUITE"
@@ -2691,13 +2691,13 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         syncPlayTitle = "SyncPlay • Regarder ensemble"
         syncPlayDefaultRoom = "Soirée ciné"
         syncPlayActiveRoom = "Salon actif : %s"
-        syncPlayViewers = "%1\$d spectateur(s) • %2\$s"
+        syncPlayViewers = "Spectateurs : %1\$d • %2\$s"
         syncPlayLeave = "Quitter le salon"
         syncPlayNewName = "Nom du nouveau salon"
         syncPlayCreate = "Créer un salon"
         syncPlayRooms = "Salons SyncPlay Jellyfin actifs"
         syncPlayNoRooms = "Aucun salon actif. Créez-en un ci-dessus et lancez la lecture !"
-        syncPlayParticipants = "%1\$d participant(s) • %2\$s"
+        syncPlayParticipants = "Participants : %1\$d • %2\$s"
         syncPlayJoin = "Rejoindre"
         syncPlayStarted = "Salon SyncPlay créé : %s"
         syncPlayUnavailable = "SyncPlay indisponible : %s"
@@ -2928,7 +2928,7 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         setupScan = "Rechercher"
         setupCompanionReceived = "Paramètres reçus depuis le téléphone ! Prêt à se connecter."
         setupJellyfinOnlyEnabled = "Mode Jellyfin uniquement activé (demandes Seerr facultatives)"
-        setupFoundServers = "%d serveur(s) Jellyfin trouvé(s) sur votre réseau."
+        setupFoundServers = "Serveurs Jellyfin trouvés sur votre réseau : %d"
         setupSelectedServer = "Sélectionné : %1\$s (%2\$s)"
         setupNeedJellyfinUrl = "Saisissez une URL Jellyfin ou choisissez un serveur détecté."
         setupNeedSeerrUrl = "Saisissez une URL Seerr ou activez le mode Jellyfin uniquement."
