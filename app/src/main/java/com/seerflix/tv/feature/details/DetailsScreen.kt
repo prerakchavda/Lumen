@@ -279,8 +279,11 @@ fun DetailsContent(
     // restored scroll position (often deep in the episode list) was left with nothing focused.
     val focusMemory = rememberSaveable(saver = DetailsFocusMemory.Saver) { DetailsFocusMemory() }
     // Re-entering the screen without an episode to return to: let the header focus Play again.
-    remember(focusMemory) {
+    // (Runs once per entry into composition, before the header's focus effect is launched.)
+    @Suppress("UNUSED_VARIABLE")
+    val focusMemoryPrepared = remember(focusMemory) {
         if (focusMemory.lastPlayedEpisodeId == null) focusMemory.initialFocusDone = false
+        true
     }
     Box(
         modifier = Modifier

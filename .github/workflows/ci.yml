@@ -30,10 +30,10 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # Unit tests (incl. Paparazzi screenshot rendering) and an R8-minified release build,
+      # Unit tests (incl. Paparazzi screenshot rendering), lint, and an R8-minified release build,
       # so shrinker-only crashes surface before a tag is cut.
-      - name: Unit tests & minified release build
-        run: ./gradlew testDebugUnitTest assembleRelease
+      - name: Unit tests, lint & minified release build
+        run: ./gradlew testDebugUnitTest lintRelease assembleRelease
 
       - name: Upload reports on failure
         if: failure()
