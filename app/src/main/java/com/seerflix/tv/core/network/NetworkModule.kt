@@ -74,6 +74,22 @@ private const val EXTRA_SERVER_READ_TIMEOUT_S = 20
  * always [ServerScopedId.HOME] unless [resolveServerFromHost] is set (the Jellyfin client), in which
  * case it is read from the placeholder host of the per-server Retrofit instance.
  */
+/**
+ * Whether a failed attempt may be repeated on the next candidate URL: always for reads, and for
+ * writes only when the request provably never reached a server (it failed while connecting).
+ */
+internal fun isSafeToRetryElsewhere(method: String, error: IOException): Boolean {
+    if (method.equals("GET", ignoreCase = true) || method.equals("HEAD", ignoreCase = true)) return true
+    return when (error) {
+        is java.net.ConnectException,
+        is java.net.UnknownHostException,
+        is java.net.NoRouteToHostException,
+        is javax.net.ssl.SSLHandshakeException -> true
+        is java.net.SocketTimeoutException -> error.message.orEmpty().contains("connect", ignoreCase = true)
+        else -> false
+    }
+}
+
 internal class FailoverBaseUrlInterceptor(
     private val resolveServerFromHost: Boolean = false,
     private val candidatesProvider: (serverId: String) -> List<String>,
@@ -106,6 +122,10 @@ internal class FailoverBaseUrlInterceptor(
                 lastError = io
                 // A cancelled call must not fan out to the next candidate URL.
                 if (idx == candidates.lastIndex || chain.call().isCanceled()) throw io
+                // A POST that may already have reached the server (e.g. a Seerr request that
+                // timed out waiting on Sonarr) must not be sent again to the next address: the
+                // user then gets "already requested" for a request that worked.
+                if (!isSafeToRetryElsewhere(original.method, io)) throw io
             }
         }
         throw lastError ?: IOException("Unable to reach server URL")

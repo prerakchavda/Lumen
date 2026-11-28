@@ -187,8 +187,13 @@ class UnifiedCatalogRepository @Inject constructor(
         detailsCache[key] = CachedDetailsEntry(item, System.currentTimeMillis())
     }
 
+    /**
+     * Drops cached Details pages. Also called when playback stops and when the server reports a
+     * watched-state change, so reopening a title within the cache window shows the new
+     * Resume / watched state instead of the old one.
+     */
     @Synchronized
-    private fun invalidateDetailsCache() {
+    fun invalidateDetailsCache() {
         detailsCache.clear()
     }
 
@@ -3086,8 +3091,21 @@ class UnifiedCatalogRepository @Inject constructor(
         val seerrEps = seerrSeasonDeferred.await()?.episodes.orEmpty()
         val jfBase = jfBaseUrl
 
+        fun jfSummary(jf: com.seerflix.tv.core.network.JellyfinItemDto) = EpisodeSummary(
+            id = jf.id,
+            name = jf.name,
+            overview = jf.overview.orEmpty(),
+            seasonNumber = jf.parentIndexNumber ?: seasonNumber,
+            episodeNumber = jf.indexNumber ?: 0,
+            runtimeTicks = jf.runTimeTicks ?: 0L,
+            resumePositionTicks = jf.userData?.playbackPositionTicks ?: 0L,
+            stillUrl = primaryImage(jfBase, jf.id, 480),
+            isAvailableInJellyfin = true,
+            isWatched = jf.userData?.played == true
+        )
+
         if (seerrEps.isNotEmpty()) {
-            seerrEps.map { ep ->
+            val fromTmdb = seerrEps.map { ep ->
                 val jf = jfByEpNum[ep.episodeNumber]
                 EpisodeSummary(
                     id = jf?.id ?: "tmdb_${tmdbId}_s${seasonNumber}_e${ep.episodeNumber}",
@@ -3103,21 +3121,20 @@ class UnifiedCatalogRepository @Inject constructor(
                     isWatched = jf?.userData?.played == true
                 )
             }
+            // Library episodes TMDB doesn't list (TVDB / absolute ordering, no episode number,
+            // not on TMDB yet) were dropped here and couldn't be played from Details.
+            // (Matched by number, so a second copy of an episode already listed isn't repeated.)
+            val tmdbNumbers = seerrEps.mapTo(HashSet()) { it.episodeNumber }
+            val extra = jfEpisodes
+                .filter { it.indexNumber == null || it.indexNumber !in tmdbNumbers }
+                .distinctBy { it.id }
+                .map(::jfSummary)
+            if (extra.isEmpty()) fromTmdb
+            else (fromTmdb + extra).sortedWith(
+                compareBy<EpisodeSummary> { it.episodeNumber <= 0 }.thenBy { it.episodeNumber }
+            )
         } else {
-            jfEpisodes.map { jf ->
-                EpisodeSummary(
-                    id = jf.id,
-                    name = jf.name,
-                    overview = jf.overview.orEmpty(),
-                    seasonNumber = jf.parentIndexNumber ?: seasonNumber,
-                    episodeNumber = jf.indexNumber ?: 0,
-                    runtimeTicks = jf.runTimeTicks ?: 0L,
-                    resumePositionTicks = jf.userData?.playbackPositionTicks ?: 0L,
-                    stillUrl = primaryImage(jfBase, jf.id, 480),
-                    isAvailableInJellyfin = true,
-                    isWatched = jf.userData?.played == true
-                )
-            }
+            jfEpisodes.map(::jfSummary)
         }
     }
 

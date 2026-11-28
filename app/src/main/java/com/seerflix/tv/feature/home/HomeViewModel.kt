@@ -243,7 +243,10 @@ class HomeViewModel @Inject constructor(
             socketClient.events
                 .filterIsInstance<ServerEvent.UserDataChanged>()
                 .debounce(USER_DATA_DEBOUNCE_MS)
-                .collect { if (isScreenVisible) refreshContinueWatching() }
+                .collect {
+                    catalogRepository.invalidateDetailsCache()
+                    if (isScreenVisible) refreshContinueWatching()
+                }
         }
         viewModelScope.launch {
             authRepository.activeProfileFlow.collect { active ->

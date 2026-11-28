@@ -4,9 +4,12 @@ import com.seerflix.tv.core.model.ArrQualityProfile
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.network.SeerrKeyMode
+import com.seerflix.tv.core.network.isSafeToRetryElsewhere
 import com.seerflix.tv.core.network.seerrKeyMode
 import com.seerflix.tv.feature.home.mergeRowOrder
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReleaseOneFixesTest {
@@ -71,5 +74,15 @@ class ReleaseOneFixesTest {
         val stale = server.copy(defaultProfileId = 99, defaultRootFolder = "/gone")
         assertEquals(1, stale.initialProfileId)
         assertEquals("/movies", stale.initialRootFolder)
+    }
+
+    @Test
+    fun `writes only fail over to the next address when they never reached a server`() {
+        assertTrue(isSafeToRetryElsewhere("GET", java.net.SocketTimeoutException("timeout")))
+        assertTrue(isSafeToRetryElsewhere("POST", java.net.ConnectException("refused")))
+        assertTrue(isSafeToRetryElsewhere("POST", java.net.UnknownHostException("lan")))
+        assertTrue(isSafeToRetryElsewhere("POST", java.net.SocketTimeoutException("connect timed out")))
+        assertFalse(isSafeToRetryElsewhere("POST", java.net.SocketTimeoutException("timeout")))
+        assertFalse(isSafeToRetryElsewhere("DELETE", java.io.IOException("unexpected end of stream")))
     }
 }

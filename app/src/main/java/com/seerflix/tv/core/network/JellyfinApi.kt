@@ -86,7 +86,7 @@ interface JellyfinApi {
         @Query("Recursive") recursive: Boolean = true,
         @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Series",
         @Query("Fields") fields: String = "ProviderIds,Overview,Genres,RunTimeTicks,UserData,ProductionYear,OfficialRating,CommunityRating,RemoteTrailers,MediaStreams",
-        @Query("Limit") limit: Int = 100
+        @Query("Limit") limit: Int = 500
     ): JellyfinItemsResponse
 
     @GET("Users/{userId}/Items")
@@ -206,7 +206,7 @@ interface JellyfinApi {
         @Query("Fields") fields: String = "Overview,ChildCount,ProviderIds,ProductionYear",
         @Query("SortBy") sortBy: String = "SortName",
         @Query("SortOrder") sortOrder: String = "Ascending",
-        @Query("Limit") limit: Int = 100
+        @Query("Limit") limit: Int = 500
     ): JellyfinItemsResponse
 
     @GET("Users/{userId}/Items")
@@ -263,7 +263,7 @@ interface JellyfinApi {
     @GET("LiveTv/Recordings")
     suspend fun getLiveTvRecordings(
         @Query("UserId") userId: String,
-        @Query("Limit") limit: Int = 40,
+        @Query("Limit") limit: Int = 200,
         @Query("Fields") fields: String = "Overview,RunTimeTicks,UserData,Genres"
     ): JellyfinItemsResponse
 
@@ -468,7 +468,7 @@ interface JellyfinApi {
         @Query("Fields") fields: String = "Overview,ChildCount,PrimaryImageAspectRatio",
         @Query("SortBy") sortBy: String = "SortName",
         @Query("SortOrder") sortOrder: String = "Ascending",
-        @Query("Limit") limit: Int = 100
+        @Query("Limit") limit: Int = 300
     ): JellyfinItemsResponse
 
     @GET("Playlists/{playlistId}/Items")
