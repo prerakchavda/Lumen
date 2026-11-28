@@ -10,6 +10,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.seerflix.tv.core.model.TrickplayCrop
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,16 +72,25 @@ class TrickplayThumbnailLoader(private val client: OkHttpClient) {
     private suspend fun sheetBytes(url: String): ByteArray? =
         sheetCache.get(url) ?: fetchSheetAsync(url).await()
 
-    private fun fetchSheetAsync(url: String): Deferred<ByteArray?> =
-        inFlight.getOrPut(url) {
-            scope.async {
-                try {
-                    download(url)?.also { sheetCache.put(url, it) }
-                } finally {
-                    inFlight.remove(url)
-                }
+    private fun fetchSheetAsync(url: String): Deferred<ByteArray?> {
+        inFlight[url]?.let { return it }
+        // Lazy + putIfAbsent: an eagerly started download could finish (and run its remove) before
+        // getOrPut stored it, leaving a completed Deferred in inFlight that is served forever.
+        val created = scope.async(start = CoroutineStart.LAZY) {
+            try {
+                download(url)?.also { sheetCache.put(url, it) }
+            } finally {
+                inFlight.remove(url)
             }
         }
+        val existing = inFlight.putIfAbsent(url, created)
+        if (existing != null) {
+            created.cancel()
+            return existing
+        }
+        created.start()
+        return created
+    }
 
     private suspend fun download(url: String): ByteArray? = suspendCancellableCoroutine { cont ->
         val call = client.newCall(Request.Builder().url(url).build())

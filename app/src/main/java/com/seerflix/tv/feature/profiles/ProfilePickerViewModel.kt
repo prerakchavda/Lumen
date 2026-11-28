@@ -3,6 +3,7 @@ package com.seerflix.tv.feature.profiles
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.seerflix.tv.core.data.AuthRepository
+import com.seerflix.tv.core.data.PinAttemptThrottle
 import com.seerflix.tv.core.i18n.UiStrings
 import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.UserProfile
@@ -44,7 +45,8 @@ data class ProfilePickerUiState(
 @HiltViewModel
 class ProfilePickerViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val pinThrottle: PinAttemptThrottle
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfilePickerUiState())
@@ -55,8 +57,6 @@ class ProfilePickerViewModel @Inject constructor(
         get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private var qcPollingJob: Job? = null
-    private var pinFailedAttempts = 0
-    private var pinLockedUntilMs = 0L
 
     init {
         viewModelScope.launch {
@@ -139,7 +139,7 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     fun appendPinDigit(digit: String, onSignedIn: () -> Unit) {
-        if (isPinLockedOut()) return
+        if (pinCheckJob?.isActive == true) return
         val current = _uiState.value.pinEntryInput
         if (current.length >= 4) return
         val next = current + digit
@@ -159,21 +159,39 @@ class ProfilePickerViewModel @Inject constructor(
         _uiState.update { it.copy(pinEntryInput = "", pinError = null) }
     }
 
+    private var pinCheckJob: Job? = null
+
     fun submitPinChallenge(onSignedIn: () -> Unit) {
         val target = _uiState.value.pinChallengeProfile ?: return
-        if (isPinLockedOut()) return
+        if (pinCheckJob?.isActive == true) return
         val pin = _uiState.value.pinEntryInput
         if (pin.length != 4) {
             _uiState.update { it.copy(pinError = strings.profilePinInvalid) }
             return
         }
-        val verified = if (_uiState.value.pinChallengeGuardian) {
-            guardians().any { authRepository.verifyProfilePin(it, pin) }
-        } else {
-            authRepository.verifyProfilePin(target, pin)
-        }
-        if (verified) {
-            pinFailedAttempts = 0
+        val guardianChallenge = _uiState.value.pinChallengeGuardian
+        // The profiles whose PIN this guess is tested against; each is throttled on its own.
+        val candidates = if (guardianChallenge) guardians() else listOf(target)
+        val candidateIds = candidates.map { it.id }
+        pinCheckJob = viewModelScope.launch {
+            val lockedMs = pinThrottle.remainingLockoutMs(candidateIds)
+            if (lockedMs > 0L) {
+                showPinLockout(lockedMs)
+                return@launch
+            }
+            val matched = candidates.firstOrNull { authRepository.verifyProfilePin(it, pin) }
+            if (matched == null) {
+                val lockoutMs = pinThrottle.recordFailure(candidateIds)
+                if (lockoutMs > 0L) {
+                    showPinLockout(lockoutMs)
+                } else {
+                    _uiState.update { it.copy(pinEntryInput = "", pinError = strings.profilePinIncorrect) }
+                }
+                return@launch
+            }
+            pinThrottle.recordSuccess(matched.id)
+            // The challenge may have been dismissed while the throttle was consulted.
+            if (_uiState.value.pinChallengeProfile?.id != target.id) return@launch
             val serversAction = pendingServersAction
             if (serversAction != null) {
                 pendingServersAction = null
@@ -181,7 +199,7 @@ class ProfilePickerViewModel @Inject constructor(
                     it.copy(pinChallengeProfile = null, pinChallengeGuardian = false, pinEntryInput = "", pinError = null)
                 }
                 serversAction()
-                return
+                return@launch
             }
             val forEdit = _uiState.value.pinChallengeForEdit
             _uiState.update {
@@ -195,33 +213,17 @@ class ProfilePickerViewModel @Inject constructor(
                 )
             }
             if (!forEdit) {
-                viewModelScope.launch {
-                    authRepository.switchProfile(target.id)
-                    onSignedIn()
-                }
+                authRepository.switchProfile(target.id)
+                onSignedIn()
             }
-        } else {
-            pinFailedAttempts++
-            val error = if (pinFailedAttempts >= MAX_PIN_ATTEMPTS) {
-                pinFailedAttempts = 0
-                pinLockedUntilMs = System.currentTimeMillis() + PIN_LOCKOUT_MS
-                strings.profilePinLockedOut.format(PIN_LOCKOUT_MS / 1000)
-            } else {
-                strings.profilePinIncorrect
-            }
-            _uiState.update { it.copy(pinEntryInput = "", pinError = error) }
         }
     }
 
-    /** Simple brute-force throttle: a 4-digit PIN is otherwise trivially enumerable with a remote. */
-    private fun isPinLockedOut(): Boolean {
-        val remainingMs = pinLockedUntilMs - System.currentTimeMillis()
-        if (remainingMs <= 0L) return false
+    private fun showPinLockout(remainingMs: Long) {
         val secs = (remainingMs + 999L) / 1000L
         _uiState.update {
             it.copy(pinEntryInput = "", pinError = strings.profilePinLockedOut.format(secs))
         }
-        return true
     }
 
     fun dismissPinChallenge() {
@@ -345,9 +347,9 @@ class ProfilePickerViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isAuthenticating = true, errorMessage = null) }
             authRepository.signInWithPassword(u, p)
-                .onSuccess {
+                .onSuccess { profile ->
                     _uiState.update { it.copy(isAuthenticating = false, showAuthDialog = false, password = "") }
-                    onSignedIn()
+                    finishSignIn(profile, onSignedIn)
                 }
                 .onFailure { err ->
                     val raw = err.message.orEmpty()
@@ -365,6 +367,26 @@ class ProfilePickerViewModel @Inject constructor(
                         )
                     }
                 }
+        }
+    }
+
+    /**
+     * Signing in as a user whose profile here is PIN-locked doesn't open it: the profile's own PIN
+     * is still required (otherwise Add Profile with a parent's Jellyfin account skips the lock).
+     */
+    private fun finishSignIn(profile: UserProfile, onSignedIn: () -> Unit) {
+        if (!profile.hasPin) {
+            onSignedIn()
+            return
+        }
+        _uiState.update {
+            it.copy(
+                pinChallengeProfile = profile,
+                pinChallengeForEdit = false,
+                pinChallengeGuardian = false,
+                pinEntryInput = "",
+                pinError = null
+            )
         }
     }
 
@@ -405,7 +427,7 @@ class ProfilePickerViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(showAuthDialog = false, quickConnectCode = null, quickConnectSecret = null)
                     }
-                    onSignedIn()
+                    finishSignIn(signedInProfile, onSignedIn)
                     break
                 }
                 if (poll.isFailure) {
@@ -430,8 +452,6 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     private companion object {
-        const val MAX_PIN_ATTEMPTS = 5
-        const val PIN_LOCKOUT_MS = 30_000L
         const val MAX_QC_POLL_FAILURES = 6
     }
 }

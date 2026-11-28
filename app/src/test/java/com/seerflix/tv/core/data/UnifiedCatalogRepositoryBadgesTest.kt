@@ -94,4 +94,16 @@ class UnifiedCatalogRepositoryBadgesTest {
         val serverErr = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 500 Internal Server Error"))
         assertTrue(serverErr.contains("Server error (HTTP 500)"))
     }
+
+    @Test
+    fun `formatHttpError speaks the profile language`() {
+        val es = com.seerflix.tv.core.i18n.stringsForLanguage("es")
+        val notFound = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 404 Not Found"), strings = es)
+        assertEquals("El elemento no se encontró en el servidor (HTTP 404)", notFound)
+        val server = UnifiedCatalogRepository.formatHttpError(IllegalStateException("HTTP 503"), strings = es)
+        assertTrue(server.contains("HTTP 503"))
+        // Anything else is still the raw message, or the caller's fallback.
+        assertEquals("boom", UnifiedCatalogRepository.formatHttpError(IllegalStateException("boom"), "x", es))
+        assertEquals("x", UnifiedCatalogRepository.formatHttpError(IllegalStateException(""), "x", es))
+    }
 }

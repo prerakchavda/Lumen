@@ -1515,6 +1515,14 @@ data class UiStrings(
         internal set
     var screensaverWakeHint: String = "Press any key to wake"
         internal set
+    var errorHttpAuthRequired: String = "Authentication required (HTTP %d) — re-sign in to your profile or add a Seerr API Key in Server Settings"
+        internal set
+    var errorHttpNotFound: String = "Media item not found on server (HTTP %d)"
+        internal set
+    var errorHttpAlreadyRequested: String = "This item has already been requested (HTTP %d)"
+        internal set
+    var errorHttpServer: String = "Server error (HTTP %d) — check that Jellyfin and Seerr are healthy"
+        internal set
 }
 
 val SupportedLanguages = listOf(
@@ -2352,6 +2360,10 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsThemeSongsTitle = "Temas musicales"
         settingsThemeSongsDesc = "Reproduce música ambiental suavemente en las páginas de detalles."
         screensaverWakeHint = "Pulsa cualquier tecla para despertar"
+        errorHttpAuthRequired = "Se requiere autenticación (HTTP %d): vuelve a iniciar sesión en tu perfil o añade una clave API de Seerr en Ajustes del servidor"
+        errorHttpNotFound = "El elemento no se encontró en el servidor (HTTP %d)"
+        errorHttpAlreadyRequested = "Este título ya se ha solicitado (HTTP %d)"
+        errorHttpServer = "Error del servidor (HTTP %d): comprueba que Jellyfin y Seerr funcionan correctamente"
     }
     "fr" -> UiStrings(
         languageCode = "fr",
@@ -3179,6 +3191,10 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsThemeSongsTitle = "Thèmes musicaux"
         settingsThemeSongsDesc = "Joue doucement la musique du thème sur les pages de détails."
         screensaverWakeHint = "Appuyez sur une touche pour réveiller"
+        errorHttpAuthRequired = "Authentification requise (HTTP %d) : reconnectez votre profil ou ajoutez une clé API Seerr dans les paramètres du serveur"
+        errorHttpNotFound = "Élément introuvable sur le serveur (HTTP %d)"
+        errorHttpAlreadyRequested = "Ce titre a déjà été demandé (HTTP %d)"
+        errorHttpServer = "Erreur du serveur (HTTP %d) : vérifiez que Jellyfin et Seerr fonctionnent correctement"
     }
     "de" -> UiStrings(
         languageCode = "de",
@@ -4006,6 +4022,10 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsThemeSongsTitle = "Titelmusik"
         settingsThemeSongsDesc = "Titelmusik auf Film- und Seriendetailseiten leise im Hintergrund abspielen."
         screensaverWakeHint = "Beliebige Taste drücken zum Aufwecken"
+        errorHttpAuthRequired = "Anmeldung erforderlich (HTTP %d) – melde dein Profil erneut an oder füge in den Servereinstellungen einen Seerr-API-Schlüssel hinzu"
+        errorHttpNotFound = "Titel auf dem Server nicht gefunden (HTTP %d)"
+        errorHttpAlreadyRequested = "Dieser Titel wurde bereits angefragt (HTTP %d)"
+        errorHttpServer = "Serverfehler (HTTP %d) – prüfe, ob Jellyfin und Seerr laufen"
     }
     "ja" -> UiStrings(
         languageCode = "ja",
@@ -4833,6 +4853,10 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         settingsThemeSongsTitle = "テーマ曲"
         settingsThemeSongsDesc = "映画や番組の詳細ページでテーマ曲を静かに再生します。"
         screensaverWakeHint = "いずれかのキーを押して復帰"
+        errorHttpAuthRequired = "認証が必要です (HTTP %d)。プロフィールに再ログインするか、サーバー設定でSeerr APIキーを追加してください"
+        errorHttpNotFound = "サーバー上にアイテムが見つかりません (HTTP %d)"
+        errorHttpAlreadyRequested = "このタイトルはすでにリクエスト済みです (HTTP %d)"
+        errorHttpServer = "サーバーエラー (HTTP %d)。JellyfinとSeerrが正常に動作しているか確認してください"
     }
     else -> UiStrings()
 }

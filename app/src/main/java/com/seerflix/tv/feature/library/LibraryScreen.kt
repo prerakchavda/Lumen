@@ -39,7 +39,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -83,10 +85,32 @@ fun LibraryScreen(
     }
 
     // Land in the grid as soon as the first page is in; until then the Sort & Filter button holds focus.
-    var focusedFirstPage by remember { mutableStateOf(false) }
+    // Saveable (like the card id below) so coming back from Details is told apart from a first visit.
+    var focusedFirstPage by rememberSaveable { mutableStateOf(false) }
+    var lastFocusedId by rememberSaveable { mutableStateOf<String?>(null) }
+    // Read once and unobserved: every focus move writes lastFocusedId and must not recompose all cards.
+    val returnTargetId = remember { Snapshot.withoutReadObservation { lastFocusedId } }
+    val lastFocusedRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
+        // Read before the delay: the effect below flips it as soon as the first page is in.
+        val returning = focusedFirstPage
+        if (returning && state.items.isEmpty()) {
+            // Restored after process death: the grid reloads, so treat it as a first visit.
+            focusedFirstPage = false
+        }
         delay(60L)
-        runCatching { filterButtonFocus.requestFocus() }
+        if (!returning || state.items.isEmpty()) {
+            if (!focusedFirstPage) runCatching { filterButtonFocus.requestFocus() }
+            return@LaunchedEffect
+        }
+        // Back from Details: return to the card that was opened, not to the top of the page.
+        val index = state.items.indexOfFirst { it.id == returnTargetId }
+        if (index < 0) return@LaunchedEffect
+        if (gridState.layoutInfo.visibleItemsInfo.none { it.index == index }) {
+            runCatching { gridState.scrollToItem(index) }
+            withFrameNanos { }
+        }
+        runCatching { lastFocusedRequester.requestFocus() }
     }
     LaunchedEffect(state.items.isNotEmpty()) {
         if (state.items.isNotEmpty() && !focusedFirstPage) {
@@ -99,7 +123,7 @@ fun LibraryScreen(
     // focused card: once the new first page is in, start at the top (or on the folder we came
     // back out of) and put focus there instead of leaving it nowhere.
     val restoreFocus = remember { FocusRequester() }
-    var handledGeneration by remember { mutableStateOf(state.reloadGeneration) }
+    var handledGeneration by rememberSaveable { mutableStateOf(state.reloadGeneration) }
     LaunchedEffect(state.reloadGeneration, state.items.isNotEmpty()) {
         if (state.items.isEmpty() || state.reloadGeneration == handledGeneration) return@LaunchedEffect
         handledGeneration = state.reloadGeneration
@@ -222,6 +246,7 @@ fun LibraryScreen(
                             NetflixPosterCard(
                                 item = item,
                                 onFocus = {
+                                    lastFocusedId = item.id
                                     if (index >= state.items.size - LOAD_MORE_THRESHOLD) viewModel.loadMore()
                                 },
                                 onClick = {
@@ -236,7 +261,9 @@ fun LibraryScreen(
                                     index == 0 -> Modifier.focusRequester(firstItemFocus)
                                     state.focusTargetId != null && item.jellyfinId == state.focusTargetId -> Modifier.focusRequester(restoreFocus)
                                     else -> Modifier
-                                }
+                                }.then(
+                                    if (returnTargetId != null && item.id == returnTargetId) Modifier.focusRequester(lastFocusedRequester) else Modifier
+                                )
                             )
                         }
                         if (state.loadMoreFailed) {

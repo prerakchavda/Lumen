@@ -105,6 +105,23 @@ class Phase2LibraryAndQueueTest {
     }
 
     @Test
+    fun `switching the current entry to another server's copy keeps the queue`() {
+        val qm = PlaybackQueueManager()
+        qm.setQueue(listOf(QueueEntry("i1", mediaSourceId = "ms1"), QueueEntry("i2")), startIndex = 0)
+
+        // Only the entry that is actually current is renamed.
+        qm.replaceCurrentItemId("srv~i1", expectedCurrentId = "other")
+        assertEquals("i1", qm.state.value.current?.itemId)
+
+        qm.replaceCurrentItemId("srv~i1", expectedCurrentId = "i1")
+        qm.syncToItem("srv~i1")
+
+        assertEquals(listOf("srv~i1", "i2"), qm.state.value.items.map { it.itemId })
+        assertNull(qm.state.value.current?.mediaSourceId)
+        assertEquals("i2", qm.advanceNext()?.itemId)
+    }
+
+    @Test
     fun `PlaybackQueueManager handles Play All, Shuffle, PlayNext, advanceNext and stepPrevious`() {
         val qm = PlaybackQueueManager()
         val items = listOf(

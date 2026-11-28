@@ -292,6 +292,8 @@ data class UnifiedMediaItem(
     val mediaBadges: List<String> = emptyList(),
     val episodeLabel: String? = null,
     val seriesName: String? = null,
+    /** Episodes (and seasons) from Jellyfin: the series' Jellyfin id, so deleting the show drops them too. */
+    val seriesId: String? = null,
     val releaseDate: String? = null,
     val nextAirDate: String? = null,
     val upcomingBadgeLabel: String? = null,

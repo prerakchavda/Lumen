@@ -104,6 +104,10 @@ class LibraryViewModel @Inject constructor(
 
     private var loadJob: Job? = null
 
+    /** Loaded titles removed by deletes so far (a page in flight meanwhile used older offsets). */
+    @Volatile
+    private var deletedShift = 0
+
     private fun currentParentId(): String? = folderStack.lastOrNull()?.first ?: rootParentId
 
     private fun currentIncludeTypes(): String {
@@ -119,11 +123,22 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             catalogRepository.deletedItemIds.collect { deleted ->
                 if (deleted.isEmpty()) return@collect
+                var removedNow = 0
                 _uiState.update { state ->
                     val kept = state.items.filterNot { it.jellyfinId in deleted }
-                    if (kept.size == state.items.size) state
-                    else state.copy(items = kept, totalCount = (state.totalCount - (state.items.size - kept.size)).coerceAtLeast(kept.size))
+                    val removed = state.items.size - kept.size
+                    removedNow = removed
+                    if (removed == 0) return@update state
+                    // The server's offsets shift down by every loaded title that is gone, so the
+                    // next page starts that much earlier (else it skips titles, and the last one
+                    // of the library might never load).
+                    state.copy(
+                        items = kept,
+                        totalCount = (state.totalCount - removed).coerceAtLeast(kept.size),
+                        nextServerIndex = (state.nextServerIndex - removed).coerceAtLeast(0)
+                    )
                 }
+                deletedShift += removedNow
             }
         }
         viewModelScope.launch {
@@ -235,6 +250,7 @@ class LibraryViewModel @Inject constructor(
             return
         }
         val (startsWith, lessThan) = letterQuery(state.letter)
+        val shiftAtStart = deletedShift
         try {
             val page = catalogRepository.browseLibrary(
                 userId = profile.jellyfinUserId,
@@ -254,13 +270,25 @@ class LibraryViewModel @Inject constructor(
             // The server's MaxOfficialRating lets unrated titles through and knows nothing about
             // the Kids-Mode genre exclusions, so apply the same profile filter as every other row.
             // Folders themselves have no content rating so keep them navigable in folder view.
-            val allowed = page.items.filter { it.isFolder || ContentRatingHelper.isAllowed(it, profile) }
+            // A title deleted while this page was loading may still be in it.
+            val deleted = catalogRepository.deletedItemIds.value
+            val allowed = page.items
+                .filter { it.isFolder || ContentRatingHelper.isAllowed(it, profile) }
+                .filterNot { it.jellyfinId in deleted }
+                .distinctBy { it.id }
+            // Deletes while this page was in flight shifted the server's offsets under it.
+            val shiftedMeanwhile = (deletedShift - shiftAtStart).coerceAtLeast(0)
             _uiState.update {
-                val merged = if (startIndex == 0) allowed else (it.items + allowed).distinctBy { item -> item.id }
+                val merged = if (startIndex == 0) {
+                    allowed
+                } else {
+                    val loadedIds = it.items.mapTo(HashSet()) { item -> item.id }
+                    it.items + allowed.filterNot { item -> item.id in loadedIds }
+                }
                 it.copy(
                     items = merged,
                     totalCount = page.totalCount,
-                    nextServerIndex = startIndex + page.items.size,
+                    nextServerIndex = (startIndex + page.items.size - shiftedMeanwhile).coerceAtLeast(0),
                     isLoading = false,
                     isLoadingMore = false,
                     loadMoreFailed = false

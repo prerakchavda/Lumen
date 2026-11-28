@@ -30,6 +30,19 @@ object LiveTvEpgHelper {
         return Math.floorDiv(epochMs + offset, HALF_HOUR_MS) * HALF_HOUR_MS - offset
     }
 
+    /**
+     * "start - end" of [program] in [timeFmt] (the guide passes one that follows the TV's
+     * 12/24-hour setting and the app language); the programme's preformatted label when it has
+     * no times.
+     */
+    fun timeRangeLabel(program: LiveTvProgram, timeFmt: java.time.format.DateTimeFormatter): String =
+        if (program.startMs > 0L && program.endMs > 0L) {
+            "${timeFmt.format(java.time.Instant.ofEpochMilli(program.startMs))} - " +
+                timeFmt.format(java.time.Instant.ofEpochMilli(program.endMs))
+        } else {
+            program.timeRangeLabel
+        }
+
     /** Returns the [GRID_SLOTS] half-hour start timestamps starting at [windowStartMs]. */
     fun timeSlots(windowStartMs: Long): List<Long> =
         (0 until GRID_SLOTS).map { windowStartMs + it * HALF_HOUR_MS }
@@ -38,6 +51,20 @@ object LiveTvEpgHelper {
      * Projects [channel]'s chronological programs onto the `[windowStartMs, windowStartMs + GRID_WINDOW_MS]`
      * time window, filling gaps with placeholder cells (`program == null`) so every row spans 100% width.
      */
+    /**
+     * What is on [channel] now and next at [nowMs]. The channel's currentProgram / nextProgram
+     * are fixed when the guide loads, so a guide left open would keep showing (and recording)
+     * a programme that already ended.
+     */
+    fun nowAndNext(channel: LiveTvChannel, nowMs: Long): Pair<LiveTvProgram?, LiveTvProgram?> {
+        val current = channel.programs.firstOrNull { nowMs >= it.startMs && nowMs < it.endMs }
+            ?: channel.currentProgram?.takeIf { it.endMs <= 0L || it.endMs > nowMs }
+        val nextStart = current?.endMs?.takeIf { it > 0L } ?: nowMs
+        val next = channel.programs.firstOrNull { it.startMs >= nextStart && it.id != current?.id }
+            ?: channel.nextProgram?.takeIf { it.id != current?.id && (it.endMs <= 0L || it.endMs > nowMs) }
+        return current to next
+    }
+
     fun cellsForWindow(
         channel: LiveTvChannel,
         windowStartMs: Long,

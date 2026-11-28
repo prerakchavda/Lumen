@@ -6,6 +6,8 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -165,6 +167,7 @@ import com.seerflix.tv.core.player.SubtitleTrackSelector
 import com.seerflix.tv.core.player.TrickplayThumbnailLoader
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.SeerflixTokens
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
@@ -250,6 +253,9 @@ fun PlayerScreen(
     var hasInitializedSleepTimerEffect by remember { mutableStateOf(false) }
     // Set when the sleep timer itself ends playback: clearing it then is not a "cancelled".
     var sleepTimerJustFired by remember { mutableStateOf(false) }
+    // The sleep timer paused playback: an item that finishes loading afterwards (next episode,
+    // channel) must stay paused instead of starting. Cleared once playback is resumed.
+    var sleepTimerHoldsPause by remember { mutableStateOf(false) }
     // Written on every remote key press but only read inside effects (never during composition), so
     // key presses / held D-pad repeats don't recompose the whole screen.
     val lastInteractionTick = remember { mutableLongStateOf(0L) }
@@ -279,6 +285,19 @@ fun PlayerScreen(
     val seekExact: (Long) -> Unit = { target ->
         player.setSeekParameters(SeekParameters.DEFAULT)
         player.seekTo(target.coerceAtLeast(0L))
+    }
+    // External players are started for a result: the position they return becomes the resume
+    // point (reported by the VM) and where playback here continues.
+    val externalPlayerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.onExternalPlayerResult(result.data)?.let { resumeMs ->
+            seekExact(resumeMs)
+            currentPosMs = resumeMs
+        }
+    }
+    val openExternalPlayer: () -> Unit = {
+        viewModel.openInExternalPlayer(context, currentPosMs) { intent -> externalPlayerLauncher.launch(intent) }
     }
     val rootFocusRequester = remember { FocusRequester() }
     // Window display mode before we touched it, restored on exit / when matching is turned off.
@@ -345,6 +364,8 @@ fun PlayerScreen(
             // Pause / resume shows up right away in other Jellyfin apps (remote control, dashboard)
             // instead of at the next 10 s progress report.
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                // The media setup keeps a sleep-timer pause, so a play here is the user's resume.
+                if (playWhenReady) sleepTimerHoldsPause = false
                 viewModel.reportProgress(player.currentPosition.coerceAtLeast(0L), !playWhenReady, buildLiveReportState())
             }
 
@@ -388,8 +409,15 @@ fun PlayerScreen(
                         initialAudioAppliedForPlaySession = activeSession.playSessionId
                         val requestedAudio = state.requestedAudioStreamIndex
                         val ordinal = requestedAudio?.let { req -> containerAudioTracks.indexOfFirst { it.index == req } } ?: -1
-                        // Only when both lists line up one-to-one; otherwise the ordinal could point elsewhere.
-                        val target = if (audioGroups.size == containerAudioTracks.size) audioGroups.getOrNull(ordinal) else null
+                        // By ordinal only when both lists line up one-to-one; otherwise the ordinal
+                        // could point elsewhere, so the group is matched by language / channels / codec.
+                        val target = if (audioGroups.size == containerAudioTracks.size) {
+                            audioGroups.getOrNull(ordinal)
+                        } else {
+                            containerAudioTracks.getOrNull(ordinal)?.let { wanted ->
+                                matchAudioGroupByFormat(wanted, containerAudioTracks, audioGroups)
+                            }
+                        }
                         if (requestedAudio != null && target != null && !target.isSelected) {
                             if (target.isTrackSupported(0)) {
                                 player.trackSelectionParameters = player.trackSelectionParameters
@@ -637,6 +665,7 @@ fun PlayerScreen(
         val remaining = (endMs - System.currentTimeMillis()).coerceAtLeast(0L)
         delay(remaining)
         currentPlayer.pause()
+        sleepTimerHoldsPause = true
         osdVisible = true
         // Falling asleep must not roll into the next episode once the countdown effect restarts.
         viewModel.cancelAutoplayNext()
@@ -733,6 +762,10 @@ fun PlayerScreen(
     // a player left in the error state stays black).
     LaunchedEffect(state.session?.itemId, state.session?.playSessionId, state.session?.streamUrl) {
         val session = state.session ?: return@LaunchedEffect
+        // A newer load already replaced this session before its stream was set up (e.g. channels
+        // surfed faster than they load): it is reported stopped, so opening its stream now would
+        // only start a server stream / tuner that nothing stops. The newer session runs this again.
+        if (state.isLoading) return@LaunchedEffect
         detectedVideoFrameRate = 0f
         activeVideoDecoderName = null
         activeAudioDecoderName = null
@@ -830,6 +863,9 @@ fun PlayerScreen(
         player.prepare()
         if (viewModel.isSyncPlayActive()) {
             // The group starts playback for everyone once all members report Ready.
+            player.pause()
+        } else if (sleepTimerHoldsPause) {
+            // The sleep timer fired while this item was loading: it stays paused.
             player.pause()
         } else {
             player.play()
@@ -1035,6 +1071,7 @@ fun PlayerScreen(
         }
         if (state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO) {
             currentPlayer.pause()
+            sleepTimerHoldsPause = true
             osdVisible = true
             viewModel.cancelAutoplayNext()
             sleepTimerJustFired = true
@@ -1057,8 +1094,12 @@ fun PlayerScreen(
         } else if (!hasQueueNext && nextId != null && state.autoplayNextEpisode && !state.autoplayCancelled) {
             delay(400L) // let an in-flight Up Next countdown win if it's about to fire
             if (state.isLoading || state.showStillWatchingPrompt) return@LaunchedEffect
-            viewModel.reportStopped(durationMs.coerceAtLeast(currentPosMs), buildLiveReportState())
-            viewModel.loadItem(nextId, isAutoplayAdvance = true, nextTitleForPrompt = s.nextEpisodeTitle)
+            // Checks the "Still watching?" limit before the session is stopped / anything moves.
+            viewModel.playNextInQueueOrEpisode(
+                currentPosMs = durationMs.coerceAtLeast(currentPosMs),
+                reportState = buildLiveReportState(),
+                fromAutoplay = true
+            )
         } else if (!hasQueueNext && nextId == null) {
             // Keep the Up Next card up when autoplay is off/cancelled but something comes next;
             // only leave automatically when there's nothing to go to next.
@@ -1105,7 +1146,11 @@ fun PlayerScreen(
 
     // SyncPlay: the server's timed commands, applied at the same wall-clock moment on every TV.
     LaunchedEffect(player) {
+        // Only the latest timed command may run: a stale "Unpause" must not fire after a newer
+        // "Seek"/"Pause" (this TV would play while the group waits for everyone to be ready).
+        var pendingCommand: Job? = null
         viewModel.syncPlayActions.collect { action ->
+            pendingCommand?.cancel()
             when (action) {
                 is SyncPlayAction.LoadItem -> {
                     val startMs = action.startPositionTicks / 10_000L
@@ -1120,7 +1165,7 @@ fun PlayerScreen(
                         viewModel.loadItem(action.itemId, resumeOverrideMs = startMs, fromSyncPlay = true)
                     }
                 }
-                is SyncPlayAction.Command -> launch {
+                is SyncPlayAction.Command -> pendingCommand = launch {
                     val positionMs = action.positionTicks / 10_000L
                     val waitMs = action.atLocalMs - System.currentTimeMillis()
                     when (action.command) {
@@ -1385,7 +1430,7 @@ fun PlayerScreen(
                                 text = AppStrings.current.actionExternalPlayer,
                                 icon = Icons.AutoMirrored.Filled.OpenInNew,
                                 isPrimary = false,
-                                onClick = { viewModel.openInExternalPlayer(context, currentPosMs) }
+                                onClick = openExternalPlayer
                             )
                         }
                         HeroPillButton(
@@ -1416,7 +1461,7 @@ fun PlayerScreen(
                         session = session,
                         selectedQuality = state.selectedQuality,
                         playbackSpeed = state.selectedSpeed,
-                        liveStats = liveStreamStats,
+                        liveStatsProvider = { liveStreamStats },
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(top = 28.dp, end = 48.dp)
@@ -1523,7 +1568,7 @@ fun PlayerScreen(
                     NextEpisodeOverlayCard(
                         nextEpisodeTitle = upNextTitle ?: strings.playerNextEpisode,
                         autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled && state.sleepTimerOption != SleepTimerOption.END_OF_VIDEO,
-                        countdownSeconds = nextEpisodeCountdown,
+                        countdownSeconds = { nextEpisodeCountdown },
                         onPlayNow = {
                             viewModel.playNextInQueueOrEpisode(currentPosMs, buildLiveReportState())
                         },
@@ -1538,7 +1583,9 @@ fun PlayerScreen(
                 if (state.showStillWatchingPrompt) {
                     StillWatchingOverlay(
                         nextTitle = state.pendingStillWatchingNextTitle,
-                        onContinue = viewModel::confirmStillWatching,
+                        onContinue = {
+                            viewModel.confirmStillWatching(player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
+                        },
                         onExit = {
                             viewModel.dismissStillWatching()
                             exitPlayer()
@@ -1931,7 +1978,7 @@ fun PlayerScreen(
                     )
                     PlayerSheet.CHAPTERS -> ChaptersSideSheet(
                         chapters = session?.chapters.orEmpty(),
-                        currentPosMs = currentPosMs,
+                        positionMs = { currentPosMs },
                         onJumpToChapter = { chapter ->
                             activeSheet = null
                             seekExact(chapter.startPositionMs)
@@ -1970,7 +2017,7 @@ fun PlayerScreen(
                         onOpenExternalPlayer = {
                             activeSheet = null
                             player.pause()
-                            viewModel.openInExternalPlayer(context, currentPosMs)
+                            openExternalPlayer()
                         },
                         onClose = { activeSheet = null }
                     )
@@ -2008,8 +2055,10 @@ fun StreamInfoOverlay(
     selectedQuality: QualityPreset,
     playbackSpeed: Float,
     modifier: Modifier = Modifier,
-    liveStats: LiveStreamStats? = null
+    // Lambda: the once-a-second stats refresh recomposes only this overlay, not the screen.
+    liveStatsProvider: () -> LiveStreamStats? = { null }
 ) {
+    val liveStats = liveStatsProvider()
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
     val spec = SeerflixTokens.spec
@@ -2165,7 +2214,8 @@ private fun StillWatchingOverlay(
 fun NextEpisodeOverlayCard(
     nextEpisodeTitle: String,
     autoplayEnabled: Boolean,
-    countdownSeconds: Int,
+    // Lambda: the per-second countdown recomposes only this card, not the screen.
+    countdownSeconds: () -> Int,
     onPlayNow: () -> Unit,
     onWatchCredits: () -> Unit,
     modifier: Modifier = Modifier
@@ -2184,7 +2234,7 @@ fun NextEpisodeOverlayCard(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = if (autoplayEnabled) strings.playerNextIn.format(countdownSeconds) else strings.playerUpNext,
+            text = if (autoplayEnabled) strings.playerNextIn.format(countdownSeconds()) else strings.playerUpNext,
             color = if (autoplayEnabled) colors.accent else colors.textSecondary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
@@ -2262,7 +2312,6 @@ private fun OsdSeekBar(
     }
 
     val totalFloat = duration.coerceAtLeast(1L).toFloat()
-    val barPosMs = previewTargetMs ?: positionMs()
     val accent = colors.accent
     var focused by remember { mutableStateOf(false) }
     Canvas(
@@ -2305,7 +2354,9 @@ private fun OsdSeekBar(
     ) {
         // Lightweight seek bar (replaces Material3 Slider, whose vertical-bar thumb and gapped
         // track rendered as stray bars over the video): track, progress, chapter ticks, and a
-        // round thumb only while focused.
+        // round thumb only while focused. Position is read here (draw phase) so playback ticks
+        // only redraw the bar instead of recomposing it.
+        val barPosMs = scrubPreviewMs() ?: positionMs()
         val frac = (barPosMs.toFloat() / totalFloat).coerceIn(0f, 1f)
         val trackHeight = if (focused) 6.dp.toPx() else 4.dp.toPx()
         val centerY = size.height / 2f
@@ -3338,6 +3389,56 @@ private fun trackLabelMatches(track: TrackOption, fmt: androidx.media3.common.Fo
     return track.label.contains(label, ignoreCase = true)
 }
 
+/** True when ExoPlayer's [mimeType] is the codec Jellyfin calls [jellyfinCodec]. */
+@OptIn(UnstableApi::class)
+private fun audioCodecMatches(jellyfinCodec: String?, mimeType: String?): Boolean {
+    val codec = jellyfinCodec?.trim()?.lowercase() ?: return false
+    val mime = mimeType?.lowercase() ?: return false
+    return when (codec) {
+        "aac" -> mime == MimeTypes.AUDIO_AAC
+        "ac3" -> mime == MimeTypes.AUDIO_AC3
+        "eac3" -> mime == MimeTypes.AUDIO_E_AC3 || mime == MimeTypes.AUDIO_E_AC3_JOC
+        "dts", "dca" -> mime.startsWith("audio/vnd.dts")
+        "truehd" -> mime == MimeTypes.AUDIO_TRUEHD
+        "flac" -> mime == MimeTypes.AUDIO_FLAC
+        "opus" -> mime == MimeTypes.AUDIO_OPUS
+        "mp3" -> mime == MimeTypes.AUDIO_MPEG
+        "mp2" -> mime == MimeTypes.AUDIO_MPEG_L2
+        "vorbis" -> mime == MimeTypes.AUDIO_VORBIS
+        else -> codec.startsWith("pcm") && mime == MimeTypes.AUDIO_RAW
+    }
+}
+
+/**
+ * The ExoPlayer audio group for Jellyfin's [wanted] track when the two track lists don't line up
+ * (e.g. a stream ExoPlayer doesn't expose): same language, then the closest channel count / codec.
+ * Among equally good groups, the one in the same position among that language's tracks.
+ */
+private fun matchAudioGroupByFormat(
+    wanted: TrackOption,
+    containerTracks: List<TrackOption>,
+    groups: List<Tracks.Group>
+): Tracks.Group? {
+    val wantedLang = SubtitleTrackSelector.normalizeLanguage(wanted.language)
+    val candidates = groups.filter { group ->
+        group.length > 0 && SubtitleTrackSelector.normalizeLanguage(group.getTrackFormat(0).language) == wantedLang
+    }
+    if (candidates.isEmpty()) return null
+    fun score(group: Tracks.Group): Int {
+        val fmt = group.getTrackFormat(0)
+        var score = 0
+        if (wanted.channels != null && fmt.channelCount == wanted.channels) score += 2
+        if (audioCodecMatches(wanted.codec, fmt.sampleMimeType)) score += 1
+        return score
+    }
+    val best = candidates.maxOf { score(it) }
+    val bestGroups = candidates.filter { score(it) == best }
+    if (bestGroups.size == 1) return bestGroups.first()
+    val sameLanguageTracks = containerTracks.filter { SubtitleTrackSelector.normalizeLanguage(it.language) == wantedLang }
+    val positionInLanguage = sameLanguageTracks.indexOfFirst { it.index == wanted.index }
+    return candidates.getOrNull(positionInLanguage)?.takeIf { it in bestGroups } ?: bestGroups.first()
+}
+
 /**
  * The Jellyfin subtitle stream an ExoPlayer text format belongs to: same language, then the same
  * forced flag and label, so a forced track isn't mistaken for the full one (or the other way round).
@@ -3418,18 +3519,23 @@ private fun formatAudioTrackLabel(
 @Composable
 private fun ChaptersSideSheet(
     chapters: List<ChapterMarker>,
-    currentPosMs: Long,
+    positionMs: () -> Long,
     onJumpToChapter: (ChapterMarker) -> Unit,
     onClose: () -> Unit
 ) {
     val strings = AppStrings.current
-    val activeIdx = remember(chapters, currentPosMs) {
-        chapters.indexOfLast { it.startPositionMs <= currentPosMs }.coerceAtLeast(0)
+    // Position is read through derivedStateOf so the sheet (and the screen around it) only
+    // recomposes when playback crosses a chapter boundary, not on every position tick.
+    val activeIdx by remember(chapters) {
+        derivedStateOf { chapters.indexOfLast { it.startPositionMs <= positionMs() }.coerceAtLeast(0) }
     }
+    // Focus the playing chapter once when the sheet opens; don't pull focus back while the
+    // user is scrolling and playback moves into the next chapter.
+    val initialIdx = remember(chapters) { activeIdx }
     val activeChapterFocusRequester = remember { FocusRequester() }
     val closeFocusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(chapters.size, activeIdx) {
+    LaunchedEffect(chapters.size) {
         delay(60L)
         if (chapters.isNotEmpty()) {
             runCatching { activeChapterFocusRequester.requestFocus() }
@@ -3457,7 +3563,7 @@ private fun ChaptersSideSheet(
                     label = "${formatMs(chapter.startPositionMs)}  •  ${chapter.name}",
                     selected = isCurrent,
                     onClick = { onJumpToChapter(chapter) },
-                    modifier = if (isCurrent) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
+                    modifier = if (idx == initialIdx) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
                 )
             }
         }

@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import okhttp3.Cookie
 import okhttp3.CookieJar
+import okhttp3.Dispatcher
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -22,6 +23,11 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLHandshakeException
 import java.util.concurrent.TimeUnit
 import javax.inject.Qualifier
 import javax.inject.Singleton
@@ -104,12 +110,21 @@ internal class FailoverBaseUrlInterceptor(
                 return response
             } catch (io: IOException) {
                 lastError = io
-                // A cancelled call must not fan out to the next candidate URL.
-                if (idx == candidates.lastIndex || chain.call().isCanceled()) throw io
+                // A cancelled call must not fan out to the next candidate URL. Neither may a
+                // non-idempotent request (POST/DELETE...) that may already have reached the server
+                // (e.g. a read timeout): resending it could duplicate a request, timer or playlist.
+                val replayable = original.method == "GET" || original.method == "HEAD" || io.isConnectFailure()
+                if (!replayable || idx == candidates.lastIndex || chain.call().isCanceled()) throw io
             }
         }
         throw lastError ?: IOException("Unable to reach server URL")
     }
+
+    /** Failed before the request could have been sent, so it is safe to try the next URL. */
+    private fun IOException.isConnectFailure(): Boolean =
+        this is ConnectException || this is UnknownHostException || this is NoRouteToHostException ||
+            this is SSLHandshakeException ||
+            (this is SocketTimeoutException && message?.contains("connect", ignoreCase = true) == true)
 
     private fun rewriteRequestUrl(original: okhttp3.Request, targetBase: HttpUrl): okhttp3.Request {
         val baseSegments = targetBase.pathSegments.filter { it.isNotEmpty() }
@@ -168,15 +183,36 @@ internal fun buildJellyfinAuthHeader(deviceId: String, token: String?): String =
     }
 }
 
+/**
+ * True when [url] points at one of the configured Seerr addresses (same scheme, host and port).
+ * The API key and session cookie are only ever sent there: OkHttp follows redirects on its own
+ * and only strips `Authorization` when the host changes, so a redirect to an SSO portal or any
+ * other host would otherwise receive both.
+ */
+internal fun isConfiguredSeerrHost(url: HttpUrl, candidates: List<String>): Boolean =
+    candidates.any { base ->
+        val configured = base.trim().toHttpUrlOrNull() ?: return@any false
+        configured.scheme == url.scheme &&
+            configured.host.equals(url.host, ignoreCase = true) &&
+            configured.port == url.port
+    }
+
+/**
+ * Added as a *network* interceptor so it runs again for every redirect hop and only attaches the
+ * key to Seerr itself (see [isConfiguredSeerrHost]).
+ */
 private class SeerrAuthInterceptor(
     private val prefs: SessionPreferences
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
-        val builder = chain.request().newBuilder()
+        val request = chain.request()
+        val builder = request.newBuilder()
             .header("Accept", "application/json")
         val apiKey = prefs.cachedSeerrApiKey
-        if (apiKey.isNotBlank()) {
+        if (apiKey.isNotBlank() && isConfiguredSeerrHost(request.url, prefs.seerrUrlCandidates)) {
             builder.header("X-Api-Key", apiKey)
+        } else {
+            builder.removeHeader("X-Api-Key")
         }
         return chain.proceed(builder.build())
     }
@@ -188,6 +224,7 @@ private class SeerrSessionCookieJar(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        if (!isConfiguredSeerrHost(url, prefs.seerrUrlCandidates)) return
         val sid = cookies.firstOrNull { it.name == "connect.sid" } ?: return
         val encoded = "${sid.name}=${sid.value}"
         prefs.setImmediateSeerrCookie(encoded)
@@ -201,6 +238,9 @@ private class SeerrSessionCookieJar(
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        // The cookie jar is consulted for every redirect hop: never hand Seerr's session to a host
+        // a redirect points at.
+        if (!isConfiguredSeerrHost(url, prefs.seerrUrlCandidates)) return emptyList()
         val saved = prefs.cachedSeerrCookie ?: return emptyList()
         val parts = saved.split("=", limit = 2)
         if (parts.size != 2) return emptyList()
@@ -320,6 +360,16 @@ object NetworkModule {
         explicitNulls = false
     }
 
+    /**
+     * OkHttp's default allows only 5 concurrent calls per host, and every API call is queued
+     * under its placeholder host (seerr.local / jellyfin.local) before the URL is rewritten. A
+     * cold Home load fans out dozens of Seerr calls, so the default serialized them in fives.
+     */
+    private fun apiDispatcher(): Dispatcher = Dispatcher().apply {
+        maxRequests = 64
+        maxRequestsPerHost = 16
+    }
+
     private fun loggingInterceptor(): HttpLoggingInterceptor = HttpLoggingInterceptor().apply {
         level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
         redactHeader("Authorization")
@@ -334,6 +384,7 @@ object NetworkModule {
     fun provideJellyfinOkHttp(prefs: SessionPreferences): OkHttpClient {
         val logging = loggingInterceptor()
         return OkHttpClient.Builder()
+            .dispatcher(apiDispatcher())
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .applyDynamicSelfSignedTrust(prefs)
@@ -355,6 +406,7 @@ object NetworkModule {
     fun provideSeerrOkHttp(prefs: SessionPreferences): OkHttpClient {
         val logging = loggingInterceptor()
         return OkHttpClient.Builder()
+            .dispatcher(apiDispatcher())
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .applyDynamicSelfSignedTrust(prefs)
@@ -365,8 +417,8 @@ object NetworkModule {
                     onResolvedUrl = { _, url -> prefs.cachedResolvedSeerrUrl = url }
                 )
             )
-            .addInterceptor(SeerrAuthInterceptor(prefs))
             .addInterceptor(logging)
+            .addNetworkInterceptor(SeerrAuthInterceptor(prefs))
             .build()
     }
 
@@ -392,6 +444,8 @@ object NetworkModule {
             interceptors().clear()
             networkInterceptors().clear()
         }
+        // Own dispatcher: artwork / subtitle fetches don't compete with API calls for slots.
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 8 })
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 

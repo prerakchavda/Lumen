@@ -45,16 +45,25 @@ object ContentRatingHelper {
         else -> null
     }
 
-    fun isAllowed(item: UnifiedMediaItem, profile: UserProfile?): Boolean {
+    fun isAllowed(item: UnifiedMediaItem, profile: UserProfile?): Boolean =
+        isAllowed(item.maturityRating, item.genres, profile, item.isAdult)
+
+    /** [isAllowed] on raw fields, to pre-filter Jellyfin items before a row is capped. */
+    fun isAllowed(
+        maturityRating: String?,
+        genres: List<String>,
+        profile: UserProfile?,
+        isAdult: Boolean = false
+    ): Boolean {
         if (profile == null) return true
         val limit = profile.effectiveRatingLimit
         if (limit == ContentRatingLimit.ALL) return true
-        if (item.isAdult) return false
-        val rank = ratingRank(item.maturityRating)
+        if (isAdult) return false
+        val rank = ratingRank(maturityRating)
         if (rank > limit.maxRank) return false
         if (profile.kidsMode && limit.maxRank <= ContentRatingLimit.PG.maxRank) {
             val restrictedGenres = setOf("Horror", "Thriller", "Crime")
-            if (item.genres.any { g -> restrictedGenres.any { r -> g.contains(r, ignoreCase = true) } }) {
+            if (genres.any { g -> restrictedGenres.any { r -> g.contains(r, ignoreCase = true) } }) {
                 return false
             }
         }

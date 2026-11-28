@@ -70,6 +70,21 @@ class HomeContentCacheTest {
     }
 
     @Test
+    fun `an episode keeps its series id so deleting the show drops it from cached rows`() {
+        val episode = UnifiedMediaItem(
+            id = "jf_ep1",
+            jellyfinId = "ep1",
+            mediaType = MediaType.EPISODE,
+            title = "Show • Pilot",
+            seriesName = "Show",
+            seriesId = "ser1"
+        )
+        val cwRows = listOf(CatalogRow("continue_watching", "Continue Watching", RowStyle.CONTINUE_WATCHING, listOf(episode)))
+        newCache().write(key(), cwRows, base)
+        assertEquals("ser1", newCache().read(key(), base)!!.single().items.single().seriesId)
+    }
+
+    @Test
     fun `a different tab, profile or rating limit misses the cache`() {
         val cache = newCache()
         cache.write(key(), rows, base)

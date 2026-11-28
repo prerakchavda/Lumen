@@ -41,8 +41,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -171,6 +173,101 @@ class JellyfinPlaybackManager @Inject constructor(
     private val reportScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
+     * Start / progress / stop reports go out one at a time, in the order they were made. Sent
+     * concurrently, a progress report could reach the server after the stop and bring the
+     * session back as "now playing" (and rewrite the watched position).
+     */
+    private val reportQueue = Channel<suspend () -> Unit>(Channel.UNLIMITED)
+
+    /** Play sessions already reported stopped: later progress for them is dropped. */
+    private val stoppedPlaySessionIds = java.util.Collections.newSetFromMap(
+        java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    )
+
+    /**
+     * A live stream (Live TV tuner / M3U connection) the server opened for a play session. Jellyfin
+     * keeps it open until a stop report carrying its LiveStreamId arrives, so every entry is taken
+     * out of [openLiveStreams] exactly once, by whoever sends that stop.
+     */
+    private class OpenLiveStream(val session: PlaybackSessionData, val liveStreamId: String)
+
+    /** Open live streams by play session id. */
+    private val openLiveStreams = java.util.concurrent.ConcurrentHashMap<String, OpenLiveStream>()
+
+    init {
+        reportScope.launch {
+            for (job in reportQueue) runCatchingCancellable { job() }
+        }
+    }
+
+    /** The live stream the server opened for [playSessionId], if any (sent with every report). */
+    fun liveStreamIdOf(playSessionId: String): String? = openLiveStreams[playSessionId]?.liveStreamId
+
+    /**
+     * Releases a prepared play session that never became the playing one (e.g. a channel passed
+     * while surfing, or a session replaced before it started): if the server opened a live stream
+     * for it, a stop report carrying the LiveStreamId frees the tuner. No-op otherwise, and for a
+     * session that was already reported stopped.
+     */
+    fun releaseUnusedPlaySession(playSessionId: String) {
+        val live = openLiveStreams.remove(playSessionId) ?: return
+        stoppedPlaySessionIds += playSessionId
+        reportQueue.trySend { reportStopped(live.session, 0L, liveStreamId = live.liveStreamId) }
+    }
+
+    /** Remembers the live stream [session] plays from (see [OpenLiveStream]). */
+    private fun registerLiveStream(session: PlaybackSessionData, liveStreamId: String?) {
+        if (liveStreamId.isNullOrBlank()) return
+        openLiveStreams[session.playSessionId] = OpenLiveStream(session, liveStreamId)
+    }
+
+    /** Stops (and so closes) the live streams of a PlaybackInfo answer that is not used. */
+    private fun releaseLiveStreamsOf(server: ServerSession, rawItemId: String, playback: JellyfinPlaybackInfoResponse) {
+        val playSessionId = playback.playSessionId ?: return
+        playback.mediaSources.filter { !it.liveStreamId.isNullOrBlank() }.forEach { source ->
+            reportQueue.trySend {
+                runCatchingCancellable {
+                    server.api.reportPlaybackStopped(
+                        JellyfinPlaybackProgressRequest(
+                            itemId = rawItemId,
+                            mediaSourceId = source.id,
+                            playSessionId = playSessionId,
+                            positionTicks = 0L,
+                            canSeek = false,
+                            liveStreamId = source.liveStreamId
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** Queues a "playback started" report (ordered with progress / stop reports). */
+    fun enqueueStart(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        reportState: PlaybackReportState? = null
+    ) {
+        // A session handed to an external player and resumed here is started again.
+        stoppedPlaySessionIds.remove(session.playSessionId)
+        reportQueue.trySend { reportStart(session, positionTicks, reportState) }
+    }
+
+    /** Queues a progress report; dropped if the session is reported stopped before it is sent. */
+    fun enqueueProgress(
+        session: PlaybackSessionData,
+        positionTicks: Long,
+        isPaused: Boolean,
+        reportState: PlaybackReportState? = null
+    ) {
+        reportQueue.trySend {
+            if (session.playSessionId !in stoppedPlaySessionIds) {
+                reportProgress(session, positionTicks, isPaused, reportState)
+            }
+        }
+    }
+
+    /**
      * Resolves a playable session. Only the calls needed to start the stream are awaited; media
      * segments and the next episode are not fetched (use [preparePlaybackWithExtras] for those).
      */
@@ -253,6 +350,37 @@ class JellyfinPlaybackManager @Inject constructor(
         subtitleStreamIndex: Int?,
         softwareAudioDecodingEnabled: Boolean,
         forceHls: Boolean
+    ): Result<PreparedPlayback> {
+        // Play session built here; if the caller is cancelled before it gets the result (fast
+        // channel surfing), nobody would ever stop it and an opened live stream would hold its tuner.
+        var builtPlaySessionId: String? = null
+        try {
+            return prepareSession(
+                extrasScope, userId, itemId, maxBitrateBps, mediaSourceId, audioPassthroughEnabled,
+                stereoDownmixEnabled, assSubtitleMode, burnInSubtitleIndex, audioStreamIndex,
+                subtitleStreamIndex, softwareAudioDecodingEnabled, forceHls
+            ) { builtPlaySessionId = it }
+        } catch (e: CancellationException) {
+            builtPlaySessionId?.let { releaseUnusedPlaySession(it) }
+            throw e
+        }
+    }
+
+    private suspend fun prepareSession(
+        extrasScope: CoroutineScope?,
+        userId: String,
+        itemId: String,
+        maxBitrateBps: Long?,
+        mediaSourceId: String?,
+        audioPassthroughEnabled: Boolean,
+        stereoDownmixEnabled: Boolean,
+        assSubtitleMode: AssSubtitleMode,
+        burnInSubtitleIndex: Int?,
+        audioStreamIndex: Int?,
+        subtitleStreamIndex: Int?,
+        softwareAudioDecodingEnabled: Boolean,
+        forceHls: Boolean,
+        onSessionBuilt: (playSessionId: String) -> Unit
     ): Result<PreparedPlayback> = runCatchingCancellable {
         coroutineScope {
             // Ids arrive server scoped; from here on each call goes to the owning server with the
@@ -261,7 +389,8 @@ class JellyfinPlaybackManager @Inject constructor(
                 ?: error(strings.playerErrorSignInAgain)
             val requestedSourceId = mediaSourceId?.let { ServerScopedId.rawOf(it) }
             val capabilities = if (prefs.cachedMatchDeviceCapabilities) {
-                capabilityProvider.current()
+                // MediaCodecList / AudioCapabilities / display HDR queries: keep them off Main.
+                withContext(Dispatchers.Default) { capabilityProvider.current() }
             } else {
                 DeviceMediaCapabilities.PERMISSIVE
             }
@@ -353,7 +482,10 @@ class JellyfinPlaybackManager @Inject constructor(
             // whose codec requires server conversion), Jellyfin may approve direct play without
             // checking the audio codec. Ask again with direct play off to get converted audio.
             if (playback != null && directPlaysUnsupportedAudio(playback, sourceId, deviceProfileFor(session), audioStreamIndex)) {
-                playback = playbackInfoAsync(session, item.id, sourceId, enableDirectPlay = false).await() ?: playback
+                val first: JellyfinPlaybackInfoResponse = playback
+                playback = playbackInfoAsync(session, item.id, sourceId, enableDirectPlay = false).await() ?: first
+                // A live stream the server opened for the discarded answer is never played.
+                if (playback !== first) releaseLiveStreamsOf(session, item.id, first)
             }
 
             // Start the non-critical lookups now so they overlap with session building / player
@@ -377,6 +509,7 @@ class JellyfinPlaybackManager @Inject constructor(
                     audioStreamIndex = audioStreamIndex,
                     forceHls = forceHls
                 )
+                onSessionBuilt(prepared.playSessionId)
                 PreparedPlayback(prepared, frameRate, segmentsDeferred, nextEpisodeDeferred)
             } catch (t: Throwable) {
                 segmentsDeferred?.cancel()
@@ -578,7 +711,8 @@ class JellyfinPlaybackManager @Inject constructor(
             stereoDownmix = stereoDownmixEnabled,
             burnInSubtitleIndex = burnInSubtitleIndex,
             audioStreamIndex = audioStreamIndex,
-            forceHls = forceHls
+            forceHls = forceHls,
+            isLiveTv = item.type.equals("TvChannel", ignoreCase = true)
         )
 
         val audioTracks = source.mediaStreams
@@ -758,6 +892,8 @@ class JellyfinPlaybackManager @Inject constructor(
             activeAudioStreamIndex = activeAudioIdx,
             burnedInSubtitleIndex = burnInSubtitleIndex
         )
+        // Reported with start / progress and closed by this session's stop (see [OpenLiveStream]).
+        registerLiveStream(session, source.liveStreamId)
         return session to videoFrameRate
     }
 
@@ -827,11 +963,12 @@ class JellyfinPlaybackManager @Inject constructor(
         positionTicks: Long,
         isPaused: Boolean,
         reportState: PlaybackReportState? = null,
+        liveStreamId: String? = liveStreamIdOf(session.playSessionId),
         send: suspend (JellyfinApi, JellyfinPlaybackProgressRequest) -> Unit
-    ) {
-        if (session.isTrailer || session.isCinemaIntro) return
-        val server = sessionFor(session.itemId, prefs.cachedHomeUserId) ?: return
-        runCatchingCancellable {
+    ): Boolean {
+        if (session.isTrailer || session.isCinemaIntro) return false
+        val server = sessionFor(session.itemId, prefs.cachedHomeUserId) ?: return false
+        return runCatchingCancellable {
             send(
                 server.api,
                 JellyfinPlaybackProgressRequest(
@@ -847,10 +984,11 @@ class JellyfinPlaybackManager @Inject constructor(
                     volumeLevel = reportState?.volumeLevel,
                     playbackRate = reportState?.playbackRate,
                     // Live TV can't be seeked; everything else can (remote-control seek bars).
-                    canSeek = !session.isLiveTv
+                    canSeek = !session.isLiveTv,
+                    liveStreamId = liveStreamId
                 )
             )
-        }
+        }.isSuccess
     }
 
     suspend fun reportStart(
@@ -883,15 +1021,30 @@ class JellyfinPlaybackManager @Inject constructor(
         positionTicks: Long,
         reportState: PlaybackReportState? = null
     ) {
-        reportScope.launch { reportStopped(session, positionTicks, reportState) }
+        stoppedPlaySessionIds += session.playSessionId
+        // Taken now, so only this stop carries (and closes) the live stream: a later stop for the
+        // same session (e.g. the position an external player returned) must not close it again.
+        val live = openLiveStreams.remove(session.playSessionId)
+        reportQueue.trySend { reportStopped(session, positionTicks, reportState, live?.liveStreamId) }
     }
 
+    /**
+     * With [liveStreamId] the server also closes that live stream (frees the tuner). Only the
+     * stop that took it out of [openLiveStreams] passes it.
+     */
     suspend fun reportStopped(
         session: PlaybackSessionData,
         positionTicks: Long,
-        reportState: PlaybackReportState? = null
+        reportState: PlaybackReportState? = null,
+        liveStreamId: String? = null
     ) {
-        report(session, positionTicks, isPaused = false, reportState = reportState) { api, body ->
+        report(
+            session,
+            positionTicks,
+            isPaused = false,
+            reportState = reportState,
+            liveStreamId = liveStreamId
+        ) { api, body ->
             api.reportPlaybackStopped(body)
         }
     }
@@ -1201,19 +1354,23 @@ class JellyfinPlaybackManager @Inject constructor(
             stereoDownmix: Boolean = false,
             burnInSubtitleIndex: Int? = null,
             audioStreamIndex: Int? = null,
-            forceHls: Boolean = false
+            forceHls: Boolean = false,
+            /** Live TV channel: the session (and its live stream) must be identifiable from the URL. */
+            isLiveTv: Boolean = false
         ): Pair<String, Boolean> {
             val cleanBase = base.trim().trimEnd('/')
+            // The live stream the server opened for this play session (tuner sharing / closing).
+            val liveStreamParam = source.liveStreamId?.takeIf { it.isNotBlank() }?.let { "&LiveStreamId=$it" }.orEmpty()
             val audioParam = if (stereoDownmix) "&MaxAudioChannels=2" else ""
             val audioIdxParam = audioStreamIndex?.let { "&AudioStreamIndex=$it" }.orEmpty()
             val bitrateParam = maxBitrateBps?.let { "&MaxStreamingBitrate=$it" }.orEmpty()
             if (burnInSubtitleIndex != null) {
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$bitrateParam$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$bitrateParam$audioParam$liveStreamParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
             if (maxBitrateBps != null || stereoDownmix || forceHls) {
                 val br = maxBitrateBps ?: 120_000_000L
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioIdxParam$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioIdxParam$audioParam$liveStreamParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
                 return url to true
             }
             // DirectStream-only sources need the server's remux/transcode URL: serving the raw file
@@ -1221,7 +1378,12 @@ class JellyfinPlaybackManager @Inject constructor(
             return if (source.supportsDirectPlay ||
                 (source.supportsDirectStream && source.transcodingUrl.isNullOrBlank())
             ) {
-                val url = "$cleanBase/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}&api_key=$token"
+                // A direct-streamed channel names its play session (and live stream), so the
+                // server can tie the connection to the session that is later reported stopped.
+                val sessionParams = if (isLiveTv || liveStreamParam.isNotEmpty()) {
+                    "&PlaySessionId=$playSessionId$liveStreamParam"
+                } else ""
+                val url = "$cleanBase/Videos/$itemId/stream?Static=true&MediaSourceId=${source.id}$sessionParams&api_key=$token"
                 url to false
             } else if (!source.transcodingUrl.isNullOrBlank()) {
                 var url = resolveRelativeJellyfinUrl(cleanBase, source.transcodingUrl, token)
@@ -1229,9 +1391,13 @@ class JellyfinPlaybackManager @Inject constructor(
                     val sep = if ('?' in url) "&" else "?"
                     url = "${url}${sep}AudioStreamIndex=$audioStreamIndex"
                 }
+                if (liveStreamParam.isNotEmpty() && !url.contains("LiveStreamId=", ignoreCase = true)) {
+                    val sep = if ('?' in url) "&" else "?"
+                    url = "${url}${sep}${liveStreamParam.removePrefix("&")}"
+                }
                 url to true
             } else {
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam$liveStreamParam&api_key=$token"
                 url to true
             }
         }

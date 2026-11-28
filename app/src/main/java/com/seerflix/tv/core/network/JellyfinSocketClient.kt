@@ -23,6 +23,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -94,6 +95,9 @@ class JellyfinSocketClient @Inject constructor(
     // settings, failover base URL, auth header) comes from the API client.
     private val socketHttp: OkHttpClient by lazy {
         okHttpClient.newBuilder()
+            // Own dispatcher: the WebSocket reader loop holds its dispatcher slot for the whole
+            // connection, which would otherwise cost the Jellyfin API one of its per-host slots.
+            .dispatcher(Dispatcher())
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .pingInterval(30, TimeUnit.SECONDS)
             .build()
@@ -104,7 +108,7 @@ class JellyfinSocketClient @Inject constructor(
     @Volatile private var connectedToken: String? = null
     private var reconnectJob: Job? = null
     private var keepAliveJob: Job? = null
-    private var attempt = 0
+    @Volatile private var attempt = 0
 
     /** Called when the app comes to the foreground or the signed-in profile changes. */
     @Synchronized
@@ -195,19 +199,37 @@ class JellyfinSocketClient @Inject constructor(
         }
     }
 
-    /** Tells the server this session can be remote-controlled ("Play on" target). */
+    /**
+     * Tells the server whether this session can be remote-controlled ("Play on" target). With
+     * remote control off, empty capabilities are posted: Jellyfin keeps a session's capabilities
+     * across reconnects (same device id), so just not posting them left the TV controllable.
+     */
     private suspend fun reportCapabilities() {
-        if (!prefs.cachedAllowRemoteControl) return
+        val allow = prefs.cachedAllowRemoteControl
         runCatching {
             jellyfinApi.postSessionCapabilities(
                 JellyfinSessionCapabilitiesRequest(
-                    playableMediaTypes = listOf("Video"),
-                    supportedCommands = SUPPORTED_COMMANDS,
-                    supportsMediaControl = true,
+                    playableMediaTypes = if (allow) listOf("Video") else emptyList(),
+                    supportedCommands = if (allow) SUPPORTED_COMMANDS else emptyList(),
+                    supportsMediaControl = allow,
                     supportsPersistentIdentifier = true
                 )
             )
         }.onFailure { Log.w(TAG, "Capabilities report failed: ${it.message}") }
+    }
+
+    /**
+     * Remote-control commands from other Jellyfin apps. Dropped while "Allow remote control" is
+     * off: the server still forwards them to any session with an open socket. Admin messages
+     * (DisplayMessage), library/user-data updates and SyncPlay are not remote control.
+     */
+    private fun isBlockedRemoteControl(event: ServerEvent): Boolean {
+        if (prefs.cachedAllowRemoteControl) return false
+        return when (event) {
+            is ServerEvent.Play, is ServerEvent.Playstate -> true
+            is ServerEvent.GeneralCommand -> event.name != "DisplayMessage"
+            else -> false
+        }
     }
 
     private fun handleMessage(text: String) {
@@ -264,11 +286,15 @@ class JellyfinSocketClient @Inject constructor(
             }
             else -> null
         }
-        if (event != null) _events.tryEmit(event)
+        if (event != null && !isBlockedRemoteControl(event)) _events.tryEmit(event)
     }
 
+    // Called from the socket reader thread; synchronized with stop()/closeSocket() so a keep-alive
+    // message racing a disconnect can't leave a loop running after the socket closed.
+    @Synchronized
     private fun startKeepAlive(timeoutSeconds: Long) {
         keepAliveJob?.cancel()
+        if (socket == null) return
         keepAliveJob = scope.launch {
             val interval = (timeoutSeconds * 1000L / 2).coerceAtLeast(5_000L)
             while (isActive) {

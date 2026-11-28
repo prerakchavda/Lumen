@@ -89,6 +89,9 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -413,6 +416,7 @@ fun HomeScreen(
         onDismissUpdateDialog = viewModel::dismissUpdateDialog,
         previewHttpClient = viewModel.previewHttpClient,
         extraActions = HomeExtraActions(
+            onHeroVisibilityChanged = viewModel::setHeroVisible,
             onBrowseAll = onOpenLibrary,
             onOpenLibraryView = onOpenLibraryView,
             onOpenLibraries = viewModel::openLibrariesDialog,
@@ -453,7 +457,9 @@ data class HomeExtraActions(
     val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {},
     val onStartAppUpdate: () -> Unit = {},
     val onCancelAppUpdate: () -> Unit = {},
-    val onResumeAppUpdateDialog: () -> Unit = {}
+    val onResumeAppUpdateDialog: () -> Unit = {},
+    /** Whether the hero billboard is on screen (trailer work is skipped while it isn't). */
+    val onHeroVisibilityChanged: (Boolean) -> Unit = {}
 )
 
 @Composable
@@ -933,13 +939,22 @@ private fun HomeMainCanvas(
     // Hoisted out of the list branch so it survives a visit to Collections / Live TV.
     val listState = rememberLazyListState()
 
-    val focusTop: suspend () -> Unit = {
+    // Scrolled into the rows, only the compact header shows the featured title: tell the VM so
+    // it doesn't fetch / decode trailers nobody can see.
+    val onHeroVisibilityChanged by rememberUpdatedState(extraActions.onHeroVisibilityChanged)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.firstVisibleItemIndex == 0 }
+            .distinctUntilChanged()
+            .collect { onHeroVisibilityChanged(it) }
+    }
+
+    val focusTop: suspend () -> Boolean = {
         withFrameNanos { }
         withFrameNanos { }
         // The banner's Play button: it is not inside a recycled row, so it is always the real
         // top of the page. (Targeting the first row after scrolling back up could land mid-row.)
-        val ok = runCatching { heroFocusRequester.requestFocus() }.getOrDefault(false)
-        if (!ok) runCatching { firstCardFocusRequester.requestFocus() }
+        runCatching { heroFocusRequester.requestFocus() }.getOrDefault(false) ||
+            runCatching { firstCardFocusRequester.requestFocus() }.getOrDefault(false)
     }
 
     // Restore focus to the card the user left from instead of dumping it on the hero / nothing.
@@ -950,7 +965,9 @@ private fun HomeMainCanvas(
         withFrameNanos { }
         val restored = restoreFocusKey != null &&
             runCatching { restoreFocusRequester.requestFocus(FocusDirection.Enter) }.getOrDefault(false)
-        if (!restored) focusTop()
+        // Live TV / Collections have neither a hero nor a first row: fall back to the nav, so
+        // something has focus (and Back doesn't go straight to the system and close the app).
+        if (!restored && !focusTop()) onBackToNav()
     }
     // One-shot initial focus once the first load settles: the first card of the first row, so the
     // whole first row is on screen and Down/Right work immediately.
@@ -995,7 +1012,7 @@ private fun HomeMainCanvas(
                 listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 -> {
                     scope.launch {
                         listState.scrollToItem(0)
-                        focusTop()
+                        if (!focusTop()) onBackToNav()
                     }
                 }
                 else -> onBackToNav()
@@ -3513,15 +3530,10 @@ private fun LiveTvGuideContent(
     var windowOffsetHours by rememberSaveable { mutableStateOf(0) }
     val windowStartMs = baseWindowStartMs + windowOffsetHours * 3_600_000L
     val timeSlots = remember(windowStartMs) { com.seerflix.tv.core.data.LiveTvEpgHelper.timeSlots(windowStartMs) }
-    val epgContext = androidx.compose.ui.platform.LocalContext.current
     // App language + the TV's 12/24-hour setting (not a hard-coded "HH:mm" / device locale).
-    val slotTimeFmt = remember(strings.languageCode) {
-        val locale = java.util.Locale.forLanguageTag(strings.languageCode)
-        val skeleton = if (android.text.format.DateFormat.is24HourFormat(epgContext)) "Hm" else "hm"
-        java.time.format.DateTimeFormatter
-            .ofPattern(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
-            .withZone(java.time.ZoneId.systemDefault())
-    }
+    // Also formats every programme's start-end and the scheduled recordings.
+    val slotTimeFmt = rememberLiveTvClockFormatter(strings.languageCode)
+    val recordingTimeFmt = rememberLiveTvClockFormatter(strings.languageCode, datePrefix = "EEEdMMM")
     val dayFmt = remember(strings.languageCode) {
         val locale = java.util.Locale.forLanguageTag(strings.languageCode)
         java.time.format.DateTimeFormatter
@@ -3688,7 +3700,10 @@ private fun LiveTvGuideContent(
                             .onFocusChanged { chFocused = it.isFocused || it.hasFocus }
                             .combinedClickable(
                                 onClick = { onTuneChannel(ch.id) },
-                                onLongClick = { onOpenChannelMenu(ch, ch.currentProgram) }
+                                onLongClick = {
+                                    val (cur, nxt) = com.seerflix.tv.core.data.LiveTvEpgHelper.nowAndNext(ch, System.currentTimeMillis())
+                                    onOpenChannelMenu(ch.copy(currentProgram = cur, nextProgram = nxt), cur)
+                                }
                             )
                             .padding(horizontal = 8.dp, vertical = 6.dp)
                     ) {
@@ -3738,62 +3753,22 @@ private fun LiveTvGuideContent(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         cells.forEach { cell ->
-                            var cellFocused by remember { mutableStateOf(false) }
-                            val prog = cell.program
-                            val bg = when {
-                                cellFocused -> colors.white
-                                cell.isCurrent -> colors.accent.copy(alpha = 0.24f)
-                                prog != null -> colors.surface
-                                else -> colors.surface.copy(alpha = 0.45f)
-                            }
-                            val fg = if (cellFocused) colors.deepBlack else colors.white
-                            val subFg = if (cellFocused) colors.deepBlack.copy(alpha = 0.72f) else colors.textSecondary
-                            Column(
-                                verticalArrangement = Arrangement.Center,
-                                modifier = Modifier
-                                    .weight(cell.weightFraction)
-                                    .height(64.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(bg)
-                                    .border(
-                                        if (cellFocused) 2.dp else 1.dp,
-                                        when {
-                                            cellFocused -> colors.accent
-                                            cell.isCurrent -> colors.accent.copy(alpha = 0.65f)
-                                            else -> colors.badgeBorder
-                                        },
-                                        RoundedCornerShape(8.dp)
-                                    )
-                                    .onFocusChanged { cellFocused = it.isFocused || it.hasFocus }
-                                    .combinedClickable(
-                                        onClick = {
-                                            if (prog != null) onOpenChannelMenu(ch, prog)
-                                            else onTuneChannel(ch.id)
-                                        },
-                                        onLongClick = { onTuneChannel(ch.id) }
-                                    )
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (prog?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
-                                    Text(
-                                        text = prog?.title ?: strings.liveNoProgramData,
-                                        color = if (prog != null) fg else colors.textMuted,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (cell.isCurrent) FontWeight.Bold else FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                if (prog != null && prog.timeRangeLabel.isNotBlank()) {
-                                    Text(
-                                        text = prog.timeRangeLabel,
-                                        color = subFg,
-                                        fontSize = 10.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                            // Keyed by programme so focus / highlight stay with the programme when the
+                            // window shifts; its own composable so a focus move recomposes one cell,
+                            // not the whole channel row.
+                            key(cell.program?.id ?: "gap_${cell.startMs}") {
+                                EpgProgramCell(
+                                    cell = cell,
+                                    timeFmt = slotTimeFmt,
+                                    noProgramLabel = strings.liveNoProgramData,
+                                    recordingLabel = strings.dvrRecordingBadge,
+                                    onClick = {
+                                        val prog = cell.program
+                                        if (prog != null) onOpenChannelMenu(ch, prog) else onTuneChannel(ch.id)
+                                    },
+                                    onLongClick = { onTuneChannel(ch.id) },
+                                    modifier = Modifier.weight(cell.weightFraction)
+                                )
                             }
                         }
                     }
@@ -3801,8 +3776,14 @@ private fun LiveTvGuideContent(
             }
         } else {
             // ---- LIST VIEW ----
-            items(filteredChannels, key = { it.id }, contentType = { "channel" }) { ch ->
+            items(filteredChannels, key = { it.id }, contentType = { "channel" }) { channel ->
                 var focused by remember { mutableStateOf(false) }
+                // "On now" / "Up next" follow the clock while the guide stays open.
+                val ch = remember(channel, nowMs) {
+                    val (cur, nxt) = com.seerflix.tv.core.data.LiveTvEpgHelper.nowAndNext(channel, nowMs)
+                    if (cur == channel.currentProgram && nxt == channel.nextProgram) channel
+                    else channel.copy(currentProgram = cur, nextProgram = nxt)
+                }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -3886,15 +3867,16 @@ private fun LiveTvGuideContent(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (cur != null && cur.timeRangeLabel.isNotBlank()) {
+                        val curRange = cur?.let { com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(it, slotTimeFmt) }
+                        if (cur != null && !curRange.isNullOrBlank()) {
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = strings.liveOnNow.format(cur.timeRangeLabel),
+                                text = strings.liveOnNow.format(curRange),
                                 color = colors.matchGreen,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
-                            val progress = cur.progressFraction()
+                            val progress = cur.progressFraction(nowMs)
                             if (progress > 0f) {
                                 Spacer(Modifier.height(6.dp))
                                 Box(
@@ -3934,8 +3916,9 @@ private fun LiveTvGuideContent(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (nxt.timeRangeLabel.isNotBlank()) {
-                                Text(nxt.timeRangeLabel, color = colors.textMuted, fontSize = 11.sp)
+                            val nxtRange = com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(nxt, slotTimeFmt)
+                            if (nxtRange.isNotBlank()) {
+                                Text(nxtRange, color = colors.textMuted, fontSize = 11.sp)
                             }
                         }
                     }
@@ -4001,7 +3984,9 @@ private fun LiveTvGuideContent(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(rec.title, color = colors.white, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val sub = listOfNotNull(
-                            rec.timeLabel.takeIf { it.isNotBlank() },
+                            (if (!rec.isSeriesRule && rec.startMs > 0L && rec.startMs != Long.MAX_VALUE) {
+                                recordingTimeFmt.format(java.time.Instant.ofEpochMilli(rec.startMs))
+                            } else rec.timeLabel).takeIf { it.isNotBlank() },
                             rec.channelName,
                             strings.dvrRecordSeries.takeIf { rec.isSeriesRule }
                         ).joinToString(" • ")
@@ -4056,7 +4041,9 @@ private fun CustomizeHomeDialog(
     val hiddenRows = remember(profile.id) {
         mutableStateListOf<String>().apply { addAll(profile.hiddenHomeRowIds) }
     }
-    val orderedRows = remember(profile.id, currentRows) {
+    // Snapshot when the dialog opens: background row refreshes (watch state changed elsewhere,
+    // library updates) must not reset the user's reordering mid-edit.
+    val orderedRows = remember(profile.id) {
         val visible = currentRows.distinctBy { it.id }.map { it.id to it.title }
         // Hidden rows are filtered out of `currentRows` by the repository, so without this they
         // vanished from the dialog and could never be shown again.
@@ -4627,6 +4614,26 @@ private fun SmallTextButton(
     }
 }
 
+/**
+ * Clock time in the app language that follows the TV's 12/24-hour setting (never a hard-coded
+ * "HH:mm"), optionally after a date ([datePrefix] is a date skeleton such as "EEEdMMM").
+ */
+@Composable
+private fun rememberLiveTvClockFormatter(
+    languageCode: String,
+    datePrefix: String = ""
+): java.time.format.DateTimeFormatter {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val use24Hour = android.text.format.DateFormat.is24HourFormat(context)
+    return remember(languageCode, use24Hour, datePrefix) {
+        val locale = java.util.Locale.forLanguageTag(languageCode)
+        val skeleton = datePrefix + if (use24Hour) "Hm" else "hm"
+        java.time.format.DateTimeFormatter
+            .ofPattern(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
+            .withZone(java.time.ZoneId.systemDefault())
+    }
+}
+
 @Composable
 private fun RecBadge(label: String) {
     Box(
@@ -4706,6 +4713,7 @@ private fun LiveTvProgramDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
+    val programTimeFmt = rememberLiveTvClockFormatter(strings.languageCode)
     val firstFocus = remember { FocusRequester() }
     // null = keep the server's recording defaults (Dashboard → Live TV).
     var prePaddingMin by remember { mutableStateOf<Int?>(null) }
@@ -4738,11 +4746,16 @@ private fun LiveTvProgramDialog(
         recordAnyChannel = recordAnyChannel
     )
 
-    LaunchedEffect(Unit) {
-        delay(80L)
-        runCatching { firstFocus.requestFocus() }
-    }
     Dialog(onDismissRequest = onDismiss) {
+        // Inside the Dialog: its window must be attached before focus can move into it (from
+        // outside, a fixed delay was too short on slow sticks and the dialog opened unfocused).
+        LaunchedEffect(Unit) {
+            withFrameNanos { }
+            if (!runCatching { firstFocus.requestFocus() }.getOrDefault(false)) {
+                delay(120L)
+                runCatching { firstFocus.requestFocus() }
+            }
+        }
         Column(
             modifier = Modifier
                 .width(600.dp)
@@ -4819,8 +4832,9 @@ private fun LiveTvProgramDialog(
             }
 
             programs.forEach { program ->
+                val range = com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(program, programTimeFmt)
                 Text(
-                    "${program.title}${if (program.timeRangeLabel.isNotBlank()) "  •  ${program.timeRangeLabel}" else ""}",
+                    "${program.title}${if (range.isNotBlank()) "  •  $range" else ""}",
                     color = colors.white,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -4867,5 +4881,72 @@ private fun DvrMenuButton(label: String, onClick: () -> Unit, modifier: Modifier
             .padding(horizontal = 16.dp, vertical = 10.dp)
     ) {
         Text(label, color = if (focused) colors.deepBlack else colors.white, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+private val EpgCellShape = RoundedCornerShape(8.dp)
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EpgProgramCell(
+    cell: com.seerflix.tv.core.data.LiveTvEpgHelper.EpgCell,
+    timeFmt: java.time.format.DateTimeFormatter,
+    noProgramLabel: String,
+    recordingLabel: String,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = SeerflixTokens.colors
+    var cellFocused by remember { mutableStateOf(false) }
+    val prog = cell.program
+    val bg = when {
+        cellFocused -> colors.white
+        cell.isCurrent -> colors.accent.copy(alpha = 0.24f)
+        prog != null -> colors.surface
+        else -> colors.surface.copy(alpha = 0.45f)
+    }
+    val fg = if (cellFocused) colors.deepBlack else colors.white
+    val subFg = if (cellFocused) colors.deepBlack.copy(alpha = 0.72f) else colors.textSecondary
+    Column(
+        verticalArrangement = Arrangement.Center,
+        modifier = modifier
+            .height(64.dp)
+            .clip(EpgCellShape)
+            .background(bg)
+            .border(
+                if (cellFocused) 2.dp else 1.dp,
+                when {
+                    cellFocused -> colors.accent
+                    cell.isCurrent -> colors.accent.copy(alpha = 0.65f)
+                    else -> colors.badgeBorder
+                },
+                EpgCellShape
+            )
+            .onFocusChanged { cellFocused = it.isFocused || it.hasFocus }
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (prog?.isRecording == true) RecBadge(recordingLabel)
+            Text(
+                text = prog?.title ?: noProgramLabel,
+                color = if (prog != null) fg else colors.textMuted,
+                fontSize = 12.sp,
+                fontWeight = if (cell.isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        val progRange = prog?.let { com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(it, timeFmt) }
+        if (prog != null && !progRange.isNullOrBlank()) {
+            Text(
+                text = progRange,
+                color = subFg,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
