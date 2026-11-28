@@ -3530,15 +3530,10 @@ private fun LiveTvGuideContent(
     var windowOffsetHours by rememberSaveable { mutableStateOf(0) }
     val windowStartMs = baseWindowStartMs + windowOffsetHours * 3_600_000L
     val timeSlots = remember(windowStartMs) { com.seerflix.tv.core.data.LiveTvEpgHelper.timeSlots(windowStartMs) }
-    val epgContext = androidx.compose.ui.platform.LocalContext.current
     // App language + the TV's 12/24-hour setting (not a hard-coded "HH:mm" / device locale).
-    val slotTimeFmt = remember(strings.languageCode) {
-        val locale = java.util.Locale.forLanguageTag(strings.languageCode)
-        val skeleton = if (android.text.format.DateFormat.is24HourFormat(epgContext)) "Hm" else "hm"
-        java.time.format.DateTimeFormatter
-            .ofPattern(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
-            .withZone(java.time.ZoneId.systemDefault())
-    }
+    // Also formats every programme's start-end and the scheduled recordings.
+    val slotTimeFmt = rememberLiveTvClockFormatter(strings.languageCode)
+    val recordingTimeFmt = rememberLiveTvClockFormatter(strings.languageCode, datePrefix = "EEEdMMM")
     val dayFmt = remember(strings.languageCode) {
         val locale = java.util.Locale.forLanguageTag(strings.languageCode)
         java.time.format.DateTimeFormatter
@@ -3764,6 +3759,7 @@ private fun LiveTvGuideContent(
                             key(cell.program?.id ?: "gap_${cell.startMs}") {
                                 EpgProgramCell(
                                     cell = cell,
+                                    timeFmt = slotTimeFmt,
                                     noProgramLabel = strings.liveNoProgramData,
                                     recordingLabel = strings.dvrRecordingBadge,
                                     onClick = {
@@ -3871,10 +3867,11 @@ private fun LiveTvGuideContent(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (cur != null && cur.timeRangeLabel.isNotBlank()) {
+                        val curRange = cur?.let { com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(it, slotTimeFmt) }
+                        if (cur != null && !curRange.isNullOrBlank()) {
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = strings.liveOnNow.format(cur.timeRangeLabel),
+                                text = strings.liveOnNow.format(curRange),
                                 color = colors.matchGreen,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold
@@ -3919,8 +3916,9 @@ private fun LiveTvGuideContent(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            if (nxt.timeRangeLabel.isNotBlank()) {
-                                Text(nxt.timeRangeLabel, color = colors.textMuted, fontSize = 11.sp)
+                            val nxtRange = com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(nxt, slotTimeFmt)
+                            if (nxtRange.isNotBlank()) {
+                                Text(nxtRange, color = colors.textMuted, fontSize = 11.sp)
                             }
                         }
                     }
@@ -3986,7 +3984,9 @@ private fun LiveTvGuideContent(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(rec.title, color = colors.white, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         val sub = listOfNotNull(
-                            rec.timeLabel.takeIf { it.isNotBlank() },
+                            (if (!rec.isSeriesRule && rec.startMs > 0L && rec.startMs != Long.MAX_VALUE) {
+                                recordingTimeFmt.format(java.time.Instant.ofEpochMilli(rec.startMs))
+                            } else rec.timeLabel).takeIf { it.isNotBlank() },
                             rec.channelName,
                             strings.dvrRecordSeries.takeIf { rec.isSeriesRule }
                         ).joinToString(" • ")
@@ -4614,6 +4614,26 @@ private fun SmallTextButton(
     }
 }
 
+/**
+ * Clock time in the app language that follows the TV's 12/24-hour setting (never a hard-coded
+ * "HH:mm"), optionally after a date ([datePrefix] is a date skeleton such as "EEEdMMM").
+ */
+@Composable
+private fun rememberLiveTvClockFormatter(
+    languageCode: String,
+    datePrefix: String = ""
+): java.time.format.DateTimeFormatter {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val use24Hour = android.text.format.DateFormat.is24HourFormat(context)
+    return remember(languageCode, use24Hour, datePrefix) {
+        val locale = java.util.Locale.forLanguageTag(languageCode)
+        val skeleton = datePrefix + if (use24Hour) "Hm" else "hm"
+        java.time.format.DateTimeFormatter
+            .ofPattern(android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton), locale)
+            .withZone(java.time.ZoneId.systemDefault())
+    }
+}
+
 @Composable
 private fun RecBadge(label: String) {
     Box(
@@ -4693,6 +4713,7 @@ private fun LiveTvProgramDialog(
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
     val strings = AppStrings.current
+    val programTimeFmt = rememberLiveTvClockFormatter(strings.languageCode)
     val firstFocus = remember { FocusRequester() }
     // null = keep the server's recording defaults (Dashboard → Live TV).
     var prePaddingMin by remember { mutableStateOf<Int?>(null) }
@@ -4811,8 +4832,9 @@ private fun LiveTvProgramDialog(
             }
 
             programs.forEach { program ->
+                val range = com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(program, programTimeFmt)
                 Text(
-                    "${program.title}${if (program.timeRangeLabel.isNotBlank()) "  •  ${program.timeRangeLabel}" else ""}",
+                    "${program.title}${if (range.isNotBlank()) "  •  $range" else ""}",
                     color = colors.white,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -4868,6 +4890,7 @@ private val EpgCellShape = RoundedCornerShape(8.dp)
 @Composable
 private fun EpgProgramCell(
     cell: com.seerflix.tv.core.data.LiveTvEpgHelper.EpgCell,
+    timeFmt: java.time.format.DateTimeFormatter,
     noProgramLabel: String,
     recordingLabel: String,
     onClick: () -> Unit,
@@ -4915,9 +4938,10 @@ private fun EpgProgramCell(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        if (prog != null && prog.timeRangeLabel.isNotBlank()) {
+        val progRange = prog?.let { com.seerflix.tv.core.data.LiveTvEpgHelper.timeRangeLabel(it, timeFmt) }
+        if (prog != null && !progRange.isNullOrBlank()) {
             Text(
-                text = prog.timeRangeLabel,
+                text = progRange,
                 color = subFg,
                 fontSize = 10.sp,
                 maxLines = 1,

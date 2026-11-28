@@ -38,6 +38,11 @@ class RequestReadyWorker(
         val activeProfile = prefs.activeProfileFlow.first() ?: return Result.success()
         val repo = entryPoint.catalogRepository()
         val tvSync = entryPoint.tvChannelSyncManager()
+        // The launcher's Watch Next row is shared by every profile: "Ready" promotions made while
+        // an adult profile was active must not stay there for a Kids / rating-limited one.
+        if (activeProfile.isRestricted) {
+            tvSync.removeReadyPromotions { jfId -> repo.isLibraryTitleAllowed(jfId, activeProfile) }
+        }
 
         // One cheap call first: most runs find nothing new, and then neither the library index
         // nor 50 per-title Seerr lookups are needed.

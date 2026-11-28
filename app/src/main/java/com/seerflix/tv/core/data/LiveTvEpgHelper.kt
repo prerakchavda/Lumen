@@ -30,6 +30,19 @@ object LiveTvEpgHelper {
         return Math.floorDiv(epochMs + offset, HALF_HOUR_MS) * HALF_HOUR_MS - offset
     }
 
+    /**
+     * "start - end" of [program] in [timeFmt] (the guide passes one that follows the TV's
+     * 12/24-hour setting and the app language); the programme's preformatted label when it has
+     * no times.
+     */
+    fun timeRangeLabel(program: LiveTvProgram, timeFmt: java.time.format.DateTimeFormatter): String =
+        if (program.startMs > 0L && program.endMs > 0L) {
+            "${timeFmt.format(java.time.Instant.ofEpochMilli(program.startMs))} - " +
+                timeFmt.format(java.time.Instant.ofEpochMilli(program.endMs))
+        } else {
+            program.timeRangeLabel
+        }
+
     /** Returns the [GRID_SLOTS] half-hour start timestamps starting at [windowStartMs]. */
     fun timeSlots(windowStartMs: Long): List<Long> =
         (0 until GRID_SLOTS).map { windowStartMs + it * HALF_HOUR_MS }

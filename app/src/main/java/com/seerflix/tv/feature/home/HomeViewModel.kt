@@ -226,7 +226,7 @@ class HomeViewModel @Inject constructor(
                 val before = _uiState.value.featuredItem
                 val after = _uiState.updateAndGet { state ->
                     val rows = state.rows.withoutDeleted()
-                    val featuredGone = state.featuredItem?.jellyfinId in deleted
+                    val featuredGone = state.featuredItem?.isDeletedBy(deleted) == true
                     state.copy(
                         rows = rows,
                         featuredItem = if (!featuredGone) state.featuredItem
@@ -270,6 +270,18 @@ class HomeViewModel @Inject constructor(
                 if (active == null) return@collect
                 val previous = _uiState.value.profile
                 _uiState.update { it.copy(profile = active) }
+                // The launcher's Watch Next row is shared by every profile: "Ready" promotions made
+                // while an adult profile was active must not stay there for this one.
+                if (active.isRestricted && (previous == null || previous.id != active.id ||
+                        previous.effectiveRatingLimit != active.effectiveRatingLimit || previous.kidsMode != active.kidsMode)
+                ) {
+                    // removeReadyPromotions() swallows provider errors itself.
+                    viewModelScope.launch {
+                        tvChannelSyncManager.removeReadyPromotions { jfId ->
+                            catalogRepository.isLibraryTitleAllowed(jfId, active)
+                        }
+                    }
+                }
                 // Home stays on the back stack while the profile is edited (Manage Profiles,
                 // Settings): a new rating limit / Kids mode / row layout / language must not keep
                 // showing rows built under the old rules.
@@ -821,7 +833,9 @@ class HomeViewModel @Inject constructor(
                 val rows = _uiState.value.rows
                 val channelItems = rows.firstOrNull { it.id == "trending_now" }?.items
                     ?: rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
-                com.seerflix.tv.core.player.runCatchingCancellable { tvChannelSyncManager.syncHomeChannels(cwItems, channelItems) }
+                com.seerflix.tv.core.player.runCatchingCancellable {
+                    tvChannelSyncManager.syncHomeChannels(cwItems, channelItems, readyPromotionFilter())
+                }
             }
         }
     }
@@ -1458,7 +1472,7 @@ class HomeViewModel @Inject constructor(
                         val continueItems = bundle.rows.firstOrNull { it.id == "continue_watching" }?.items.orEmpty()
                         val channelItems = bundle.rows.firstOrNull { it.id == "trending_now" }?.items
                             ?: bundle.rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
-                        tvChannelSyncManager.syncHomeChannels(continueItems, channelItems)
+                        tvChannelSyncManager.syncHomeChannels(continueItems, channelItems, readyPromotionFilter())
                     }
                 }
             }.onFailure { err ->
@@ -1538,9 +1552,19 @@ class HomeViewModel @Inject constructor(
         val deleted = catalogRepository.deletedItemIds.value
         if (deleted.isEmpty()) return this
         return map { row ->
-            val kept = row.items.filterNot { it.jellyfinId in deleted }
+            val kept = row.items.filterNot { it.isDeletedBy(deleted) }
             if (kept.size == row.items.size) row else row.copy(items = kept)
         }.filter { it.items.isNotEmpty() }
+    }
+
+    /** The title itself was deleted, or the series it is an episode of (Continue Watching / Next Up). */
+    private fun UnifiedMediaItem.isDeletedBy(deleted: Set<String>): Boolean =
+        jellyfinId in deleted || (seriesId != null && seriesId in deleted)
+
+    /** Launcher "Ready" promotions the active profile may see (Watch Next is shared by every profile). */
+    private fun readyPromotionFilter(): (String) -> Boolean {
+        val profile = _uiState.value.profile
+        return { jfId -> catalogRepository.isLibraryTitleAllowed(jfId, profile) }
     }
 
     private fun pickInitialFeatured(rows: List<CatalogRow>): UnifiedMediaItem? =

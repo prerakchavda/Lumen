@@ -200,6 +200,26 @@ class UnifiedCatalogRepositoryFeaturesTest {
         assertEquals("HBO HD", channels.first().name)
     }
 
+    @Test
+    fun `launcher ready promotions are checked against the active profile's rating limit`() = runTest {
+        jellyfinApi.libraryItems = listOf(
+            JellyfinItemDto(id = "m1", name = "Family Movie", type = "Movie", officialRating = "PG"),
+            JellyfinItemDto(id = "m2", name = "Mature Movie", type = "Movie", officialRating = "R")
+        )
+        repository.refreshLibraryIndex("u1")
+        val kids = UserProfile(
+            id = "u1", name = "Kids", jellyfinUserId = "u1", jellyfinToken = "tok",
+            kidsMode = true, maxContentRating = ContentRatingLimit.PG
+        )
+        val adult = UserProfile(id = "u1", name = "Adult", jellyfinUserId = "u1", jellyfinToken = "tok")
+        assertTrue(repository.isLibraryTitleAllowed("m1", kids))
+        assertFalse(repository.isLibraryTitleAllowed("m2", kids))
+        // Unknown to the index: not shown to a restricted profile.
+        assertFalse(repository.isLibraryTitleAllowed("gone", kids))
+        assertTrue(repository.isLibraryTitleAllowed("m2", adult))
+        assertTrue(repository.isLibraryTitleAllowed("gone", null))
+    }
+
     private class FakeJellyfinApi : JellyfinApi {
         var libraryItems: List<JellyfinItemDto> = emptyList()
         var latestItems: List<JellyfinItemDto> = emptyList()

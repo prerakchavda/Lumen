@@ -1,5 +1,7 @@
 package com.seerflix.tv.core.data
 
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.ArrQualityProfile
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityFilter
@@ -68,7 +70,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
@@ -76,6 +80,8 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -96,6 +102,11 @@ class UnifiedCatalogRepository @Inject constructor(
     private val servers: JellyfinServers? = null,
     private val copies: CrossServerCopies? = null
 ) {
+    init {
+        // formatHttpError() is static; let it follow the active profile's language.
+        uiLanguageSource = { prefs.cachedUiLanguage.ifBlank { "en" } }
+    }
+
     /**
      * Snapshot of one Jellyfin user's owned Movies/Series plus the lookup maps derived from it.
      * Swapped atomically so readers never see a half-built index.
@@ -227,6 +238,17 @@ class UnifiedCatalogRepository @Inject constructor(
             MediaType.MOVIE -> tmdbToJellyfinMovie[tmdbId]?.id
             MediaType.SERIES, MediaType.EPISODE -> tmdbToJellyfinSeries[tmdbId]?.id
         }
+    }
+
+    /**
+     * Whether [profile] may see the owned movie / series [jellyfinId], with the same rating check
+     * as every row (e.g. a launcher "Ready" promotion made while another profile was active).
+     * A restricted profile is not allowed a title the current library index doesn't know.
+     */
+    fun isLibraryTitleAllowed(jellyfinId: String, profile: UserProfile?): Boolean {
+        if (profile == null || !profile.isRestricted) return true
+        val dto = currentIndex?.items?.firstOrNull { it.id == jellyfinId } ?: return false
+        return ContentRatingHelper.isAllowed(dto.officialRating, dto.genres, profile)
     }
 
     /**
@@ -3746,37 +3768,43 @@ class UnifiedCatalogRepository @Inject constructor(
                 jellyfinApi.getLiveTvChannels(userId = userId, enableFavoriteSorting = true).items
             }.getOrDefault(emptyList())
         }
-        val programsDeferred = async {
-            // One request is sorted by start time across *all* channels, so a single page of a
-            // few hundred programmes only covers the first few hours on a large lineup. Page
-            // through the whole 36-hour window (bounded, so a huge IPTV guide can't run forever).
-            suspend fun page(startIndex: Int, withTotal: Boolean) = runCatchingCancellable {
-                jellyfinApi.getLiveTvPrograms(
-                    userId = userId,
-                    hasAired = false,
-                    limit = LIVE_TV_PROGRAM_PAGE,
-                    startIndex = startIndex.takeIf { it > 0 },
-                    minEndDate = minEndIso,
-                    maxStartDate = maxStartIso,
-                    sortBy = "StartDate",
-                    enableTotalRecordCount = withTotal
-                )
-            }.getOrNull()
-            // The first page brings the total, so the rest can be fetched in parallel instead of
-            // one round trip after another.
-            val first = page(0, withTotal = true) ?: return@async emptyList()
+        // One request is sorted by start time across *all* channels, so a single page of a
+        // few hundred programmes only covers the first few hours on a large lineup. Page
+        // through the whole 36-hour window. The cap grows with the lineup (a fixed cap left
+        // the later hours empty on every channel of a big guide) but stays bounded, so a huge
+        // IPTV guide can't run forever or exhaust memory.
+        suspend fun page(startIndex: Int, withTotal: Boolean) = runCatchingCancellable {
+            jellyfinApi.getLiveTvPrograms(
+                userId = userId,
+                hasAired = false,
+                limit = LIVE_TV_PROGRAM_PAGE,
+                startIndex = startIndex.takeIf { it > 0 },
+                minEndDate = minEndIso,
+                maxStartDate = maxStartIso,
+                sortBy = "StartDate",
+                enableTotalRecordCount = withTotal
+            )
+        }.getOrNull()
+        // The first page (it brings the total) goes out alongside the channel list.
+        val firstPageDeferred = async { page(0, withTotal = true) }
+        val channels = channelsDeferred.await()
+        val programs = run {
+            val first = firstPageDeferred.await() ?: return@run emptyList<JellyfinItemDto>()
             val collected = first.items.toMutableList()
             if (first.items.size >= LIVE_TV_PROGRAM_PAGE) {
-                val end = minOf(first.totalRecordCount, LIVE_TV_PROGRAM_MAX)
+                val cap = liveTvProgramCap(channels.size)
+                val end = minOf(first.totalRecordCount, cap)
                 if (end > first.items.size) {
+                    // The rest in parallel, a few requests at a time.
+                    val gate = Semaphore(LIVE_TV_PROGRAM_PARALLEL_PAGES)
                     (first.items.size until end step LIVE_TV_PROGRAM_PAGE)
-                        .map { start -> async { page(start, withTotal = false)?.items.orEmpty() } }
+                        .map { start -> async { gate.withPermit { page(start, withTotal = false)?.items.orEmpty() } } }
                         .awaitAll()
                         .forEach { collected += it }
                 } else {
                     // No usable total: page on one by one, as before.
                     var startIndex = first.items.size
-                    while (startIndex < LIVE_TV_PROGRAM_MAX) {
+                    while (startIndex < cap) {
                         val items = page(startIndex, withTotal = false)?.items ?: break
                         collected += items
                         if (items.size < LIVE_TV_PROGRAM_PAGE) break
@@ -3786,11 +3814,14 @@ class UnifiedCatalogRepository @Inject constructor(
             }
             collected.distinctBy { it.id }
         }
-        val channels = channelsDeferred.await()
-        val programsByChannel = programsDeferred.await().groupBy { it.channelId }
+        val programsByChannel = programs.groupBy { it.channelId }
         val base = jfBaseUrl
         val nowMs = nowInstant.toEpochMilli()
-        val timeFmt = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+        // Fallback label only: the guide formats start/end itself with the TV's 12/24-hour
+        // setting (this layer has no Context). Localized short time, never a fixed "HH:mm".
+        val timeFmt = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+            .withLocale(Locale.forLanguageTag(prefs.cachedUiLanguage.ifBlank { "en" }))
+            .withZone(ZoneId.systemDefault())
 
         channels.map { ch ->
             val progList = programsByChannel[ch.id].orEmpty().map { p ->
@@ -3875,7 +3906,11 @@ class UnifiedCatalogRepository @Inject constructor(
         val seriesDeferred = async {
             runCatchingCancellable { jellyfinApi.getLiveTvSeriesTimers().items }.getOrDefault(emptyList())
         }
-        val fmt = DateTimeFormatter.ofPattern("EEE d MMM, HH:mm").withZone(ZoneId.systemDefault())
+        // Fallback label only: the guide formats [ScheduledRecording.startMs] itself with the TV's
+        // 12/24-hour setting and the app language.
+        val fmt = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+            .withLocale(Locale.forLanguageTag(prefs.cachedUiLanguage.ifBlank { "en" }))
+            .withZone(ZoneId.systemDefault())
         val single = timersDeferred.await().map { t ->
             val start = parseIsoMillis(t.startDate)
             ScheduledRecording(
@@ -4270,6 +4305,7 @@ class UnifiedCatalogRepository @Inject constructor(
             mediaBadges = badges,
             episodeLabel = epLabel,
             seriesName = dto.seriesName,
+            seriesId = dto.seriesId,
             releaseDate = dto.premiereDate,
             youtubeTrailerKey = ytKey,
             relatedVideos = related,
@@ -4765,7 +4801,23 @@ class UnifiedCatalogRepository @Inject constructor(
         private const val OVERVIEW_BACKFILL_LIMIT = 60
         /** Live TV guide: programmes per request, and the most fetched for the 36-hour window. */
         private const val LIVE_TV_PROGRAM_PAGE = 1000
-        private const val LIVE_TV_PROGRAM_MAX = 12_000
+        /** At least this many programmes, whatever the lineup (the old fixed cap). */
+        private const val LIVE_TV_PROGRAM_MIN = 12_000
+        /**
+         * Budget per channel for 36 hours: 72 half-hour slots, doubled for lineups with short
+         * programmes (news bulletins, kids' shorts).
+         */
+        private const val LIVE_TV_PROGRAMS_PER_CHANNEL = 150
+        /** Hard ceiling, so a huge IPTV guide stays within memory. */
+        private const val LIVE_TV_PROGRAM_MAX = 50_000
+        /** Guide pages fetched at once. */
+        private const val LIVE_TV_PROGRAM_PARALLEL_PAGES = 4
+
+        /** How many guide programmes to fetch for a lineup of [channelCount] channels. */
+        internal fun liveTvProgramCap(channelCount: Int): Int =
+            (channelCount.coerceAtLeast(0).toLong() * LIVE_TV_PROGRAMS_PER_CHANNEL)
+                .coerceIn(LIVE_TV_PROGRAM_MIN.toLong(), LIVE_TV_PROGRAM_MAX.toLong())
+                .toInt()
 
         // Several servers
         private val HOME_SERVER = JellyfinServer(id = ServerScopedId.HOME, isHome = true)
@@ -4925,15 +4977,27 @@ class UnifiedCatalogRepository @Inject constructor(
             return JsonObject(map)
         }
 
-        fun formatHttpError(err: Throwable, fallback: String = "Operation failed"): String {
+        /**
+         * The active profile's UI language for [formatHttpError], which callers use statically.
+         * Set by the (singleton) repository from [SessionPreferences.cachedUiLanguage]; English
+         * until then.
+         */
+        @Volatile
+        internal var uiLanguageSource: () -> String = { "en" }
+
+        fun formatHttpError(
+            err: Throwable,
+            fallback: String = "Operation failed",
+            strings: UiStrings = stringsForLanguage(uiLanguageSource())
+        ): String {
             val raw = err.message?.trim().orEmpty()
             val codeMatch = Regex("""HTTP\s+(\d{3})""", RegexOption.IGNORE_CASE).find(raw)
             val code = codeMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
             return when (code) {
-                401, 403 -> "Authentication required (HTTP $code) — re-sign in to your profile or add a Seerr API Key in Server Settings"
-                404 -> "Media item not found on server (HTTP 404)"
-                409 -> "This item has already been requested (HTTP 409)"
-                500, 502, 503, 504 -> "Server error (HTTP $code) — check that Jellyfin and Seerr are healthy"
+                401, 403 -> strings.errorHttpAuthRequired.format(code)
+                404 -> strings.errorHttpNotFound.format(404)
+                409 -> strings.errorHttpAlreadyRequested.format(409)
+                500, 502, 503, 504 -> strings.errorHttpServer.format(code)
                 else -> if (raw.isNotBlank()) raw else fallback
             }
         }
