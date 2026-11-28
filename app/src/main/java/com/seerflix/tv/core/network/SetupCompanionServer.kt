@@ -72,7 +72,9 @@ class SetupCompanionServer {
                     continue
                 }
                 openClients.add(client)
-                launch {
+                // ATOMIC: a stop() between accept and start must still run the finally block,
+                // or the slot leaks and, after a few, every phone connection is refused.
+                launch(start = kotlinx.coroutines.CoroutineStart.ATOMIC) {
                     try {
                         // Never let one bad connection crash the app (uncaught exception in scope).
                         runCatching { handleClient(client, token, currentValues, jellyfinOnly, onSubmitted) }

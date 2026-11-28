@@ -89,6 +89,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -568,6 +569,7 @@ fun HomeContent(
                         onPlayReadyAlert = onPlayReadyAlert,
                         onDismissReadyAlert = onDismissReadyAlert,
                         onBackToNav = onBackToNav,
+                        homeHasFocus = { homeHasFocus },
                         extraActions = extraActions,
                         previewHttpClient = previewHttpClient,
                         modifier = Modifier
@@ -613,6 +615,7 @@ fun HomeContent(
                         onPlayReadyAlert = onPlayReadyAlert,
                         onDismissReadyAlert = onDismissReadyAlert,
                         onBackToNav = onBackToNav,
+                        homeHasFocus = { homeHasFocus },
                         extraActions = extraActions,
                         previewHttpClient = previewHttpClient,
                         modifier = Modifier.fillMaxSize()
@@ -673,6 +676,7 @@ fun HomeContent(
                         onPlayReadyAlert = onPlayReadyAlert,
                         onDismissReadyAlert = onDismissReadyAlert,
                         onBackToNav = onBackToNav,
+                        homeHasFocus = { homeHasFocus },
                         extraActions = extraActions,
                         previewHttpClient = previewHttpClient,
                         modifier = Modifier
@@ -911,6 +915,8 @@ private fun HomeMainCanvas(
     onPlayReadyAlert: (ReadyRequestAlert) -> Unit,
     onDismissReadyAlert: (Int) -> Unit,
     onBackToNav: () -> Unit = {},
+    /** Whether anything on Home (nav included) holds focus. */
+    homeHasFocus: () -> Boolean = { true },
     previewHttpClient: OkHttpClient? = null,
     extraActions: HomeExtraActions = HomeExtraActions(),
     modifier: Modifier = Modifier
@@ -1022,17 +1028,17 @@ private fun HomeMainCanvas(
     // chip, a genre chip). Put focus back on the new content once it arrives instead of leaving
     // the remote pointing at nothing.
     val collectionsFocusRequester = remember { FocusRequester() }
+    // Set from the focus callback: by the time an effect runs, the focused card is already gone.
     var refocusAfterLoad by remember { mutableStateOf(false) }
+    val showsSpinner = state.isLoading && !hasContentForTab
+    val currentShowsSpinner by rememberUpdatedState(showsSpinner)
     LaunchedEffect(state.isLoading, hasContentForTab) {
-        if (state.isLoading && !hasContentForTab) {
-            if (contentHasFocus) refocusAfterLoad = true
-            return@LaunchedEffect
-        }
-        if (!refocusAfterLoad || state.isLoading) return@LaunchedEffect
+        if (state.isLoading || !refocusAfterLoad) return@LaunchedEffect
         refocusAfterLoad = false
         withFrameNanos { }
         withFrameNanos { }
-        if (contentHasFocus) return@LaunchedEffect
+        // The user may have gone to the nav meanwhile; only fill a focus vacuum.
+        if (contentHasFocus || homeHasFocus()) return@LaunchedEffect
         val ok = when (state.activeTab) {
             HomeTab.COLLECTIONS ->
                 runCatching { collectionsFocusRequester.requestFocus() }.getOrDefault(false)
@@ -1043,7 +1049,12 @@ private fun HomeMainCanvas(
         if (!ok) onBackToNav()
     }
 
-    Box(modifier = modifier.onFocusChanged { contentHasFocus = it.hasFocus }) {
+    Box(
+        modifier = modifier.onFocusChanged {
+            if (contentHasFocus && !it.hasFocus && currentShowsSpinner) refocusAfterLoad = true
+            contentHasFocus = it.hasFocus
+        }
+    ) {
         when {
             // Per-tab check: switching to Collections / Live TV used to flash their
             // "nothing found" empty state while the request was still in flight.
@@ -4094,17 +4105,30 @@ private fun LiveTvGuideContent(
 /**
  * The dialog only lists the rows of the tab it was opened from. Rows saved in [savedOrder] that
  * the dialog didn't show keep their slots; the slots of the rows it did show are refilled in
- * the user's new order, and rows that were never saved go at the end.
+ * the user's new order. Rows that were never saved go next to their neighbour in the dialog
+ * (after the row above them, else before the row below), so where the user moved them sticks.
  */
 internal fun mergeRowOrder(savedOrder: List<String>, editedOrder: List<String>): List<String> {
     if (savedOrder.isEmpty()) return editedOrder.distinct()
     val edited = editedOrder.distinct()
     val editedSet = edited.toSet()
-    val queue = ArrayDeque(edited.filter { it in savedOrder })
-    val merged = savedOrder.distinct().map { id ->
+    val saved = savedOrder.distinct()
+    val savedSet = saved.toSet()
+    val queue = ArrayDeque(edited.filter { it in savedSet })
+    val merged = saved.map { id ->
         if (id in editedSet) queue.removeFirst() else id
+    }.toMutableList()
+    edited.forEachIndexed { index, id ->
+        if (id in savedSet) return@forEachIndexed
+        val before = (index - 1 downTo 0).map { edited[it] }.firstOrNull { it in merged }
+        val after = (index + 1 until edited.size).map { edited[it] }.firstOrNull { it in merged }
+        when {
+            before != null -> merged.add(merged.indexOf(before) + 1, id)
+            after != null -> merged.add(merged.indexOf(after), id)
+            else -> merged.add(id)
+        }
     }
-    return merged + edited.filterNot { it in savedOrder }
+    return merged
 }
 
 @Composable

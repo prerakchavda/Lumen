@@ -337,6 +337,13 @@ fun PlayerScreen(
     // player leaves that state (next item buffering, seek back, retry).
     var playbackEnded by remember { mutableStateOf(false) }
 
+    // The screen itself leaving composition (not the player being rebuilt for a passthrough
+    // change): remember where we were in case this ViewModel's screen comes back.
+    val latestPositionMs by rememberUpdatedState(currentPosMs)
+    DisposableEffect(Unit) {
+        onDispose { viewModel.onPlayerReleased(latestPositionMs) }
+    }
+
     DisposableEffect(player) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -526,9 +533,7 @@ fun PlayerScreen(
                     win.attributes = params
                 }
             }
-            val releasePositionMs = player.currentPosition.coerceAtLeast(0L)
-            viewModel.reportStopped(releasePositionMs, buildLiveReportState())
-            viewModel.onPlayerReleased(releasePositionMs)
+            viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
             player.release()
         }
     }

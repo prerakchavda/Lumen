@@ -44,6 +44,16 @@ class AuthRepository @Inject constructor(
         val result = testAndSaveServersInternal(
             jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
         )
+        if (result.isSuccess) {
+            val seerrChanged = previous.seerrUrl != prefs.cachedSeerrUrl ||
+                previous.seerrLocalUrl != prefs.cachedSeerrLocalUrl ||
+                previous.seerrApiKey != prefs.cachedSeerrApiKey
+            if (seerrChanged) {
+                // X-API-User ids are per Seerr server: an old id on a new server is someone else.
+                prefs.clearSeerrUserIds()
+                prefs.activeProfileFlow.first()?.let { runCatchingCancellable { linkSeerrAccount(it) } }
+            }
+        }
         if (result.isFailure) {
             // First-time setup included: `isConfigured` only checks for a Jellyfin URL, so leaving
             // a URL that just failed saved would skip Setup on the next launch and open an empty

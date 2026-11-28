@@ -163,6 +163,11 @@ class SessionPreferences private constructor(
     var cachedProfileRestricted: Boolean = false
         private set
 
+    /** The active profile is a Jellyfin administrator (and not restricted). */
+    @Volatile
+    var cachedProfileIsAdmin: Boolean = false
+        private set
+
     fun setImmediateSeerrUserId(id: Int?) {
         cachedSeerrUserId = id
     }
@@ -170,6 +175,19 @@ class SessionPreferences private constructor(
     private fun installSeerrIdentity(profile: UserProfile?) {
         cachedSeerrUserId = profile?.seerrUserId
         cachedProfileRestricted = profile?.isRestricted == true
+        cachedProfileIsAdmin = profile?.isAdmin == true
+    }
+
+    /** Another Seerr server (or key): the stored Seerr user ids belong to the old one. */
+    suspend fun clearSeerrUserIds() {
+        cachedSeerrUserId = null
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: return@edit
+            if (current.none { it.seerrUserId != null }) return@edit
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(current.map { it.copy(seerrUserId = null) })
+        }
     }
 
     suspend fun updateProfileSeerrUserId(profileId: String, seerrUserId: Int) {

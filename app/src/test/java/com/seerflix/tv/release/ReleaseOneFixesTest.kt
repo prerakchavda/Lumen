@@ -21,9 +21,18 @@ class ReleaseOneFixesTest {
     }
 
     @Test
-    fun `restricted profiles never act as the Seerr admin`() {
-        assertEquals(SeerrKeyMode.NONE, seerrKeyMode(null, hasApiKey = true, seerrUserId = null, profileRestricted = true))
+    fun `restricted profiles never write as the Seerr admin`() {
+        assertEquals(SeerrKeyMode.NONE, seerrKeyMode(null, true, null, profileRestricted = true, isWrite = true))
+        // Browsing (discover rows, search, details) keeps working.
+        assertEquals(SeerrKeyMode.ADMIN, seerrKeyMode(null, true, null, profileRestricted = true, isWrite = false))
         assertEquals(SeerrKeyMode.ADMIN, seerrKeyMode(null, hasApiKey = true, seerrUserId = null, profileRestricted = false))
+        // A Kids profile flagged admin is still restricted.
+        assertEquals(SeerrKeyMode.AsUser(3), seerrKeyMode(null, true, 3, profileRestricted = true, profileIsAdmin = true, isWrite = true))
+    }
+
+    @Test
+    fun `the Jellyfin admin keeps managing requests as the Seerr admin`() {
+        assertEquals(SeerrKeyMode.ADMIN, seerrKeyMode(null, true, 5, profileRestricted = false, profileIsAdmin = true, isWrite = true))
     }
 
     @Test
@@ -41,10 +50,14 @@ class ReleaseOneFixesTest {
             listOf("continue_watching", "genre_action", "top10", "trending", "my_list"),
             mergeRowOrder(saved, listOf("genre_action", "trending"))
         )
-        // New rows the saved order never had go at the end.
+        // A row the saved order never had stays where the user put it.
         assertEquals(
-            listOf("continue_watching", "trending", "top10", "genre_action", "my_list", "next_up"),
+            listOf("continue_watching", "trending", "next_up", "top10", "genre_action", "my_list"),
             mergeRowOrder(saved, listOf("trending", "next_up"))
+        )
+        assertEquals(
+            listOf("continue_watching", "new_lib", "trending", "top10", "genre_action", "my_list"),
+            mergeRowOrder(saved, listOf("new_lib", "trending"))
         )
         assertEquals(listOf("a", "b"), mergeRowOrder(emptyList(), listOf("a", "b", "a")))
     }

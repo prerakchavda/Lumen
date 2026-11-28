@@ -84,7 +84,9 @@ internal fun isSafeToRetryElsewhere(method: String, error: IOException): Boolean
         is java.net.ConnectException,
         is java.net.UnknownHostException,
         is java.net.NoRouteToHostException,
-        is javax.net.ssl.SSLHandshakeException -> true
+        is javax.net.ssl.SSLHandshakeException,
+        // e.g. a domain certificate on the https://<LAN IP> address: fails before anything is sent.
+        is javax.net.ssl.SSLPeerUnverifiedException -> true
         is java.net.SocketTimeoutException -> error.message.orEmpty().contains("connect", ignoreCase = true)
         else -> false
     }
@@ -211,14 +213,19 @@ internal fun seerrKeyMode(
     marker: String?,
     hasApiKey: Boolean,
     seerrUserId: Int?,
-    profileRestricted: Boolean
+    profileRestricted: Boolean,
+    profileIsAdmin: Boolean = false,
+    isWrite: Boolean = false
 ): SeerrKeyMode = when {
     !hasApiKey || marker == "1" -> SeerrKeyMode.NONE
     marker == "0" -> SeerrKeyMode.ADMIN
+    // The household's Jellyfin admin manages requests (approve / decline) as the Seerr admin.
+    profileIsAdmin && !profileRestricted -> SeerrKeyMode.ADMIN
     seerrUserId != null -> SeerrKeyMode.AsUser(seerrUserId)
-    // Not linked to a Seerr account yet: unrestricted profiles keep working through the key
-    // (the behaviour before 1.0); Kids / rating-limited profiles never act as the admin.
-    profileRestricted -> SeerrKeyMode.NONE
+    // Not linked to a Seerr account: Kids / rating-limited profiles may still browse through
+    // the key, but never request, approve, decline or report as the admin.
+    profileRestricted -> if (isWrite) SeerrKeyMode.NONE else SeerrKeyMode.ADMIN
+    // Unrestricted profiles keep working through the key (the behaviour before 1.0).
     else -> SeerrKeyMode.ADMIN
 }
 
@@ -234,7 +241,18 @@ private class SeerrAuthInterceptor(
         // A pasted key with an invisible / non-ASCII character makes OkHttp throw from header(),
         // which kills the process on an async call. Skip it; Seerr then answers 401 instead.
         val apiKey = prefs.cachedSeerrApiKey.trim().takeIf { key -> key.all { it in ' '..'~' } }.orEmpty()
-        when (val mode = seerrKeyMode(marker, apiKey.isNotBlank(), prefs.cachedSeerrUserId, prefs.cachedProfileRestricted)) {
+        val isWrite = !original.method.equals("GET", ignoreCase = true) &&
+            !original.method.equals("HEAD", ignoreCase = true)
+        when (
+            val mode = seerrKeyMode(
+                marker = marker,
+                hasApiKey = apiKey.isNotBlank(),
+                seerrUserId = prefs.cachedSeerrUserId,
+                profileRestricted = prefs.cachedProfileRestricted,
+                profileIsAdmin = prefs.cachedProfileIsAdmin,
+                isWrite = isWrite
+            )
+        ) {
             SeerrKeyMode.NONE -> Unit
             SeerrKeyMode.ADMIN -> builder.header("X-Api-Key", apiKey)
             is SeerrKeyMode.AsUser -> builder

@@ -229,9 +229,11 @@ class PlayerViewModel @Inject constructor(
      * the back stack (a remote "show details" command or a deep link pushed a screen on top).
      */
     private var releasedAtPositionMs: Long? = null
+    private var releasedPlaySessionId: String? = null
 
     fun onPlayerReleased(positionMs: Long) {
         releasedAtPositionMs = positionMs
+        releasedPlaySessionId = _uiState.value.session?.playSessionId
     }
 
     /**
@@ -242,9 +244,12 @@ class PlayerViewModel @Inject constructor(
      */
     fun reloadAfterScreenReturn(): Boolean {
         val positionMs = releasedAtPositionMs ?: return false
+        val releasedSession = releasedPlaySessionId
         releasedAtPositionMs = null
+        releasedPlaySessionId = null
         val session = _uiState.value.session ?: return false
-        if (session.isTrailer) return false
+        // Only the session that was playing when the screen left needs a fresh start.
+        if (session.isTrailer || session.playSessionId != releasedSession) return false
         loadItem(
             session.itemId,
             resumeOverrideMs = if (session.isLiveTv) null else positionMs,

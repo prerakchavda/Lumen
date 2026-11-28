@@ -349,12 +349,16 @@ fun DetailsContent(
                     repeat(10) {
                         delay(80L)
                         if (runCatching { returnEpisodeFocusRequester.requestFocus() }.getOrDefault(false)) {
+                            // Done: a later return (e.g. from the header's Resume) must not be
+                            // pulled to this episode again.
+                            focusMemory.lastPlayedEpisodeId = null
                             return@LaunchedEffect
                         }
                     }
                     focusMemory.lastPlayedEpisodeId = null
                     focusMemory.initialFocusDone = false
                     runCatching { listState.scrollToItem(0) }
+                    focusMemory.refocusHeaderRequests++
                 }
                 LazyColumn(
                     state = listState,
@@ -1358,7 +1362,7 @@ private fun DetailsHeaderSection(
             // Initial focus: once, as soon as a primary action exists (seed or full data). Keyed on
             // the primary button rather than item.id, so the seed -> full swap (whose id can differ)
             // and later poll updates never pull focus back after the user has moved it.
-            LaunchedEffect(primaryKey) {
+            LaunchedEffect(primaryKey, focusMemory.refocusHeaderRequests) {
                 if (primaryKey == null || focusMemory.initialFocusDone) return@LaunchedEffect
                 repeat(5) { attempt ->
                     delay(if (attempt == 0) 60L else 50L)
@@ -2292,6 +2296,8 @@ private class DetailsFocusMemory {
     var section: DetailsSection? by mutableStateOf(null)
     /** The episode last started from the list, so Back from the player lands on it. */
     var lastPlayedEpisodeId: String? = null
+    /** Bumped to make the header put focus on its primary action again. */
+    var refocusHeaderRequests: Int by mutableStateOf(0)
 
     companion object {
         val Saver: androidx.compose.runtime.saveable.Saver<DetailsFocusMemory, Any> =
