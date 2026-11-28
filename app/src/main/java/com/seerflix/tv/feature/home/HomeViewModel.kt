@@ -780,6 +780,9 @@ class HomeViewModel @Inject constructor(
                 }
                 if (updated == s.rows) s else s.copy(rows = updated)
             }
+            // The launcher's Watch Next row: new progress / the next episode right after playback,
+            // not only on the next full Home load.
+            tvChannelSyncManager.syncWatchNextOnly(allCw, profileLocked = profile.hasPin)
         }
     }
 
@@ -1386,7 +1389,11 @@ class HomeViewModel @Inject constructor(
                         val continueItems = bundle.rows.firstOrNull { it.id == "continue_watching" }?.items.orEmpty()
                         val channelItems = bundle.rows.firstOrNull { it.id == "trending_now" }?.items
                             ?: bundle.rows.firstOrNull { it.id != "continue_watching" }?.items.orEmpty()
-                        tvChannelSyncManager.syncHomeChannels(continueItems, channelItems)
+                        tvChannelSyncManager.syncHomeChannels(
+                            continueItems,
+                            channelItems,
+                            profileLocked = _uiState.value.profile?.hasPin == true
+                        )
                     }
                 }
             }.onFailure { err ->

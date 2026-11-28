@@ -357,6 +357,9 @@ private fun SeerflixNavGraph(
         if (route == Routes.HOME) {
             navController.popBackStack(Routes.HOME, inclusive = false)
         } else if (route != null) {
+            // A new title from Watch Next while a player is open replaces that player: left under
+            // the new one, Back would restart the previous title.
+            if (currentRoute == Routes.PLAYER && route.startsWith("player/")) navController.popBackStack()
             // An unknown or malformed route must never crash the app from outside.
             runCatching { navController.navigate(route) }
         }
@@ -398,9 +401,11 @@ private fun SeerflixNavGraph(
                                 entries.first()
                             } ?: return@collect
                             if (route == Routes.PLAYER) navController.popBackStack()
-                            navController.navigate(
-                                Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
-                            )
+                            runCatching {
+                                navController.navigate(
+                                    Routes.player(first.itemId, first.mediaSourceId, startMs = first.startPositionMs)
+                                )
+                            }
                         }
                     }
                 }
@@ -415,7 +420,9 @@ private fun SeerflixNavGraph(
                             "Series", "Season", "Episode" -> MediaType.SERIES
                             else -> MediaType.MOVIE
                         }
-                        navController.navigate("details/0/$id/${type.name}")
+                        // The id comes from another client: encode it, and never let a bad one
+                        // crash the app (a '/' or '?' makes navigate() throw).
+                        runCatching { navController.navigate("details/0/${Uri.encode(id)}/${type.name}") }
                     }
                     "GoHome" -> if (signedIn) navController.popBackStack(Routes.HOME, inclusive = false)
                     "Back" -> if (signedIn && route != Routes.HOME) navController.popBackStack()
@@ -430,9 +437,13 @@ private fun SeerflixNavGraph(
             if (action !is SyncPlayAction.LoadItem || syncPlayManager.localPlayingItemId != null) return@collect
             val route = navController.currentBackStackEntry?.destination?.route
             if (route == null || route == Routes.SETUP || route == Routes.PROFILES) return@collect
-            navController.navigate(
-                Routes.player(action.itemId, startMs = action.startPositionTicks / 10_000L, fromSyncPlay = true)
-            )
+            // A player that is still loading hasn't set localPlayingItemId yet, but handles it.
+            if (route == Routes.PLAYER) return@collect
+            runCatching {
+                navController.navigate(
+                    Routes.player(action.itemId, startMs = action.startPositionTicks / 10_000L, fromSyncPlay = true)
+                )
+            }
         }
     }
 
@@ -678,10 +689,14 @@ private fun SeerflixNavGraph(
 
     // After a crash: offer once (on Home) to store the report on the user's Jellyfin server.
     var crashReport by remember { mutableStateOf<String?>(null) }
+    // Once per session: a failed upload (offline, logging disabled on the server) or one still
+    // running used to bring the prompt back on every return to Home.
+    var crashPrompted by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     val crashScope = androidx.compose.runtime.rememberCoroutineScope()
     LaunchedEffect(currentRoute) {
-        if (currentRoute == Routes.HOME && crashReport == null) {
+        if (currentRoute == Routes.HOME && crashReport == null && !crashPrompted) {
             crashReport = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { diagnostics.pendingCrash() }
+            if (crashReport != null) crashPrompted = true
         }
     }
     crashReport?.let {
@@ -693,7 +708,11 @@ private fun SeerflixNavGraph(
                     val result = diagnostics.upload()
                     serverMessage = "" to when (result) {
                         is com.seerflix.tv.core.diagnostics.LogUploadResult.Uploaded -> crashStrings.settingsLogsSent.format(result.fileName)
-                        com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer -> crashStrings.settingsLogsDisabled
+                        com.seerflix.tv.core.diagnostics.LogUploadResult.DisabledOnServer -> {
+                            // The server won't take it; asking again next launch can't help.
+                            diagnostics.dismissCrash()
+                            crashStrings.settingsLogsDisabled
+                        }
                         is com.seerflix.tv.core.diagnostics.LogUploadResult.Failed -> crashStrings.settingsLogsFailed.format(result.message)
                     }
                 }

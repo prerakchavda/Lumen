@@ -11,6 +11,8 @@ import com.seerflix.tv.core.model.MediaType
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,22 +21,43 @@ import javax.inject.Singleton
 class TvChannelSyncManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    // Home loads, Continue Watching refreshes and the background worker can all sync at once;
+    // overlapping read-then-insert passes left duplicate rows that were never cleaned up.
+    private val syncMutex = Mutex()
+
+    /**
+     * @param profileLocked the active profile has a PIN. The launcher is usable without it, so
+     *   its Continue Watching and recommendations are taken off the home screen instead.
+     */
     suspend fun syncHomeChannels(
         continueWatching: List<UnifiedMediaItem>,
-        featuredRows: List<UnifiedMediaItem>
+        featuredRows: List<UnifiedMediaItem>,
+        profileLocked: Boolean = false
     ) = withContext(Dispatchers.IO) {
-        runCatching {
-            syncWatchNext(continueWatching)
-        }
-        runCatching {
-            syncSeerflixChannel(featuredRows)
+        syncMutex.withLock {
+            runCatching {
+                syncWatchNext(if (profileLocked) emptyList() else continueWatching, dropPromotions = profileLocked)
+            }
+            runCatching {
+                if (profileLocked) clearSeerflixChannel() else syncSeerflixChannel(featuredRows)
+            }
         }
     }
+
+    /** Watch Next only: after playback, so the launcher shows the new progress / next episode. */
+    suspend fun syncWatchNextOnly(continueWatching: List<UnifiedMediaItem>, profileLocked: Boolean) =
+        withContext(Dispatchers.IO) {
+            syncMutex.withLock {
+                runCatching {
+                    syncWatchNext(if (profileLocked) emptyList() else continueWatching, dropPromotions = profileLocked)
+                }
+            }
+        }
 
     suspend fun promoteNewReleaseToWatchNext(alert: com.seerflix.tv.core.model.ReadyRequestAlert) =
         withContext(Dispatchers.IO) {
             val jfId = alert.jellyfinId ?: return@withContext
-            runCatching {
+            syncMutex.withLock { runCatching {
                 val type = when (alert.mediaType) {
                     MediaType.MOVIE -> TvContractCompat.WatchNextPrograms.TYPE_MOVIE
                     MediaType.EPISODE -> TvContractCompat.WatchNextPrograms.TYPE_TV_EPISODE
@@ -65,7 +88,7 @@ class TvChannelSyncManager @Inject constructor(
                 } else {
                     context.contentResolver.insert(TvContractCompat.WatchNextPrograms.CONTENT_URI, values)
                 }
-            }
+            } }
         }
 
     private fun findWatchNextRowId(internalProviderId: String): Long? {
@@ -89,9 +112,10 @@ class TvChannelSyncManager @Inject constructor(
         return null
     }
 
-    private fun syncWatchNext(items: List<UnifiedMediaItem>) {
+    private fun syncWatchNext(items: List<UnifiedMediaItem>, dropPromotions: Boolean = false) {
         val resolver = context.contentResolver
         val existingIds = mutableMapOf<String, Long>()
+        val duplicateRowIds = mutableListOf<Long>()
         val engagementByRowId = mutableMapOf<Long, Long>()
 
         resolver.query(
@@ -113,7 +137,7 @@ class TvChannelSyncManager @Inject constructor(
                     val rowId = cursor.getLong(idIdx)
                     val provId = cursor.getString(provIdx)
                     if (!provId.isNullOrBlank()) {
-                        existingIds[provId] = rowId
+                        existingIds.put(provId, rowId)?.let { duplicateRowIds += it }
                         if (engagedIdx >= 0 && !cursor.isNull(engagedIdx)) {
                             engagementByRowId[rowId] = cursor.getLong(engagedIdx)
                         }
@@ -122,13 +146,26 @@ class TvChannelSyncManager @Inject constructor(
             }
         }
 
+        duplicateRowIds.forEach { rowId ->
+            resolver.delete(TvContractCompat.buildWatchNextProgramUri(rowId), null, null)
+        }
+
         val currentProviderIds = mutableSetOf<String>()
+        // A "ready to watch" series is resolved once one of its episodes is in Continue Watching.
+        val currentSeriesIds = mutableSetOf<String>()
+        val now = System.currentTimeMillis()
         // Watch Next mirrors the home server only (titles from the extra servers are left out).
-        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEach { item ->
-            val jfId = item.jellyfinId ?: return@forEach
+        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEachIndexed { index, item ->
+            val jfId = item.jellyfinId ?: return@forEachIndexed
             currentProviderIds += jfId
-            val program = buildWatchNextProgram(item) ?: return@forEach
+            item.seriesJellyfinId?.let { currentSeriesIds += com.seerflix.tv.core.model.ServerScopedId.rawOf(it) }
             val existingRowId = existingIds[jfId]
+            // The launcher orders Watch Next across apps by this time. Stamping "now" on every
+            // sync pushed weeks-old titles above other apps' fresh ones and lost our own order.
+            val engagedAt = item.lastPlayedMs?.takeIf { it > 0L }
+                ?: existingRowId?.let { engagementByRowId[it] }
+                ?: (now - index * 60_000L)
+            val program = buildWatchNextProgram(item, engagedAt) ?: return@forEachIndexed
             if (existingRowId != null) {
                 resolver.update(
                     TvContractCompat.buildWatchNextProgramUri(existingRowId),
@@ -147,12 +184,14 @@ class TvChannelSyncManager @Inject constructor(
         // Remove stale entries no longer in Continue Watching. "Ready to watch" promotions
         // (inserted by promoteNewReleaseToWatchNext) are not Continue Watching rows, so they must
         // survive this sync; drop them once the title shows up in Continue Watching or they expire.
-        val now = System.currentTimeMillis()
         existingIds.forEach { (provId, rowId) ->
             val isReadyPromotion = provId.startsWith(READY_PREFIX)
             val stale = if (isReadyPromotion) {
                 val promotedAt = engagementByRowId[rowId] ?: now
-                provId.removePrefix(READY_PREFIX) in currentProviderIds ||
+                val promotedId = provId.removePrefix(READY_PREFIX)
+                dropPromotions ||
+                    promotedId in currentProviderIds ||
+                    com.seerflix.tv.core.model.ServerScopedId.rawOf(promotedId) in currentSeriesIds ||
                     now - promotedAt > READY_PROMOTION_TTL_MS
             } else {
                 provId !in currentProviderIds
@@ -161,6 +200,30 @@ class TvChannelSyncManager @Inject constructor(
                 resolver.delete(TvContractCompat.buildWatchNextProgramUri(rowId), null, null)
             }
         }
+    }
+
+    private fun clearSeerflixChannel() {
+        val channelId = findSeerflixChannelId() ?: return
+        context.contentResolver.delete(TvContractCompat.buildPreviewProgramsUriForChannel(channelId), null, null)
+    }
+
+    private fun findSeerflixChannelId(): Long? {
+        context.contentResolver.query(
+            TvContractCompat.Channels.CONTENT_URI,
+            arrayOf(TvContractCompat.Channels._ID, TvContractCompat.Channels.COLUMN_DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            val idIdx = cursor.getColumnIndex(TvContractCompat.Channels._ID)
+            val nameIdx = cursor.getColumnIndex(TvContractCompat.Channels.COLUMN_DISPLAY_NAME)
+            while (cursor.moveToNext()) {
+                if (nameIdx >= 0 && cursor.getString(nameIdx) == CHANNEL_NAME && idIdx >= 0) {
+                    return cursor.getLong(idIdx)
+                }
+            }
+        }
+        return null
     }
 
     private fun syncSeerflixChannel(items: List<UnifiedMediaItem>) {
@@ -232,7 +295,10 @@ class TvChannelSyncManager @Inject constructor(
             return Uri.parse("seerflix://details/$tmdb/$jf/${item.mediaType.name}")
         }
 
-        fun buildWatchNextProgram(item: UnifiedMediaItem): WatchNextProgram? {
+        fun buildWatchNextProgram(
+            item: UnifiedMediaItem,
+            lastEngagementMs: Long = item.lastPlayedMs ?: System.currentTimeMillis()
+        ): WatchNextProgram? {
             val jfId = item.jellyfinId ?: return null
             val type = when (item.mediaType) {
                 MediaType.MOVIE -> TvContractCompat.WatchNextPrograms.TYPE_MOVIE
@@ -246,7 +312,7 @@ class TvChannelSyncManager @Inject constructor(
                     if (item.isNextUp && item.resumePositionTicks <= 0L) TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_NEXT
                     else TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE
                 )
-                .setLastEngagementTimeUtcMillis(System.currentTimeMillis())
+                .setLastEngagementTimeUtcMillis(lastEngagementMs)
                 .setTitle(item.title)
                 .setDescription(item.overview.take(200))
                 .setIntentUri(buildPlayerDeepLink(jfId))

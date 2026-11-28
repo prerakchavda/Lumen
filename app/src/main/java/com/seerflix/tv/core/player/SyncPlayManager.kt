@@ -137,10 +137,20 @@ class SyncPlayManager @Inject constructor(
     suspend fun createGroup(groupName: String): Result<SyncPlayGroup?> = runCatching {
         val clean = groupName.trim().ifBlank { strings.syncPlayDefaultRoom }
         socket.start()
+        val existingIds = runCatching { jellyfinApi.getSyncPlayGroups().map { it.groupId }.toSet() }
+            .getOrDefault(emptySet())
+        _activeGroup.value = null
         jellyfinApi.createSyncPlayGroup(JellyfinCreateSyncPlayRequest(groupName = clean))
         val groups = jellyfinApi.getSyncPlayGroups().map { it.toModel() }
         _availableGroups.value = groups
-        val created = groups.firstOrNull { it.groupName.equals(clean, ignoreCase = true) }
+        // The server's GroupJoined (over the socket) may already have named our group; otherwise
+        // take the group that didn't exist before. Matching by name picked another household's
+        // room with the same (default) name, and every command for ours was then ignored.
+        val joinedViaSocket = _activeGroup.value?.groupId
+        val created = groups.firstOrNull { it.groupId == joinedViaSocket }
+            ?: groups.filter { it.groupId !in existingIds }
+                .let { fresh -> fresh.singleOrNull() ?: fresh.firstOrNull { it.groupName.equals(clean, ignoreCase = true) } }
+            ?: groups.firstOrNull { it.groupName.equals(clean, ignoreCase = true) }
             ?: groups.lastOrNull()
         _activeGroup.value = created
         startClockSync()

@@ -3486,6 +3486,19 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
+    private data class RequestTitleInfo(
+        val title: String,
+        val posterPath: String?,
+        val backdropPath: String?,
+        val atMs: Long
+    )
+
+    /**
+     * Title / artwork per requested title. The Requests screen polls every 15 s; without this each
+     * poll made one Seerr details call per request (~50) on top of the list.
+     */
+    private val requestTitleCache = java.util.concurrent.ConcurrentHashMap<String, RequestTitleInfo>()
+
     suspend fun loadRequestsHub(): Result<List<MediaRequestSummary>> = runCatchingCancellable {
         if (!isSeerrEnabled) return@runCatchingCancellable emptyList()
         val page = seerrApi.getRequests(take = 50, skip = 0, filter = "all", sort = "added")
@@ -3508,7 +3521,20 @@ class UnifiedCatalogRepository @Inject constructor(
                         DownloadProgressParser.parse(req.media?.downloadStatus.orEmpty(), is4k = false)
                     }
 
-                    if (tmdbId > 0) {
+                    val processing = AvailabilityTier.fromSeerrCode(
+                        if (req.is4k) req.media?.status4k else req.media?.status
+                    ) == AvailabilityTier.PROCESSING
+                    val cacheKey = "${type.name}_${tmdbId}_$metaLang"
+                    val cached = requestTitleCache[cacheKey]
+                        ?.takeIf { System.currentTimeMillis() - it.atMs < REQUEST_TITLE_TTL_MS }
+                    if (cached != null) {
+                        title = cached.title
+                        posterPath = cached.posterPath
+                        backdropPath = cached.backdropPath
+                    }
+                    // Details are still fetched for a download in progress whose request carries no
+                    // download status (they hold it in mediaInfo).
+                    if (tmdbId > 0 && (cached == null || (processing && downloadProgress == null))) {
                         if (type == MediaType.MOVIE) {
                             runCatchingCancellable { seerrApi.getMovieDetails(tmdbId, language = metaLang) }.getOrNull()?.let { m ->
                                 title = m.title
@@ -3529,6 +3555,10 @@ class UnifiedCatalogRepository @Inject constructor(
                                     downloadProgress = DownloadProgressParser.parse(list.orEmpty(), req.is4k)
                                 }
                             }
+                        }
+                        if (title != "Request #${req.id}") {
+                            requestTitleCache[cacheKey] =
+                                RequestTitleInfo(title, posterPath, backdropPath, System.currentTimeMillis())
                         }
                     }
 
@@ -4072,6 +4102,8 @@ class UnifiedCatalogRepository @Inject constructor(
             runtimeTicks = dto.runTimeTicks ?: 0L,
             isWatched = dto.userData?.played == true,
             isInMyList = dto.userData?.isFavorite == true,
+            lastPlayedMs = CrossServerMerge.parseDateMs(dto.userData?.lastPlayedDate),
+            seriesJellyfinId = dto.seriesId,
             mediaBadges = badges,
             episodeLabel = epLabel,
             seriesName = dto.seriesName,
@@ -4542,6 +4574,7 @@ class UnifiedCatalogRepository @Inject constructor(
         YouTubeUrlParser.extractVideoKey(url)
 
     companion object {
+        private const val REQUEST_TITLE_TTL_MS = 6L * 60 * 60 * 1000
         private const val LIBRARY_INDEX_PAGE_SIZE = 1000
         private const val MAX_LIBRARY_INDEX_ITEMS = 20_000
         private const val LIBRARY_INDEX_TTL_MS = 180_000L

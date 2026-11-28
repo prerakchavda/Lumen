@@ -311,6 +311,10 @@ data class UnifiedMediaItem(
     val extras: List<ExtrasItem> = emptyList(),
     val isAdult: Boolean = false,
     val isNextUp: Boolean = false,
+    /** When the profile last played it (Jellyfin UserData), for the launcher's Watch Next order. */
+    val lastPlayedMs: Long? = null,
+    /** An episode's series (Jellyfin id). */
+    val seriesJellyfinId: String? = null,
     val isFolder: Boolean = false,
     val playlistItemId: String? = null,
     val canDelete: Boolean = false,

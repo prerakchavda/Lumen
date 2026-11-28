@@ -92,6 +92,7 @@ class SessionPreferences private constructor(
         val PROFILES_JSON = stringPreferencesKey("profiles_json")
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val TRACKED_REQUESTS_JSON = stringPreferencesKey("tracked_requests_json")
+        val SEEN_REQUESTS_JSON = stringPreferencesKey("seen_requests_json")
         val READY_ALERTS_JSON = stringPreferencesKey("ready_alerts_json")
         val MATCH_DEVICE_CAPS = stringPreferencesKey("match_device_capabilities")
         val SOFTWARE_AUDIO_DECODING = stringPreferencesKey("software_audio_decoding")
@@ -795,6 +796,18 @@ class SessionPreferences private constructor(
     suspend fun getTrackedPendingRequestIds(): Set<Int> {
         val raw = dataStore.data.first()[Keys.TRACKED_REQUESTS_JSON] ?: return emptySet()
         return runCatching { json.decodeFromString<Set<Int>>(raw) }.getOrDefault(emptySet())
+    }
+
+    /** Every request id the ready check saw last time; null before its first run. */
+    suspend fun getSeenRequestIds(): Set<Int>? {
+        val raw = dataStore.data.first()[Keys.SEEN_REQUESTS_JSON] ?: return null
+        return runCatching { json.decodeFromString<Set<Int>>(raw) }.getOrNull()
+    }
+
+    suspend fun saveSeenRequestIds(ids: Set<Int>) {
+        dataStore.edit { prefs ->
+            prefs[Keys.SEEN_REQUESTS_JSON] = json.encodeToString(ids)
+        }
     }
 
     suspend fun saveTrackedPendingRequestIds(ids: Set<Int>) {
