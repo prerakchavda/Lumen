@@ -103,6 +103,7 @@ class AuthRepository @Inject constructor(
         val previousSeerrCookie = prefs.cachedSeerrCookie
         return signInWithPasswordInternal(username, password)
             .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+            .onSuccess { if (it.hasPin) prefs.setImmediateSeerrCookie(previousSeerrCookie) }
     }
 
     private suspend fun signInWithPasswordInternal(username: String, password: String): Result<UserProfile> = runCatchingCancellable {
@@ -150,8 +151,8 @@ class AuthRepository @Inject constructor(
             subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(serverCfg?.subtitleMode),
             playDefaultAudioTrack = serverCfg?.playDefaultAudioTrack ?: true
         )
+        // The stored copy: PIN-locked profiles come back with hasPin and are not active yet.
         prefs.upsertAndActivateProfile(profile)
-        profile
     }
 
     suspend fun initiateQuickConnect(): Result<JellyfinQuickConnectState> = runCatchingCancellable {
@@ -173,6 +174,9 @@ class AuthRepository @Inject constructor(
         val previousSeerrCookie = prefs.cachedSeerrCookie
         return pollAndCompleteQuickConnectInternal(secret)
             .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+            // A PIN-locked profile isn't activated yet (see upsertAndActivateProfile): the
+            // still-active profile keeps its own Seerr session until the PIN is entered.
+            .onSuccess { if (it?.hasPin == true) prefs.setImmediateSeerrCookie(previousSeerrCookie) }
     }
 
     private suspend fun pollAndCompleteQuickConnectInternal(secret: String): Result<UserProfile?> = runCatchingCancellable {
@@ -213,8 +217,8 @@ class AuthRepository @Inject constructor(
             subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(serverCfg?.subtitleMode),
             playDefaultAudioTrack = serverCfg?.playDefaultAudioTrack ?: true
         )
+        // The stored copy: PIN-locked profiles come back with hasPin and are not active yet.
         prefs.upsertAndActivateProfile(profile)
-        profile
     }
 
     /**

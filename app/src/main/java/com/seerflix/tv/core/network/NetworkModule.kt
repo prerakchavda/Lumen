@@ -183,15 +183,36 @@ internal fun buildJellyfinAuthHeader(deviceId: String, token: String?): String =
     }
 }
 
+/**
+ * True when [url] points at one of the configured Seerr addresses (same scheme, host and port).
+ * The API key and session cookie are only ever sent there: OkHttp follows redirects on its own
+ * and only strips `Authorization` when the host changes, so a redirect to an SSO portal or any
+ * other host would otherwise receive both.
+ */
+internal fun isConfiguredSeerrHost(url: HttpUrl, candidates: List<String>): Boolean =
+    candidates.any { base ->
+        val configured = base.trim().toHttpUrlOrNull() ?: return@any false
+        configured.scheme == url.scheme &&
+            configured.host.equals(url.host, ignoreCase = true) &&
+            configured.port == url.port
+    }
+
+/**
+ * Added as a *network* interceptor so it runs again for every redirect hop and only attaches the
+ * key to Seerr itself (see [isConfiguredSeerrHost]).
+ */
 private class SeerrAuthInterceptor(
     private val prefs: SessionPreferences
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
-        val builder = chain.request().newBuilder()
+        val request = chain.request()
+        val builder = request.newBuilder()
             .header("Accept", "application/json")
         val apiKey = prefs.cachedSeerrApiKey
-        if (apiKey.isNotBlank()) {
+        if (apiKey.isNotBlank() && isConfiguredSeerrHost(request.url, prefs.seerrUrlCandidates)) {
             builder.header("X-Api-Key", apiKey)
+        } else {
+            builder.removeHeader("X-Api-Key")
         }
         return chain.proceed(builder.build())
     }
@@ -203,6 +224,7 @@ private class SeerrSessionCookieJar(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        if (!isConfiguredSeerrHost(url, prefs.seerrUrlCandidates)) return
         val sid = cookies.firstOrNull { it.name == "connect.sid" } ?: return
         val encoded = "${sid.name}=${sid.value}"
         prefs.setImmediateSeerrCookie(encoded)
@@ -216,6 +238,9 @@ private class SeerrSessionCookieJar(
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        // The cookie jar is consulted for every redirect hop: never hand Seerr's session to a host
+        // a redirect points at.
+        if (!isConfiguredSeerrHost(url, prefs.seerrUrlCandidates)) return emptyList()
         val saved = prefs.cachedSeerrCookie ?: return emptyList()
         val parts = saved.split("=", limit = 2)
         if (parts.size != 2) return emptyList()
@@ -392,8 +417,8 @@ object NetworkModule {
                     onResolvedUrl = { _, url -> prefs.cachedResolvedSeerrUrl = url }
                 )
             )
-            .addInterceptor(SeerrAuthInterceptor(prefs))
             .addInterceptor(logging)
+            .addNetworkInterceptor(SeerrAuthInterceptor(prefs))
             .build()
     }
 

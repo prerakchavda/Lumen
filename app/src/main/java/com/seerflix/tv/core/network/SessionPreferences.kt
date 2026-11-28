@@ -583,8 +583,15 @@ class SessionPreferences private constructor(
         }
     }
 
-    suspend fun upsertAndActivateProfile(profile: UserProfile) {
+    /**
+     * Stores [profile] (merged over any saved copy) and makes it active, unless the saved copy is
+     * PIN-locked: signing in again as that user (Add Profile with the parent's Jellyfin account)
+     * must not skip the PIN. Then only the fresh token is saved and the caller has to run the PIN
+     * challenge before switching. Returns the stored profile (its [UserProfile.hasPin] tells which).
+     */
+    suspend fun upsertAndActivateProfile(profile: UserProfile): UserProfile {
         var resolvedProfile = profile
+        var activate = true
         dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
@@ -636,15 +643,18 @@ class SessionPreferences private constructor(
                 profile.copy(seerrCookie = effectiveCookie)
             }
             resolvedProfile = merged
+            activate = existing?.pinHash == null || prefs[Keys.ACTIVE_PROFILE_ID] == profile.id
             val updated = current.filterNot { it.id == profile.id } + merged
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
-            prefs[Keys.ACTIVE_PROFILE_ID] = profile.id
+            if (activate) prefs[Keys.ACTIVE_PROFILE_ID] = profile.id
         }
+        if (!activate) return resolvedProfile
         cachedToken = resolvedProfile.jellyfinToken
         installActiveProfile(resolvedProfile)
         cachedSeerrCookie = resolvedProfile.seerrCookie
         cachedMetadataLanguage = resolvedProfile.metadataLanguage.ifBlank { "en" }
         cachedUiLanguage = resolvedProfile.uiLanguage.ifBlank { "en" }
+        return resolvedProfile
     }
 
     /**

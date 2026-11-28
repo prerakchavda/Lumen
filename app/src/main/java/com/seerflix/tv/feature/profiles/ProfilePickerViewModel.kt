@@ -347,9 +347,9 @@ class ProfilePickerViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isAuthenticating = true, errorMessage = null) }
             authRepository.signInWithPassword(u, p)
-                .onSuccess {
+                .onSuccess { profile ->
                     _uiState.update { it.copy(isAuthenticating = false, showAuthDialog = false, password = "") }
-                    onSignedIn()
+                    finishSignIn(profile, onSignedIn)
                 }
                 .onFailure { err ->
                     val raw = err.message.orEmpty()
@@ -367,6 +367,26 @@ class ProfilePickerViewModel @Inject constructor(
                         )
                     }
                 }
+        }
+    }
+
+    /**
+     * Signing in as a user whose profile here is PIN-locked doesn't open it: the profile's own PIN
+     * is still required (otherwise Add Profile with a parent's Jellyfin account skips the lock).
+     */
+    private fun finishSignIn(profile: UserProfile, onSignedIn: () -> Unit) {
+        if (!profile.hasPin) {
+            onSignedIn()
+            return
+        }
+        _uiState.update {
+            it.copy(
+                pinChallengeProfile = profile,
+                pinChallengeForEdit = false,
+                pinChallengeGuardian = false,
+                pinEntryInput = "",
+                pinError = null
+            )
         }
     }
 
@@ -407,7 +427,7 @@ class ProfilePickerViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(showAuthDialog = false, quickConnectCode = null, quickConnectSecret = null)
                     }
-                    onSignedIn()
+                    finishSignIn(signedInProfile, onSignedIn)
                     break
                 }
                 if (poll.isFailure) {

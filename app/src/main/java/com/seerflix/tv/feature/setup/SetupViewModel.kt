@@ -94,7 +94,8 @@ class SetupViewModel @Inject constructor(
                 seerrLocalUrl = if (cur.jellyfinOnlyMode) "" else cur.seerrLocalUrl,
                 trustSelfSigned = cur.trustSelfSignedCerts,
                 seerrApiKey = cur.seerrApiKey
-            )
+            ),
+            onExpired = { _uiState.update { it.copy(companionUrl = null) } }
         ) { submitted ->
             val onlyJf = submitted.seerrUrl.isBlank() && submitted.seerrLocalUrl.isBlank()
             _uiState.update {
