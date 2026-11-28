@@ -93,6 +93,7 @@ class SessionPreferences private constructor(
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val TRACKED_REQUESTS_JSON = stringPreferencesKey("tracked_requests_json")
         val SEEN_REQUESTS_JSON = stringPreferencesKey("seen_requests_json")
+        val SEEN_REQUESTS_OWNER = stringPreferencesKey("seen_requests_owner")
         val READY_ALERTS_JSON = stringPreferencesKey("ready_alerts_json")
         val MATCH_DEVICE_CAPS = stringPreferencesKey("match_device_capabilities")
         val SOFTWARE_AUDIO_DECODING = stringPreferencesKey("software_audio_decoding")
@@ -816,14 +817,21 @@ class SessionPreferences private constructor(
         return runCatching { json.decodeFromString<Set<Int>>(raw) }.getOrDefault(emptySet())
     }
 
-    /** Every request id the ready check saw last time; null before its first run. */
-    suspend fun getSeenRequestIds(): Set<Int>? {
-        val raw = dataStore.data.first()[Keys.SEEN_REQUESTS_JSON] ?: return null
+    /**
+     * Every request id the ready check saw last time for [owner] (profile + Seerr server); null
+     * before its first run for that owner. Another profile or server sees a different set of
+     * requests, so comparing against a set saved for someone else would flood "ready" alerts.
+     */
+    suspend fun getSeenRequestIds(owner: String): Set<Int>? {
+        val data = dataStore.data.first()
+        if (data[Keys.SEEN_REQUESTS_OWNER] != owner) return null
+        val raw = data[Keys.SEEN_REQUESTS_JSON] ?: return null
         return runCatching { json.decodeFromString<Set<Int>>(raw) }.getOrNull()
     }
 
-    suspend fun saveSeenRequestIds(ids: Set<Int>) {
+    suspend fun saveSeenRequestIds(owner: String, ids: Set<Int>) {
         dataStore.edit { prefs ->
+            prefs[Keys.SEEN_REQUESTS_OWNER] = owner
             prefs[Keys.SEEN_REQUESTS_JSON] = json.encodeToString(ids)
         }
     }

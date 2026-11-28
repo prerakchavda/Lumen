@@ -44,7 +44,8 @@ class RequestReadyWorker(
         val requests = repo.loadRequestsHub().getOrNull() ?: return Result.success()
 
         val previouslyTracked = prefs.getTrackedPendingRequestIds()
-        val previouslySeen = prefs.getSeenRequestIds()
+        val seenOwner = "${activeProfile.id}|${prefs.cachedSeerrLocalUrl}|${prefs.cachedSeerrUrl}"
+        val previouslySeen = prefs.getSeenRequestIds(seenOwner)
         val currentlyPendingOrProcessing = requests
             .filter { it.mediaStatus == AvailabilityTier.PENDING || it.mediaStatus == AvailabilityTier.PROCESSING }
             .map { it.requestId }
@@ -52,11 +53,11 @@ class RequestReadyWorker(
 
         // Pending at the last check and in the library now, or requested *and* fulfilled since
         // the last check (a movie that downloads in minutes never shows up as pending here).
+        // (Unseen ones only when fully available: a new season of a partly available show is
+        // "partly available" before anything of it has downloaded.)
         val newlyAvailable = requests.filter { req ->
-            req.mediaStatus.isInLibrary && (
-                req.requestId in previouslyTracked ||
-                    (previouslySeen != null && req.requestId !in previouslySeen)
-                )
+            (req.mediaStatus.isInLibrary && req.requestId in previouslyTracked) ||
+                (req.mediaStatus == AvailabilityTier.AVAILABLE && previouslySeen != null && req.requestId !in previouslySeen)
         }
 
         if (newlyAvailable.isNotEmpty()) {
@@ -84,7 +85,7 @@ class RequestReadyWorker(
         prefs.saveTrackedPendingRequestIds(currentlyPendingOrProcessing)
         // Remembered across runs (not just this page) so requests sliding into the 50-item window
         // from further back aren't mistaken for new ones.
-        prefs.saveSeenRequestIds(((previouslySeen ?: emptySet()) + requests.map { it.requestId }).takeLastIds())
+        prefs.saveSeenRequestIds(seenOwner, ((previouslySeen ?: emptySet()) + requests.map { it.requestId }).takeLastIds())
         return Result.success()
     }
 

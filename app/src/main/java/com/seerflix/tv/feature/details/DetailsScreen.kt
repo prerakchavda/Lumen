@@ -349,9 +349,8 @@ fun DetailsContent(
                     repeat(10) {
                         delay(80L)
                         if (runCatching { returnEpisodeFocusRequester.requestFocus() }.getOrDefault(false)) {
-                            // Done: a later return (e.g. from the header's Resume) must not be
-                            // pulled to this episode again.
-                            focusMemory.lastPlayedEpisodeId = null
+                            // Kept: coming back again (from a cast member, a related title) lands
+                            // here too. Playing from the header clears it.
                             return@LaunchedEffect
                         }
                     }
@@ -390,9 +389,11 @@ fun DetailsContent(
                             feedbackBanner = state.feedbackBanner,
                             onBack = onBack,
                             onPlay = {
+                                focusMemory.lastPlayedEpisodeId = null
                                 resolvePlayTarget()?.let { (id, src) -> onPlayItem(id, src) }
                             },
                             onPlayFromBeginning = {
+                                focusMemory.lastPlayedEpisodeId = null
                                 resolvePlayTarget()?.let { (id, src) ->
                                     extraActions.onPlayWithOptions(id, src, true, null, null)
                                 }
@@ -502,13 +503,19 @@ fun DetailsContent(
                                             text = strings.actionPlayAll,
                                             icon = Icons.Filled.PlayArrow,
                                             isPrimary = false,
-                                            onClick = { extraActions.onPlayQueue(seasonQueue, false) }
+                                            onClick = {
+                                                focusMemory.lastPlayedEpisodeId = null
+                                                extraActions.onPlayQueue(seasonQueue, false)
+                                            }
                                         )
                                         HeroPillButton(
                                             text = strings.actionShuffle,
                                             icon = Icons.Filled.Shuffle,
                                             isPrimary = false,
-                                            onClick = { extraActions.onPlayQueue(seasonQueue, true) }
+                                            onClick = {
+                                                focusMemory.lastPlayedEpisodeId = null
+                                                extraActions.onPlayQueue(seasonQueue, true)
+                                            }
                                         )
                                         HeroPillButton(
                                             text = if (allWatched) strings.actionMarkSeasonUnwatched else strings.actionMarkSeasonWatched,

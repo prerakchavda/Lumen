@@ -782,7 +782,11 @@ class HomeViewModel @Inject constructor(
             }
             // The launcher's Watch Next row: new progress / the next episode right after playback,
             // not only on the next full Home load.
-            tvChannelSyncManager.syncWatchNextOnly(allCw, profileLocked = profile.hasPin)
+            // (Same source as a full Home load: nothing while the user has hidden the row.)
+            tvChannelSyncManager.syncWatchNextOnly(
+                if ("continue_watching" in hiddenRows) emptyList() else allCw,
+                profileLocked = profile.hasPin
+            )
         }
     }
 
