@@ -139,8 +139,15 @@ class SyncPlayManager @Inject constructor(
         socket.start()
         val existingIds = runCatching { jellyfinApi.getSyncPlayGroups().map { it.groupId }.toSet() }
             .getOrDefault(emptySet())
+        val previousGroup = _activeGroup.value
         _activeGroup.value = null
-        jellyfinApi.createSyncPlayGroup(JellyfinCreateSyncPlayRequest(groupName = clean))
+        try {
+            jellyfinApi.createSyncPlayGroup(JellyfinCreateSyncPlayRequest(groupName = clean))
+        } catch (t: Throwable) {
+            // Not created: the server still has us in the previous room.
+            if (_activeGroup.value == null) _activeGroup.value = previousGroup
+            throw t
+        }
         val groups = jellyfinApi.getSyncPlayGroups().map { it.toModel() }
         _availableGroups.value = groups
         // The server's GroupJoined (over the socket) may already have named our group; otherwise
