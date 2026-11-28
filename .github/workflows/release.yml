@@ -50,6 +50,7 @@ jobs:
           SEERFLIX_KEY_ALIAS: ${{ secrets.SEERFLIX_KEY_ALIAS }}
           SEERFLIX_KEY_PASSWORD: ${{ secrets.SEERFLIX_KEY_PASSWORD }}
           TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
         run: ./gradlew testDebugUnitTest assembleRelease
 
       - name: Stage versioned APK

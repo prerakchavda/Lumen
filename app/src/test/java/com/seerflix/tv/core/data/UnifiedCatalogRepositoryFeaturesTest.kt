@@ -259,6 +259,25 @@ class UnifiedCatalogRepositoryFeaturesTest {
             sortOrder: String,
             limit: Int
         ) = JellyfinItemsResponse()
+        val ratedItems = mutableMapOf<String, Boolean?>()
+        override suspend fun updateUserItemRating(userId: String, itemId: String, likes: Boolean) { ratedItems[itemId] = likes }
+        override suspend fun deleteUserItemRating(userId: String, itemId: String) { ratedItems[itemId] = null }
+        var serverUsers: List<JellyfinUserDto> = emptyList()
+        override suspend fun getUsers(): List<JellyfinUserDto> = serverUsers
+        var playedByUser: Map<String, List<JellyfinItemDto>> = emptyMap()
+        override suspend fun getRecentlyPlayedForUser(
+            userToken: String?,
+            userId: String,
+            filters: String,
+            recursive: Boolean,
+            includeItemTypes: String,
+            fields: String,
+            sortBy: String,
+            sortOrder: String,
+            limit: Int,
+            enableImages: Boolean,
+            enableTotalRecordCount: Boolean
+        ) = JellyfinItemsResponse(playedByUser[userId].orEmpty(), playedByUser[userId].orEmpty().size)
         override suspend fun addFavorite(userId: String, itemId: String) = Unit
         override suspend fun removeFavorite(userId: String, itemId: String) = Unit
         override suspend fun updateUserData(userId: String, itemId: String, body: JellyfinUpdateUserDataRequest) = Unit

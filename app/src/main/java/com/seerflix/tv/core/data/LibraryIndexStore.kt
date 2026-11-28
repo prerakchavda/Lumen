@@ -38,7 +38,11 @@ internal data class LibraryIndexEntry(
     @SerialName("f") val isFavorite: Boolean = false,
     @SerialName("b") val hasBackdrop: Boolean = false,
     /** When it was last played (epoch ms): decides whose progress wins for a title on several servers. */
-    @SerialName("lp") val lastPlayedMs: Long? = null
+    @SerialName("lp") val lastPlayedMs: Long? = null,
+    /** When it was added to the server (epoch ms): "Added a While Ago, Never Started". */
+    @SerialName("dc") val dateCreatedMs: Long? = null,
+    /** Thumbs up / down set on the server (UserData.Likes). */
+    @SerialName("lk") val likes: Boolean? = null
 )
 
 internal fun JellyfinItemDto.toIndexEntry(): LibraryIndexEntry = LibraryIndexEntry(
@@ -57,7 +61,9 @@ internal fun JellyfinItemDto.toIndexEntry(): LibraryIndexEntry = LibraryIndexEnt
     played = userData?.played == true,
     isFavorite = userData?.isFavorite == true,
     hasBackdrop = backdropImageTags.isNotEmpty(),
-    lastPlayedMs = CrossServerMerge.parseDateMs(userData?.lastPlayedDate)
+    lastPlayedMs = CrossServerMerge.parseDateMs(userData?.lastPlayedDate),
+    dateCreatedMs = CrossServerMerge.parseDateMs(dateCreated),
+    likes = userData?.likes
 )
 
 internal fun LibraryIndexEntry.toItemDto(): JellyfinItemDto = JellyfinItemDto(
@@ -69,6 +75,7 @@ internal fun LibraryIndexEntry.toItemDto(): JellyfinItemDto = JellyfinItemDto(
     communityRating = communityRating,
     runTimeTicks = runTimeTicks,
     genres = genres,
+    dateCreated = dateCreatedMs?.let { java.time.Instant.ofEpochMilli(it).toString() },
     providerIds = buildMap(3) {
         tmdb?.let { put("Tmdb", it.toString()) }
         imdb?.let { put("Imdb", it) }
@@ -80,7 +87,8 @@ internal fun LibraryIndexEntry.toItemDto(): JellyfinItemDto = JellyfinItemDto(
         playbackPositionTicks = playbackPositionTicks,
         played = played,
         isFavorite = isFavorite,
-        lastPlayedDate = lastPlayedMs?.let { java.time.Instant.ofEpochMilli(it).toString() }
+        lastPlayedDate = lastPlayedMs?.let { java.time.Instant.ofEpochMilli(it).toString() },
+        likes = likes
     )
 )
 
@@ -149,7 +157,7 @@ class LibraryIndexStore internal constructor(
 
     companion object {
         private const val DIR_NAME = "library_index"
-        internal const val VERSION = 1
+        internal const val VERSION = 2
 
         private val json = Json {
             ignoreUnknownKeys = true

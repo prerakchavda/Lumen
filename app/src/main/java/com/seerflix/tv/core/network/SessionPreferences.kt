@@ -102,6 +102,8 @@ class SessionPreferences private constructor(
 
         fun localMyList(profileId: String) = stringPreferencesKey("local_my_list_$profileId")
         fun reminders(profileId: String) = stringPreferencesKey("reminders_$profileId")
+        fun taste(userId: String) = stringPreferencesKey("taste_$userId")
+        fun traktToken(userId: String) = stringPreferencesKey("trakt_token_$userId")
     }
 
     @Volatile
@@ -593,6 +595,7 @@ class SessionPreferences private constructor(
                     pinnedLibraryIds = existing.pinnedLibraryIds,
                     hiddenHomeRowIds = existing.hiddenHomeRowIds,
                     homeRowOrder = existing.homeRowOrder,
+                    personalizedRowOrder = existing.personalizedRowOrder,
                     metadataLanguage = existing.metadataLanguage,
                     uiLanguage = existing.uiLanguage,
                     // Re-signing in to the home server must not drop the accounts on other servers.
@@ -715,7 +718,8 @@ class SessionPreferences private constructor(
         mergeNextUpIntoContinueWatching: Boolean? = null,
         screensaverTimeoutMinutes: Int? = null,
         cinemaIntrosEnabled: Boolean? = null,
-        themeSongsEnabled: Boolean? = null
+        themeSongsEnabled: Boolean? = null,
+        personalizedRowOrder: Boolean? = null
     ) {
         dataStore.edit { prefs ->
             val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@edit
@@ -737,7 +741,8 @@ class SessionPreferences private constructor(
                         mergeNextUpIntoContinueWatching = mergeNextUpIntoContinueWatching ?: it.mergeNextUpIntoContinueWatching,
                         screensaverTimeoutMinutes = screensaverTimeoutMinutes ?: it.screensaverTimeoutMinutes,
                         cinemaIntrosEnabled = cinemaIntrosEnabled ?: it.cinemaIntrosEnabled,
-                        themeSongsEnabled = themeSongsEnabled ?: it.themeSongsEnabled
+                        themeSongsEnabled = themeSongsEnabled ?: it.themeSongsEnabled,
+                        personalizedRowOrder = personalizedRowOrder ?: it.personalizedRowOrder
                     )
                 } else it
             }
@@ -842,6 +847,55 @@ class SessionPreferences private constructor(
                 installActiveProfile(null)
                 cachedSeerrCookie = null
             }
+        }
+    }
+
+    // ---- Taste (0.9.5): ratings, "Not interested" and row engagement, per Jellyfin user ----
+
+    /** In-memory copy so Home can read taste on every load without touching disk. */
+    private val tasteCache = java.util.concurrent.ConcurrentHashMap<String, com.seerflix.tv.core.data.TasteData>()
+
+    suspend fun getTaste(userId: String): com.seerflix.tv.core.data.TasteData {
+        if (userId.isBlank()) return com.seerflix.tv.core.data.TasteData()
+        tasteCache[userId]?.let { return it }
+        val raw = dataStore.data.first()[Keys.taste(userId)]
+        val parsed = raw?.let {
+            runCatching { json.decodeFromString<com.seerflix.tv.core.data.TasteData>(it) }.getOrNull()
+        } ?: com.seerflix.tv.core.data.TasteData()
+        tasteCache[userId] = parsed
+        return parsed
+    }
+
+    suspend fun updateTaste(
+        userId: String,
+        transform: (com.seerflix.tv.core.data.TasteData) -> com.seerflix.tv.core.data.TasteData
+    ): com.seerflix.tv.core.data.TasteData {
+        if (userId.isBlank()) return com.seerflix.tv.core.data.TasteData()
+        var result = com.seerflix.tv.core.data.TasteData()
+        dataStore.edit { prefs ->
+            val key = Keys.taste(userId)
+            val current = prefs[key]?.let {
+                runCatching { json.decodeFromString<com.seerflix.tv.core.data.TasteData>(it) }.getOrNull()
+            } ?: com.seerflix.tv.core.data.TasteData()
+            result = transform(current)
+            prefs[key] = json.encodeToString(result)
+        }
+        tasteCache[userId] = result
+        return result
+    }
+
+    /** The Trakt account this Jellyfin user connected (null = not connected). */
+    suspend fun getTraktToken(userId: String): TraktTokenDto? {
+        if (userId.isBlank()) return null
+        val raw = dataStore.data.first()[Keys.traktToken(userId)] ?: return null
+        return runCatching { json.decodeFromString<TraktTokenDto>(raw) }.getOrNull()?.takeIf { it.accessToken.isNotBlank() }
+    }
+
+    suspend fun saveTraktToken(userId: String, token: TraktTokenDto?) {
+        if (userId.isBlank()) return
+        dataStore.edit { prefs ->
+            if (token == null) prefs.remove(Keys.traktToken(userId))
+            else prefs[Keys.traktToken(userId)] = json.encodeToString(token)
         }
     }
 

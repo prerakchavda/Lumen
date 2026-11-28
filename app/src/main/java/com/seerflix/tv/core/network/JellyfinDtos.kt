@@ -69,7 +69,9 @@ data class JellyfinUserDataDto(
     @SerialName("IsFavorite") val isFavorite: Boolean = false,
     @SerialName("UnplayedItemCount") val unplayedItemCount: Int? = null,
     /** When the item was last played; decides which server's progress wins for a merged title. */
-    @SerialName("LastPlayedDate") val lastPlayedDate: String? = null
+    @SerialName("LastPlayedDate") val lastPlayedDate: String? = null,
+    /** Thumbs up (true) / down (false); null = not rated. */
+    @SerialName("Likes") val likes: Boolean? = null
 )
 
 @Serializable

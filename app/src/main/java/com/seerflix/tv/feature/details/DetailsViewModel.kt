@@ -81,7 +81,10 @@ data class DetailsUiState(
     val showDeleteConfirmDialog: Boolean = false,
     val episodeMenuTarget: EpisodeSummary? = null,
     val itemDeleted: Boolean = false,
-    val themeSongUrl: String? = null
+    val themeSongUrl: String? = null,
+    /** This profile's thumbs rating for the title (drives Top Picks / "Because you watched"). */
+    val tasteRating: com.seerflix.tv.core.data.TasteRating? = null,
+    val showRateMenu: Boolean = false
 )
 
 @HiltViewModel
@@ -243,6 +246,11 @@ class DetailsViewModel @Inject constructor(
                         isLoading = false,
                         isRefining = false
                     )
+                }
+
+                launch(Dispatchers.IO) {
+                    val rating = runCatching { catalogRepository.ratingFor(activeUserId, item) }.getOrNull()
+                    _uiState.update { if (it.item?.id == item.id) it.copy(tasteRating = rating) else it }
                 }
 
                 launch(Dispatchers.IO) {
@@ -740,6 +748,61 @@ class DetailsViewModel @Inject constructor(
                 .onFailure { err ->
                     val s = strings
                     _uiState.update { it.copy(feedbackBanner = s.myListUpdateFailed.format(err.message ?: s.commonUnknownError)) }
+                }
+        }
+    }
+
+    fun openRateMenu() {
+        if (_uiState.value.isRefining || _uiState.value.item == null) return
+        _uiState.update { it.copy(showRateMenu = true) }
+    }
+
+    fun dismissRateMenu() {
+        _uiState.update { it.copy(showRateMenu = false) }
+    }
+
+    /** Thumbs down / up / love (null clears); the same choice again also clears it. */
+    fun rateTitle(rating: com.seerflix.tv.core.data.TasteRating?) {
+        val item = _uiState.value.item ?: return
+        if (activeUserId.isBlank()) return
+        val next = if (rating != null && rating == _uiState.value.tasteRating) null else rating
+        _uiState.update { it.copy(showRateMenu = false) }
+        viewModelScope.launch {
+            catalogRepository.rateTitle(activeUserId, item, next)
+                .onSuccess {
+                    val s = strings
+                    val title = item.seriesName ?: item.title
+                    _uiState.update {
+                        it.copy(
+                            tasteRating = next,
+                            feedbackBanner = when (next) {
+                                com.seerflix.tv.core.data.TasteRating.LIKE -> s.rateSavedLike.format(title)
+                                com.seerflix.tv.core.data.TasteRating.LOVE -> s.rateSavedLove.format(title)
+                                com.seerflix.tv.core.data.TasteRating.DISLIKE -> s.rateSavedDislike.format(title)
+                                null -> s.rateCleared
+                            }
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    val s = strings
+                    _uiState.update { it.copy(feedbackBanner = s.rateFailed.format(err.message ?: s.commonUnknownError)) }
+                }
+        }
+    }
+
+    fun markNotInterested() {
+        val item = _uiState.value.item ?: return
+        if (activeUserId.isBlank()) return
+        _uiState.update { it.copy(showRateMenu = false) }
+        viewModelScope.launch {
+            catalogRepository.setNotInterested(activeUserId, item, true)
+                .onSuccess {
+                    _uiState.update { it.copy(feedbackBanner = strings.notInterestedFeedback.format(item.seriesName ?: item.title)) }
+                }
+                .onFailure { err ->
+                    val s = strings
+                    _uiState.update { it.copy(feedbackBanner = s.rateFailed.format(err.message ?: s.commonUnknownError)) }
                 }
         }
     }

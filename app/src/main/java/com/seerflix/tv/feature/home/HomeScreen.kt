@@ -50,6 +50,10 @@ import androidx.compose.material.icons.filled.Hd
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Lock
@@ -193,6 +197,15 @@ private fun GenreFilterOption.localizedLabel(s: UiStrings): String = when (id) {
  */
 private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): String {
     genreRowTitle(id, s)?.let { return it }
+    // Personalized rows (0.9.5): several "Because you ..." rows and library genre rows.
+    if (id.startsWith("because_you_watched")) {
+        return when {
+            title.startsWith(BECAUSE_YOU_LIKED_PREFIX) -> s.rowBecauseYouLiked.format(title.removePrefix(BECAUSE_YOU_LIKED_PREFIX))
+            title.startsWith(BECAUSE_YOU_WATCHED_PREFIX) -> s.rowBecauseYouWatched.format(title.removePrefix(BECAUSE_YOU_WATCHED_PREFIX))
+            else -> s.rowBecauseYouWatchedGeneric
+        }
+    }
+    if (id.startsWith("library_genre_")) return s.rowGenreInLibrary.format(title)
     StreamingService.entries.firstOrNull { it.newAndPopularRowId == id }?.let {
         return s.rowTop10OnService.format(it.displayName)
     }
@@ -206,7 +219,20 @@ private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): Stri
         "next_up" -> s.rowNextUp
         "ready_to_watch" -> s.rowReadyToWatch
         "gems_for_you" -> s.rowGemsForYou
-        "todays_top_picks" -> s.rowTodaysTopPicks
+        "todays_top_picks" ->
+            if (title.startsWith(TOP_PICKS_FOR_PREFIX)) s.rowTopPicksFor.format(title.removePrefix(TOP_PICKS_FOR_PREFIX))
+            else s.rowTodaysTopPicks
+        "unwatched_in_library" -> s.rowUnwatchedInLibrary
+        "hidden_gems" -> s.rowHiddenGems
+        "forgotten_in_library" -> s.rowForgottenInLibrary
+        "short_tonight" -> s.rowShortTonight
+        "popular_household" -> s.rowPopularHousehold
+        "trakt_recommended" -> s.rowTraktRecommended
+        "more_from_person" -> when {
+            title.startsWith(DIRECTED_BY_PREFIX) -> s.rowDirectedBy.format(title.removePrefix(DIRECTED_BY_PREFIX))
+            title.startsWith(STARRING_PREFIX) -> s.rowStarring.format(title.removePrefix(STARRING_PREFIX))
+            else -> title
+        }
         "award_winning_tv" -> s.rowAwardWinningTv
         "top10_tv_now", "np_top10_tv_now" ->
             regionalTop10Title(title, "Top 10 TV Shows", s.rowTop10TvToday, s.rowTop10TvIn, s)
@@ -215,10 +241,6 @@ private fun localizedHomeRowTitle(id: String, title: String, s: UiStrings): Stri
         "my_list", "my_list_page" -> s.navMyList
         "my_list_shows" -> s.rowSavedShows
         "my_list_movies" -> s.rowSavedMovies
-        "because_you_watched" ->
-            if (title.startsWith(BECAUSE_YOU_WATCHED_PREFIX)) {
-                s.rowBecauseYouWatched.format(title.removePrefix(BECAUSE_YOU_WATCHED_PREFIX))
-            } else s.rowBecauseYouWatchedGeneric
         "seasonal_picks" -> when (title) {
             "Date Night & Romance" -> s.rowSeasonalRomance
             "Summer Blockbusters" -> s.rowSeasonalSummer
@@ -271,6 +293,10 @@ private fun syncPlayStateLabel(state: String, s: UiStrings): String = when (stat
 
 private const val CONTINUE_WATCHING_FOR_PREFIX = "Continue Watching for "
 private const val BECAUSE_YOU_WATCHED_PREFIX = "Because you watched "
+private const val BECAUSE_YOU_LIKED_PREFIX = "Because you liked "
+private const val TOP_PICKS_FOR_PREFIX = "Top Picks for "
+private const val DIRECTED_BY_PREFIX = "Directed by "
+private const val STARRING_PREFIX = "Starring "
 
 /** Per-genre rows: `genre_<kind>_<genreId>`, with the genre label localized. */
 private fun genreRowTitle(id: String, s: UiStrings): String? {
@@ -429,7 +455,10 @@ fun HomeScreen(
             onCancelSeriesRecording = viewModel::cancelSeriesRecording,
             onStartAppUpdate = viewModel::startAppUpdate,
             onCancelAppUpdate = viewModel::cancelAppUpdate,
-            onResumeAppUpdateDialog = viewModel::onResumeAppUpdateDialog
+            onResumeAppUpdateDialog = viewModel::onResumeAppUpdateDialog,
+            onRateTitle = viewModel::ratePosterTitle,
+            onNotInterested = viewModel::markPosterNotInterested,
+            onRowItemOpened = viewModel::onRowItemOpened
         )
     )
 }
@@ -453,7 +482,12 @@ data class HomeExtraActions(
     val onCancelSeriesRecording: (seriesTimerId: String) -> Unit = {},
     val onStartAppUpdate: () -> Unit = {},
     val onCancelAppUpdate: () -> Unit = {},
-    val onResumeAppUpdateDialog: () -> Unit = {}
+    val onResumeAppUpdateDialog: () -> Unit = {},
+    /** Thumbs down / up / love from the poster menu (null clears). */
+    val onRateTitle: (UnifiedMediaItem, com.seerflix.tv.core.data.TasteRating?) -> Unit = { _, _ -> },
+    val onNotInterested: (UnifiedMediaItem) -> Unit = {},
+    /** A title was opened from this Home row (rows the profile uses move up). */
+    val onRowItemOpened: (rowId: String) -> Unit = {}
 )
 
 @Composable
@@ -730,6 +764,8 @@ fun HomeContent(
                     onDismissPosterOptions()
                     onOpenDetails(target)
                 },
+                onRate = { rating -> extraActions.onRateTitle(target, rating) },
+                onNotInterested = { extraActions.onNotInterested(target) },
                 onDismiss = onDismissPosterOptions
             )
         }
@@ -1264,6 +1300,7 @@ private fun HomeMainCanvas(
                             onCardFocused = onCardFocused,
                             onItemFocus = onItemFocused,
                             onItemClick = { item ->
+                                extraActions.onRowItemOpened(row.id)
                                 if (item.boxSetId != null) {
                                     onOpenCollection(item.boxSetId, item.title, item.collectionId)
                                 } else if (row.style == RowStyle.CONTINUE_WATCHING && item.jellyfinId != null) {
@@ -2036,6 +2073,8 @@ private fun PosterOptionsDialog(
     onToggleMyList: () -> Unit,
     onToggleWatched: () -> Unit,
     onViewDetails: () -> Unit,
+    onRate: (com.seerflix.tv.core.data.TasteRating?) -> Unit = {},
+    onNotInterested: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val colors = SeerflixTokens.colors
@@ -2116,6 +2155,11 @@ private fun PosterOptionsDialog(
                 modifier = firstModifier()
             )
             ContextActionRow(Icons.Filled.Info, strings.homeDetailsCastTrailers, onViewDetails)
+            // Netflix-style ratings: they steer Top Picks and "Because you watched".
+            ContextActionRow(Icons.Filled.ThumbUp, strings.rateLike, { onRate(com.seerflix.tv.core.data.TasteRating.LIKE) })
+            ContextActionRow(Icons.Filled.Favorite, strings.rateLove, { onRate(com.seerflix.tv.core.data.TasteRating.LOVE) })
+            ContextActionRow(Icons.Filled.ThumbDown, strings.rateNotForMe, { onRate(com.seerflix.tv.core.data.TasteRating.DISLIKE) })
+            ContextActionRow(Icons.Filled.Block, strings.actionNotInterested, onNotInterested)
         }
     }
 }

@@ -65,6 +65,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -94,7 +95,9 @@ class UnifiedCatalogRepository @Inject constructor(
      * home server.
      */
     private val servers: JellyfinServers? = null,
-    private val copies: CrossServerCopies? = null
+    private val copies: CrossServerCopies? = null,
+    /** "Connect Trakt" recommendations; null (unit tests) or not connected = no Trakt row. */
+    private val traktAccount: TraktAccount? = null
 ) {
     /**
      * Snapshot of one Jellyfin user's owned Movies/Series plus the lookup maps derived from it.
@@ -112,6 +115,7 @@ class UnifiedCatalogRepository @Inject constructor(
         val movies: Map<Int, JellyfinItemDto>
         val series: Map<Int, JellyfinItemDto>
         val seriesTmdbByJellyfinId: Map<String, Int>
+        val byId: Map<String, JellyfinItemDto> by lazy(LazyThreadSafetyMode.PUBLICATION) { items.associateBy { it.id } }
 
         init {
             val m = HashMap<Int, JellyfinItemDto>(items.size)
@@ -1193,35 +1197,46 @@ class UnifiedCatalogRepository @Inject constructor(
             deduped.map { mapJellyfinItem(it, isNextUp = true) }
                 .filter { availabilityFilter.matches(it) }
         }
-        // Personalized "Because you watched <RecentTitle>": started as soon as its seed is known
-        // instead of after every earlier row has been awaited.
-        val personalizedDeferred = async {
-            val resumeRaw = resumeDeferred.await()
-            val playedRaw = playedDeferred.await()
-            val recentSeed = resumeItemsDeferred.await().firstOrNull { it.tmdbId != null || it.jellyfinId != null }
-                ?: playedRaw.firstOrNull()?.let { mapJellyfinItem(it) }
-                ?: return@async null
-            val seedIsEpisode = recentSeed.mediaType == MediaType.EPISODE
-            val seedType = if (seedIsEpisode) MediaType.SERIES else recentSeed.mediaType
-            val seedName = recentSeed.seriesName ?: recentSeed.title
-            // An episode's ProviderIds hold the *episode's* TMDB id; recommendations must be keyed
-            // on the parent series (both the Seerr TV id and the Jellyfin item id).
-            val seedSeriesId = if (seedIsEpisode) {
-                (resumeRaw + playedRaw).firstOrNull { it.id == recentSeed.jellyfinId }?.seriesId
-            } else null
-            val seedTmdbId = if (seedIsEpisode) seriesTmdbIdFor(seedSeriesId) else recentSeed.tmdbId
-            val seedJellyfinId = if (seedIsEpisode) seedSeriesId else recentSeed.jellyfinId
-            val personalized = runCatchingCancellable {
-                loadRecommendations(
+        // Personalized discovery: seeds from the whole recent history (not just the last title),
+        // merged into "Top Picks for <profile>", several "Because you watched" rows, library
+        // rows, a person row and the household row.
+        val taste = runCatchingCancellable { tasteFor(userId) }.getOrDefault(TasteData())
+        val discoveryDeferred = async {
+            runCatchingCancellable {
+                buildPersonalDiscovery(
                     userId = userId,
-                    tmdbId = seedTmdbId,
-                    jellyfinId = seedJellyfinId,
-                    mediaType = seedType,
+                    watchingRaw = resumeDeferred.await() + nextUpDeferred.await(),
+                    playedRaw = playedDeferred.await(),
+                    favorites = myListDeferred.await(),
+                    taste = taste,
                     activeProfile = activeProfile
                 )
-            }.getOrDefault(emptyList())
-                .filter { (filterType == null || it.mediaType == filterType) && availabilityFilter.matches(it) }
-            seedName to personalized
+            }.getOrNull()
+        }
+        val becauseRowsDeferred = async {
+            val discovery = discoveryDeferred.await() ?: return@async emptyList<CatalogRow>()
+            becauseYouWatchedRows(discovery, taste, filterType, availabilityFilter)
+        }
+        val libraryDiscoveryDeferred = async {
+            if (availabilityFilter == AvailabilityFilter.REQUESTABLE) return@async emptyMap<String, List<UnifiedMediaItem>>()
+            val affinity = discoveryDeferred.await()?.affinity.orEmpty()
+            runCatchingCancellable { libraryDiscoveryRows(userId, filterType, affinity, today, taste) }
+                .getOrDefault(emptyMap())
+                .mapValues { (_, items) -> items.filter(availabilityFilter::matches) }
+        }
+        val personRowDeferred = async {
+            if (filterType != null || availabilityFilter == AvailabilityFilter.REQUESTABLE) return@async null
+            val discovery = discoveryDeferred.await() ?: return@async null
+            runCatchingCancellable { favoritePersonRow(userId, discovery, filterType, activeProfile) }.getOrNull()
+        }
+        val traktRecsDeferred = async {
+            runCatchingCancellable { traktRecommendedItems(userId, filterType, today) }.getOrDefault(emptyList())
+                .filter { availabilityFilter.matches(it) && !it.isWatched }
+        }
+        val householdDeferred = async {
+            if (filterType != null || availabilityFilter == AvailabilityFilter.REQUESTABLE) return@async emptyList()
+            val nowMs = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() + DAY_MS
+            runCatchingCancellable { householdPopularItems(userId, activeProfile, nowMs) }.getOrDefault(emptyList())
         }
         val topMoviesNowDeferred = async {
             if (seerrActive && (filterType == null || filterType == MediaType.MOVIE)) {
@@ -1433,6 +1448,9 @@ class UnifiedCatalogRepository @Inject constructor(
             val seriesDtos = if (wantSeries) {
                 index.asSequence().filter { it.type.equals("Series", ignoreCase = true) }.take(25).toList()
             } else emptyList()
+            val genreRows = runCatchingCancellable {
+                libraryGenreRows(userId, filterType, discoveryDeferred.await()?.affinity.orEmpty())
+            }.getOrDefault(emptyList())
             val withText = withOverviews(userId, movieDtos + seriesDtos)
             val movies = withText.take(movieDtos.size).map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
             val series = withText.drop(movieDtos.size).map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
@@ -1443,6 +1461,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 if (series.isNotEmpty()) {
                     add(CatalogRow(id = "jellyfin_series", title = "TV Shows in Your Library", style = RowStyle.POSTER, items = series))
                 }
+                addAll(genreRows)
             }
         }
 
@@ -1474,7 +1493,9 @@ class UnifiedCatalogRepository @Inject constructor(
         val top10MoviesNow = topMoviesNowDeferred.await()
         val top10TvNow = topTvAiringNowDeferred.await()
         val homeReleaseMovies = homeReleaseMoviesDeferred.await()
-        val personalized = personalizedDeferred.await()
+        val discovery = discoveryDeferred.await()
+        val becauseRows = becauseRowsDeferred.await()
+        val libraryRows = libraryDiscoveryDeferred.await()
         val airingThisWeek = airingThisWeekDeferred.await().filter(availabilityFilter::matches)
         val latest = latestDeferred.await()
             .map { mapJellyfinItem(it) }
@@ -1495,13 +1516,26 @@ class UnifiedCatalogRepository @Inject constructor(
             .filter(availabilityFilter::matches)
         val trending = filterMoviesAvailableAtHome(trendingRaw, today)
 
-        // Blend personalized recs + trending + headline hits into "Today's Top Picks for You"
+        // "Top Picks for <profile>": the merged multi-title ranking first, topped up with what's
+        // trending when the history is still thin.
+        val personalPicks = discovery?.topPicks.orEmpty()
+            .filter { (filterType == null || it.mediaType == filterType) && availabilityFilter.matches(it) }
         val todaysTopPicks = buildList {
-            personalized?.second?.take(8)?.let(::addAll)
-            addAll(trending)
-            if (filterType == MediaType.MOVIE) addAll(top10MoviesNow)
-            if (filterType == MediaType.SERIES) addAll(top10TvNow)
-        }.distinctBy { "${it.mediaType}_${it.tmdbId ?: it.id}" }.take(20)
+            addAll(personalPicks.take(20))
+            if (size < 12) {
+                addAll(trending)
+                if (filterType == MediaType.MOVIE) addAll(top10MoviesNow)
+                if (filterType == MediaType.SERIES) addAll(top10TvNow)
+            }
+        }.filterNot { taste.isNotInterested(it) || taste.ratingFor(it) == TasteRating.DISLIKE }
+            .distinctBy { "${it.mediaType}_${it.tmdbId ?: it.id}" }
+            .take(20)
+        val profileFirstName = activeProfile?.name?.trim()?.takeIf { it.isNotEmpty() }
+        val topPicksTitle = if (personalPicks.size >= MIN_DISCOVERY_ROW_ITEMS && profileFirstName != null) {
+            TOP_PICKS_FOR_PREFIX + profileFirstName
+        } else "Today's Top Picks for You"
+        fun libraryRow(id: String, title: String): CatalogRow? =
+            libraryRows[id]?.takeIf { it.isNotEmpty() }?.let { CatalogRow(id, title, RowStyle.POSTER, it) }
 
         when (filterType) {
             null -> {
@@ -1517,7 +1551,12 @@ class UnifiedCatalogRepository @Inject constructor(
                     rows += CatalogRow("gems_for_you", "Gems for You", RowStyle.POSTER, gems)
                 }
                 if (todaysTopPicks.isNotEmpty()) {
-                    rows += CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, todaysTopPicks)
+                    rows += CatalogRow("todays_top_picks", topPicksTitle, RowStyle.POSTER, todaysTopPicks)
+                }
+                becauseRows.getOrNull(0)?.let { rows += it }
+                val traktRecs = traktRecsDeferred.await()
+                if (traktRecs.size >= MIN_DISCOVERY_ROW_ITEMS) {
+                    rows += CatalogRow("trakt_recommended", "Recommended for You on Trakt", RowStyle.POSTER, traktRecs)
                 }
                 val awardTv = awardWinningTvDeferred.await()
                 if (awardTv.isNotEmpty()) {
@@ -1529,41 +1568,49 @@ class UnifiedCatalogRepository @Inject constructor(
                 if (top10MoviesNow.isNotEmpty()) {
                     rows += CatalogRow("top10_movies_now", "Top 10 Movies $regionSuffix", RowStyle.TOP_10, top10MoviesNow)
                 }
+                libraryRow("unwatched_in_library", "Unwatched in Your Library")?.let { rows += it }
                 if (myListItems.isNotEmpty()) {
                     rows += CatalogRow("my_list", "My List", RowStyle.POSTER, myListItems)
                 }
                 rows += pinnedLibraryRowsDeferred.await()
-                if (personalized != null && personalized.second.isNotEmpty()) {
-                    rows += CatalogRow(
-                        id = "because_you_watched",
-                        title = "Because you watched ${personalized.first}",
-                        style = RowStyle.POSTER,
-                        items = personalized.second
-                    )
+                becauseRows.getOrNull(1)?.let { rows += it }
+                val household = householdDeferred.await()
+                if (household.size >= MIN_PERSON_ROW_ITEMS) {
+                    rows += CatalogRow("popular_household", "Popular in Your Household", RowStyle.POSTER, household)
                 }
+                personRowDeferred.await()?.let { rows += it }
                 val seasonal = seasonalDeferred.await()
                 if (seasonal.isNotEmpty()) {
                     rows += CatalogRow(seasonalSpec.id, seasonalSpec.title, RowStyle.POSTER, seasonal)
                 }
+                libraryRow("hidden_gems", "Hidden Gems on Your Server")?.let { rows += it }
                 if (homeReleaseMovies.newOnDigital.isNotEmpty()) {
                     rows += CatalogRow("new_on_digital", "New on Digital & Streaming", RowStyle.POSTER, homeReleaseMovies.newOnDigital)
                 }
                 if (latest.isNotEmpty()) {
                     rows += CatalogRow("recently_added", "Recently Added", RowStyle.POSTER, latest)
                 }
+                becauseRows.getOrNull(2)?.let { rows += it }
+                libraryRow("forgotten_in_library", "Added a While Ago, Never Started")?.let { rows += it }
+                libraryRow("short_tonight", "Short on Time? Movies Under 100 Minutes")?.let { rows += it }
                 rows += jellyfinLibraryRowsDeferred.await()
             }
 
             MediaType.MOVIE -> {
                 // ---- MOVIES TAB ----
                 if (todaysTopPicks.isNotEmpty()) {
-                    rows += CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, todaysTopPicks)
+                    rows += CatalogRow("todays_top_picks", topPicksTitle, RowStyle.POSTER, todaysTopPicks)
                 }
                 if (top10MoviesNow.isNotEmpty()) {
                     rows += CatalogRow("top10_movies_now", "Top 10 Movies $regionSuffix", RowStyle.TOP_10, top10MoviesNow)
                 }
                 if (resumeItems.isNotEmpty()) {
                     rows += CatalogRow("continue_watching", cwTitle, RowStyle.CONTINUE_WATCHING, resumeItems)
+                }
+                becauseRows.getOrNull(0)?.let { rows += it }
+                libraryRow("unwatched_in_library", "Unwatched in Your Library")?.let { rows += it }
+                traktRecsDeferred.await().takeIf { it.size >= MIN_DISCOVERY_ROW_ITEMS }?.let {
+                    rows += CatalogRow("trakt_recommended", "Recommended for You on Trakt", RowStyle.POSTER, it)
                 }
                 val goodLaugh = needAGoodLaughDeferred.await()
                 if (goodLaugh.isNotEmpty()) {
@@ -1601,6 +1648,10 @@ class UnifiedCatalogRepository @Inject constructor(
                 if (sciFi.isNotEmpty()) {
                     rows += CatalogRow("movie_scifi", "Sci-Fi Movies", RowStyle.POSTER, sciFi)
                 }
+                becauseRows.drop(1).forEach { rows += it }
+                libraryRow("short_tonight", "Short on Time? Movies Under 100 Minutes")?.let { rows += it }
+                libraryRow("hidden_gems", "Hidden Gems on Your Server")?.let { rows += it }
+                libraryRow("forgotten_in_library", "Added a While Ago, Never Started")?.let { rows += it }
                 if (myListItems.isNotEmpty()) {
                     rows += CatalogRow("my_list", "My List", RowStyle.POSTER, myListItems)
                 }
@@ -1617,7 +1668,12 @@ class UnifiedCatalogRepository @Inject constructor(
             MediaType.SERIES, MediaType.EPISODE -> {
                 // ---- TV SHOWS TAB ----
                 if (todaysTopPicks.isNotEmpty()) {
-                    rows += CatalogRow("todays_top_picks", "Today's Top Picks for You", RowStyle.POSTER, todaysTopPicks)
+                    rows += CatalogRow("todays_top_picks", topPicksTitle, RowStyle.POSTER, todaysTopPicks)
+                }
+                becauseRows.getOrNull(0)?.let { rows += it }
+                libraryRow("unwatched_in_library", "Unwatched in Your Library")?.let { rows += it }
+                traktRecsDeferred.await().takeIf { it.size >= MIN_DISCOVERY_ROW_ITEMS }?.let {
+                    rows += CatalogRow("trakt_recommended", "Recommended for You on Trakt", RowStyle.POSTER, it)
                 }
                 val awardDramas = awardWinningTvDramasDeferred.await()
                 if (awardDramas.isNotEmpty()) {
@@ -1660,6 +1716,9 @@ class UnifiedCatalogRepository @Inject constructor(
                 if (tvCrime.isNotEmpty()) {
                     rows += CatalogRow("tv_crime", "Crime TV Shows", RowStyle.POSTER, tvCrime)
                 }
+                becauseRows.drop(1).forEach { rows += it }
+                libraryRow("hidden_gems", "Hidden Gems on Your Server")?.let { rows += it }
+                libraryRow("forgotten_in_library", "Added a While Ago, Never Started")?.let { rows += it }
                 if (myListItems.isNotEmpty()) {
                     rows += CatalogRow("my_list", "My List", RowStyle.POSTER, myListItems)
                 }
@@ -1732,12 +1791,14 @@ class UnifiedCatalogRepository @Inject constructor(
             airingThisWeek = airingThisWeek,
             newSeriesPremieres = newPremieres
         )
-        applyRowCustomizationAndParentalFilters(decorated, activeProfile)
+        val polished = DiscoveryEngine.dedupeAcrossRows(DiscoveryEngine.filterDisliked(decorated, taste))
+        applyRowCustomizationAndParentalFilters(polished, activeProfile, taste.rowOpens)
     }
 
     private fun applyRowCustomizationAndParentalFilters(
         rows: List<CatalogRow>,
-        activeProfile: UserProfile?
+        activeProfile: UserProfile?,
+        rowOpens: Map<String, Int> = emptyMap()
     ): List<CatalogRow> {
         val hiddenIds = activeProfile?.hiddenHomeRowIds?.toSet().orEmpty()
         val filtered = rows
@@ -1747,7 +1808,12 @@ class UnifiedCatalogRepository @Inject constructor(
                 if (safeItems.isEmpty()) null else row.copy(items = safeItems)
             }
         val order = activeProfile?.homeRowOrder.orEmpty()
-        if (order.isEmpty()) return filtered
+        if (order.isEmpty()) {
+            // No hand-made order: rows this profile actually uses drift up (Netflix-style).
+            return if (activeProfile?.personalizedRowOrder != false) {
+                DiscoveryEngine.orderByEngagement(filtered, rowOpens)
+            } else filtered
+        }
         val byId = filtered.associateBy { it.id }
         val ordered = order.mapNotNull { byId[it] }
         val remaining = filtered.filterNot { it.id in order }
@@ -4521,12 +4587,412 @@ class UnifiedCatalogRepository @Inject constructor(
     private fun extractYouTubeKey(url: String?): String? =
         YouTubeUrlParser.extractVideoKey(url)
 
+    // ---------------------------------------------------------------------------------------
+    // Personalized discovery (0.9.5): ratings, multi-title picks, library rows, people and
+    // household rows. Scoring lives in DiscoveryEngine; this is the I/O around it.
+    // ---------------------------------------------------------------------------------------
+
+    private val indexById: Map<String, JellyfinItemDto>
+        get() = libraryIndex?.byId.orEmpty()
+
+    /**
+     * The profile's taste: ratings given in Lumen, plus thumbs set on the server (UserData.Likes,
+     * e.g. from Lumen on another TV) for titles not rated here.
+     */
+    suspend fun tasteFor(userId: String): TasteData {
+        val local = prefs.getTaste(userId)
+        val serverRated = allLibraryItems.mapNotNull { dto ->
+            val likes = dto.userData?.likes ?: return@mapNotNull null
+            TasteEntry(
+                mediaType = DiscoveryEngine.titleType(jellyfinMediaType(dto)),
+                tmdbId = dto.providerIds["Tmdb"]?.toIntOrNull() ?: dto.providerIds["tmdb"]?.toIntOrNull(),
+                jellyfinId = dto.id,
+                title = dto.name,
+                genres = dto.genres,
+                rating = if (likes) TasteRating.LIKE else TasteRating.DISLIKE
+            )
+        }
+        if (serverRated.isEmpty()) return local
+        val localKeys = local.ratings.flatMap { it.keys }.toSet()
+        val extra = serverRated.filter { e -> e.keys.none { it in localKeys } }
+        // Local ratings stay last (= most recent) so they lead the seeds.
+        return if (extra.isEmpty()) local else local.copy(ratings = extra + local.ratings)
+    }
+
+    /** The rating Lumen shows for [item] (local first, then the server's thumbs). */
+    suspend fun ratingFor(userId: String, item: UnifiedMediaItem): TasteRating? =
+        tasteFor(userId).ratingFor(withLibraryId(item))
+
+    /** Fills in the owned copy's Jellyfin id for a Seerr result, so both ids carry the rating. */
+    private fun withLibraryId(item: UnifiedMediaItem): UnifiedMediaItem {
+        if (item.jellyfinId != null || item.tmdbId == null) return item
+        val jfId = findJellyfinIdForTmdb(item.tmdbId, DiscoveryEngine.titleType(item.mediaType)) ?: return item
+        return item.copy(jellyfinId = jfId)
+    }
+
+    /**
+     * Thumbs down / up / love for a title (null clears). Saved for the profile and, for titles in
+     * the library, mirrored to Jellyfin's Likes so other Lumen TVs see it too.
+     */
+    suspend fun rateTitle(userId: String, item: UnifiedMediaItem, rating: TasteRating?): Result<TasteData> =
+        runCatchingCancellable {
+            val target = withLibraryId(item)
+            val updated = prefs.updateTaste(userId) { it.withRating(target, rating, System.currentTimeMillis()) }
+            target.jellyfinId?.let { jfId ->
+                sessionFor(jfId, userId)?.let { session ->
+                    runCatchingCancellable {
+                        if (rating == null) session.api.deleteUserItemRating(session.userId, session.raw(jfId))
+                        else session.api.updateUserItemRating(
+                            session.userId,
+                            session.raw(jfId),
+                            likes = rating != TasteRating.DISLIKE
+                        )
+                    }
+                }
+            }
+            updated
+        }
+
+    /** "Not interested": the title stops appearing in recommendation and discovery rows. */
+    suspend fun setNotInterested(userId: String, item: UnifiedMediaItem, notInterested: Boolean): Result<TasteData> =
+        runCatchingCancellable {
+            val target = withLibraryId(item)
+            prefs.updateTaste(userId) { it.withNotInterested(target, notInterested, System.currentTimeMillis()) }
+        }
+
+    /** Counts a title opened from a Home row, so rows the profile uses move up the page. */
+    suspend fun recordRowOpen(userId: String, rowId: String) {
+        runCatchingCancellable { prefs.updateTaste(userId) { it.withRowOpened(rowId) } }
+    }
+
+    /** Forgets the profile's ratings, "Not interested" list and row history. */
+    suspend fun resetTaste(userId: String): Result<Unit> = runCatchingCancellable {
+        prefs.updateTaste(userId) { TasteData() }
+        Unit
+    }
+
+    /** History as titles: an episode becomes its series (from the index when owned). */
+    private fun historyTitles(dtos: List<JellyfinItemDto>): List<UnifiedMediaItem> {
+        val byId = indexById
+        return dtos.mapNotNull { dto ->
+            when {
+                dto.type.equals("Episode", ignoreCase = true) -> {
+                    val sid = dto.seriesId ?: return@mapNotNull null
+                    byId[sid]?.let { mapJellyfinItem(it) } ?: UnifiedMediaItem(
+                        id = sid,
+                        jellyfinId = sid,
+                        tmdbId = seriesTmdbIdFor(sid),
+                        mediaType = MediaType.SERIES,
+                        title = dto.seriesName ?: dto.name,
+                        genres = dto.genres
+                    )
+                }
+                dto.type.equals("Movie", ignoreCase = true) || dto.type.equals("Series", ignoreCase = true) ->
+                    mapJellyfinItem(byId[dto.id]?.let { idx -> dto.copy(genres = dto.genres.ifEmpty { idx.genres }) } ?: dto)
+                else -> null
+            }
+        }.distinctBy { DiscoveryEngine.identity(it) }
+    }
+
+    /** Per-title recommendation lists are stable for a while; tab switches reuse them. */
+    private val seedRecsCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<UnifiedMediaItem>>>()
+
+    /** A cached recommendation with today's library state (owned copy, watched, progress). */
+    private fun refreshFromIndex(rec: UnifiedMediaItem): UnifiedMediaItem {
+        val tmdb = rec.tmdbId ?: return rec
+        val owned = (if (rec.mediaType == MediaType.MOVIE) tmdbToJellyfinMovie[tmdb] else tmdbToJellyfinSeries[tmdb])
+            ?: return rec
+        return rec.copy(
+            jellyfinId = rec.jellyfinId ?: owned.id,
+            isWatched = owned.userData?.played == true,
+            resumePositionTicks = owned.userData?.playbackPositionTicks ?: rec.resumePositionTicks
+        )
+    }
+
+    internal class PersonalDiscovery(
+        val seeds: List<DiscoveryEngine.Seed>,
+        val affinity: Map<String, Double>,
+        val perSeed: List<Pair<DiscoveryEngine.Seed, List<UnifiedMediaItem>>>,
+        val topPicks: List<UnifiedMediaItem>,
+        /** Titles the profile is watching or finished: never recommended back. */
+        val historyIds: Set<String>
+    )
+
+    /**
+     * Seeds from the whole recent history (watching, finished, favorites, thumbs up), the
+     * recommendations of the strongest few, and one merged "Top Picks" ranking.
+     */
+    private suspend fun buildPersonalDiscovery(
+        userId: String,
+        watchingRaw: List<JellyfinItemDto>,
+        playedRaw: List<JellyfinItemDto>,
+        favorites: List<UnifiedMediaItem>,
+        taste: TasteData,
+        activeProfile: UserProfile?
+    ): PersonalDiscovery = coroutineScope {
+        val watching = historyTitles(watchingRaw)
+        val played = historyTitles(playedRaw)
+        val seeds = DiscoveryEngine.buildSeeds(watching, played, favorites, taste)
+        val affinity = DiscoveryEngine.genreAffinity(seeds, taste)
+        val perSeed = seeds.take(SEEDS_TO_EXPAND).map { seed ->
+            async {
+                val type = DiscoveryEngine.titleType(seed.item.mediaType)
+                val tmdb = seed.item.tmdbId
+                    ?: seed.item.jellyfinId?.let { if (type == MediaType.SERIES) seriesTmdbIdFor(it) else null }
+                val cacheKey = "$userId|$type|${tmdb ?: seed.item.jellyfinId}|$metaLang|${activeProfile?.effectiveRatingLimit}"
+                val now = System.currentTimeMillis()
+                val cached = seedRecsCache[cacheKey]?.takeIf { now - it.first in 0 until SEED_RECS_TTL_MS }?.second
+                val recs = cached ?: runCatchingCancellable {
+                    loadRecommendations(
+                        userId = userId,
+                        tmdbId = tmdb,
+                        jellyfinId = seed.item.jellyfinId,
+                        mediaType = type,
+                        activeProfile = activeProfile
+                    )
+                }.getOrNull()?.also { if (it.isNotEmpty()) seedRecsCache[cacheKey] = now to it }.orEmpty()
+                // Availability and watch state come from the current index, not the cached copy.
+                seed to recs.map { rec -> refreshFromIndex(rec) }
+            }
+        }.awaitAll()
+        val historyIds = (watching + played).map { DiscoveryEngine.identity(it) }.toSet()
+        val topPicks = DiscoveryEngine.rankRecommendations(perSeed, affinity, taste, exclude = historyIds, limit = 30)
+        PersonalDiscovery(seeds, affinity, perSeed, topPicks, historyIds)
+    }
+
+    /**
+     * Up to three "Because you watched / liked <title>" rows, each from a different seed, each
+     * with enough titles left after dropping what's watched, disliked or already a seed.
+     */
+    private fun becauseYouWatchedRows(
+        discovery: PersonalDiscovery,
+        taste: TasteData,
+        filterType: MediaType?,
+        availabilityFilter: AvailabilityFilter
+    ): List<CatalogRow> {
+        val seedIds = discovery.seeds.map { DiscoveryEngine.identity(it.item) }.toSet()
+        val rows = mutableListOf<CatalogRow>()
+        for ((seed, recs) in discovery.perSeed) {
+            if (rows.size >= MAX_BECAUSE_ROWS) break
+            val items = recs.filter { rec ->
+                (filterType == null || rec.mediaType == filterType) &&
+                    availabilityFilter.matches(rec) &&
+                    !rec.isWatched &&
+                    DiscoveryEngine.identity(rec) !in seedIds &&
+                    DiscoveryEngine.identity(rec) !in discovery.historyIds &&
+                    !taste.isNotInterested(rec) &&
+                    taste.ratingFor(rec) != TasteRating.DISLIKE
+            }
+            if (items.size < MIN_DISCOVERY_ROW_ITEMS) continue
+            val prefix = when (seed.reason) {
+                DiscoveryEngine.SeedReason.LOVED, DiscoveryEngine.SeedReason.LIKED -> BECAUSE_YOU_LIKED_PREFIX
+                else -> BECAUSE_YOU_WATCHED_PREFIX
+            }
+            val id = if (rows.isEmpty()) "because_you_watched" else "because_you_watched_${rows.size + 1}"
+            rows += CatalogRow(id, prefix + (seed.item.seriesName ?: seed.item.title), RowStyle.POSTER, items)
+        }
+        return rows
+    }
+
+    /**
+     * Rows straight from the library index (no Seerr needed): unwatched best matches, hidden gems,
+     * titles added a while ago and never started, and short movies. One overview back-fill for all.
+     */
+    private suspend fun libraryDiscoveryRows(
+        userId: String,
+        filterType: MediaType?,
+        affinity: Map<String, Double>,
+        today: LocalDate,
+        taste: TasteData
+    ): Map<String, List<UnifiedMediaItem>> {
+        val index = allLibraryItems
+        if (index.isEmpty()) return emptyMap()
+        val nowMs = today.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val raw = linkedMapOf(
+            "unwatched_in_library" to DiscoveryEngine.unwatchedInLibrary(index, affinity, filterType),
+            "hidden_gems" to DiscoveryEngine.hiddenGems(index, affinity, today.year, filterType),
+            "forgotten_in_library" to DiscoveryEngine.forgottenInLibrary(index, affinity, nowMs, filterType)
+        )
+        if (filterType == null || filterType == MediaType.MOVIE) {
+            raw["short_tonight"] = DiscoveryEngine.shortTonight(index, affinity)
+        }
+        val union = raw.values.flatten().distinctBy { it.id }
+        if (union.isEmpty()) return emptyMap()
+        val withText = withOverviews(userId, union, max = union.size.coerceAtMost(LIBRARY_ROWS_OVERVIEW_LIMIT))
+            .associateBy { it.id }
+        return raw.mapValues { (_, dtos) ->
+            dtos.map { mapJellyfinItem(withText[it.id] ?: it) }
+                .filterNot { taste.isNotInterested(it) || taste.ratingFor(it) == TasteRating.DISLIKE }
+        }.filterValues { it.size >= MIN_DISCOVERY_ROW_ITEMS }
+    }
+
+    /**
+     * Jellyfin-only Home: the profile's favourite library genres as rows (instead of the first
+     * titles of the index), unwatched and best rated first.
+     */
+    private suspend fun libraryGenreRows(
+        userId: String,
+        filterType: MediaType?,
+        affinity: Map<String, Double>
+    ): List<CatalogRow> {
+        val index = allLibraryItems
+        val genres = DiscoveryEngine.topLibraryGenres(index, affinity, filterType)
+        if (genres.isEmpty()) return emptyList()
+        val raw = genres.map { g -> g to DiscoveryEngine.libraryGenreRow(index, g, filterType) }
+        val union = raw.flatMap { it.second }.distinctBy { it.id }
+        val withText = withOverviews(userId, union, max = union.size.coerceAtMost(LIBRARY_ROWS_OVERVIEW_LIMIT))
+            .associateBy { it.id }
+        return raw.mapNotNull { (genre, dtos) ->
+            val items = dtos.map { mapJellyfinItem(withText[it.id] ?: it) }
+            if (items.size < MIN_DISCOVERY_ROW_ITEMS) null
+            else CatalogRow(
+                id = "library_genre_" + DiscoveryEngine.normalizeGenre(genre).replace(Regex("[^a-z0-9]+"), "_"),
+                title = genre,
+                style = RowStyle.POSTER,
+                items = items
+            )
+        }
+    }
+
+    /** "Directed by / Starring <person>": the person behind several of the profile's titles. */
+    private suspend fun favoritePersonRow(
+        userId: String,
+        discovery: PersonalDiscovery,
+        filterType: MediaType?,
+        activeProfile: UserProfile?
+    ): CatalogRow? = coroutineScope {
+        val seeds = discovery.seeds.filter { it.item.jellyfinId != null }.take(10)
+        if (seeds.size < 2) return@coroutineScope null
+        val ids = seeds.mapNotNull { it.item.jellyfinId }
+        val peopleById = ids.groupBy { ServerScopedId.serverOf(it) }.map { (_, group) ->
+            async {
+                val session = sessionFor(group.first(), userId) ?: return@async emptyMap()
+                onServer(session, ROW_EXTRA_TIMEOUT_MS) { s ->
+                    s.api.getLibraryItems(
+                        userId = s.userId,
+                        fields = "People",
+                        limit = group.size,
+                        ids = group.joinToString(",") { s.raw(it) },
+                        enableImages = false,
+                        enableUserData = false,
+                        enableTotalRecordCount = false
+                    ).items.associate { dto ->
+                        s.scope(dto.id) to dto.people.map { p -> p.copy(id = p.id?.let(s::scope)) }
+                    }
+                }.orEmpty()
+            }
+        }.awaitAll().fold(emptyMap<String, List<com.seerflix.tv.core.network.JellyfinPersonDto>>()) { a, b -> a + b }
+        val pick = DiscoveryEngine.favoritePerson(
+            seeds.mapNotNull { seed -> peopleById[seed.item.jellyfinId]?.let { seed.weight to it } }
+        ) ?: return@coroutineScope null
+        val seedIds = discovery.seeds.map { DiscoveryEngine.identity(it.item) }.toSet()
+        val items = runCatchingCancellable {
+            loadPersonCredits(userId, jellyfinPersonId = pick.id, personName = pick.name, activeProfile = activeProfile)
+        }.getOrDefault(emptyList())
+            .filter { (filterType == null || it.mediaType == filterType) && DiscoveryEngine.identity(it) !in seedIds }
+            .sortedBy { it.isWatched }
+            .take(20)
+        if (items.size < MIN_PERSON_ROW_ITEMS) return@coroutineScope null
+        val prefix = if (pick.isDirector) DIRECTED_BY_PREFIX else STARRING_PREFIX
+        CatalogRow("more_from_person", prefix + pick.name, RowStyle.POSTER, items)
+    }
+
+    /**
+     * The connected Trakt member's recommendations (movies and shows interleaved), as library
+     * titles when owned, else as Seerr cards (requestable). Empty when Trakt isn't connected.
+     */
+    private suspend fun traktRecommendedItems(
+        userId: String,
+        filterType: MediaType?,
+        today: LocalDate
+    ): List<UnifiedMediaItem> = coroutineScope {
+        val account = traktAccount ?: return@coroutineScope emptyList()
+        if (!account.isAvailable) return@coroutineScope emptyList()
+        val types = when (filterType) {
+            null -> listOf(MediaType.MOVIE, MediaType.SERIES)
+            MediaType.MOVIE -> listOf(MediaType.MOVIE)
+            else -> listOf(MediaType.SERIES)
+        }
+        val perType = types.map { t -> async { account.recommendations(userId, t).map { t to it } } }.awaitAll()
+        val interleaved = buildList {
+            val max = perType.maxOfOrNull { it.size } ?: 0
+            for (i in 0 until max) perType.forEach { list -> list.getOrNull(i)?.let(::add) }
+        }.take(TRAKT_ROW_LIMIT)
+        if (interleaved.isEmpty()) return@coroutineScope emptyList()
+        interleaved.map { (type, tmdb) ->
+            async {
+                val owned = if (type == MediaType.MOVIE) tmdbToJellyfinMovie[tmdb] else tmdbToJellyfinSeries[tmdb]
+                when {
+                    owned != null -> mapJellyfinItem(owned)
+                    isSeerrEnabled -> chartCardWithDetails(tmdb, type, today)?.first
+                    else -> null
+                }
+            }
+        }.awaitAll().filterNotNull()
+    }
+
+    /**
+     * "Popular in Your Household": what other people watched lately. Administrators see every
+     * user on the server; everyone else sees the other profiles on this TV (PIN-locked profiles
+     * are left out). Only titles this profile hasn't finished, and only from the library.
+     */
+    private suspend fun householdPopularItems(
+        userId: String,
+        activeProfile: UserProfile?,
+        nowMs: Long
+    ): List<UnifiedMediaItem> = coroutineScope {
+        val fromServer = if (activeProfile?.isAdmin == true) {
+            runCatchingCancellable { jellyfinApi.getUsers() }.getOrNull()
+                ?.filter { it.id != userId }
+                ?.take(MAX_HOUSEHOLD_USERS)
+                ?.map { u ->
+                    async {
+                        runCatchingCancellable { jellyfinApi.getRecentlyPlayedForUser(null, u.id).items }
+                            .getOrDefault(emptyList())
+                    }
+                }?.awaitAll()
+        } else null
+        val perUser = fromServer ?: run {
+            val others = runCatchingCancellable { prefs.profilesFlow.first() }.getOrDefault(emptyList())
+                .filter { it.jellyfinUserId.isNotBlank() && it.jellyfinUserId != userId }
+                .filter { it.jellyfinToken.isNotBlank() && !it.hasPin }
+                .distinctBy { it.jellyfinUserId }
+                .take(MAX_HOUSEHOLD_USERS)
+            others.map { p ->
+                async {
+                    runCatchingCancellable { jellyfinApi.getRecentlyPlayedForUser(p.jellyfinToken, p.jellyfinUserId).items }
+                        .getOrDefault(emptyList())
+                }
+            }.awaitAll()
+        }
+        if (perUser.all { it.isEmpty() }) return@coroutineScope emptyList()
+        val byId = indexById
+        val dtos = DiscoveryEngine.householdPopular(perUser, nowMs)
+            .mapNotNull { byId[it.titleId] }
+            .filterNot { it.userData?.played == true }
+        withOverviews(userId, dtos).map { mapJellyfinItem(it) }
+    }
+
     companion object {
         private const val LIBRARY_INDEX_PAGE_SIZE = 1000
         private const val MAX_LIBRARY_INDEX_ITEMS = 20_000
         private const val LIBRARY_INDEX_TTL_MS = 180_000L
         private const val BACKGROUND_INDEX_REFRESH_DELAY_MS = 4_000L
         private const val OVERVIEW_BACKFILL_LIMIT = 60
+        private const val LIBRARY_ROWS_OVERVIEW_LIMIT = 90
+        private const val SEEDS_TO_EXPAND = 6
+        private const val MAX_BECAUSE_ROWS = 3
+        private const val MIN_DISCOVERY_ROW_ITEMS = 5
+        private const val MIN_PERSON_ROW_ITEMS = 4
+        private const val MAX_HOUSEHOLD_USERS = 12
+        private const val TRAKT_ROW_LIMIT = 24
+        private const val SEED_RECS_TTL_MS = 30L * 60 * 1000
+        private const val DAY_MS = 86_400_000L
+        internal const val BECAUSE_YOU_WATCHED_PREFIX = "Because you watched "
+        internal const val BECAUSE_YOU_LIKED_PREFIX = "Because you liked "
+        internal const val TOP_PICKS_FOR_PREFIX = "Top Picks for "
+        internal const val DIRECTED_BY_PREFIX = "Directed by "
+        internal const val STARRING_PREFIX = "Starring "
         /** Live TV guide: programmes per request, and the most fetched for the 36-hour window. */
         private const val LIVE_TV_PROGRAM_PAGE = 1000
         private const val LIVE_TV_PROGRAM_MAX = 12_000
@@ -4594,7 +5060,7 @@ class UnifiedCatalogRepository @Inject constructor(
          * runtime/year/ratings for cards and the parental filter.
          */
         private const val LIBRARY_INDEX_FIELDS =
-            "ProviderIds,Genres,RunTimeTicks,ProductionYear,OfficialRating,CommunityRating"
+            "ProviderIds,Genres,RunTimeTicks,ProductionYear,OfficialRating,CommunityRating,DateCreated"
 
         fun extractMediaBadges(streams: List<JellyfinMediaStreamDto>): List<String> {
             if (streams.isEmpty()) return emptyList()

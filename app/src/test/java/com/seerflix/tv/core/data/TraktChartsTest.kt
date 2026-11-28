@@ -23,6 +23,16 @@ class TraktChartsTest {
     private val today = LocalDate.of(2026, 11, 15)
 
     private class CountingApi : TraktApi {
+        override suspend fun deviceCode(body: com.seerflix.tv.core.network.TraktDeviceCodeRequest) =
+            com.seerflix.tv.core.network.TraktDeviceCodeDto()
+        override suspend fun deviceToken(body: com.seerflix.tv.core.network.TraktDeviceTokenRequest):
+            retrofit2.Response<com.seerflix.tv.core.network.TraktTokenDto> = throw UnsupportedOperationException()
+        override suspend fun refreshToken(body: com.seerflix.tv.core.network.TraktRefreshRequest) =
+            com.seerflix.tv.core.network.TraktTokenDto()
+        override suspend fun recommendedMovies(bearer: String, limit: Int, ignoreCollected: Boolean, ignoreWatchlisted: Boolean) =
+            emptyList<TraktTitleDto>()
+        override suspend fun recommendedShows(bearer: String, limit: Int, ignoreCollected: Boolean, ignoreWatchlisted: Boolean) =
+            emptyList<TraktTitleDto>()
         var calls = 0
         var fail = false
         var ids = listOf(1, 2, 3)

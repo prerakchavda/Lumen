@@ -113,6 +113,43 @@ interface JellyfinApi {
         @Path("itemId") itemId: String
     )
 
+    /** Thumbs up / down (UserData.Likes). The legacy route works on 10.8 through 10.10. */
+    @POST("Users/{userId}/RatedItems/{itemId}")
+    suspend fun updateUserItemRating(
+        @Path("userId") userId: String,
+        @Path("itemId") itemId: String,
+        @Query("likes") likes: Boolean
+    )
+
+    @DELETE("Users/{userId}/RatedItems/{itemId}")
+    suspend fun deleteUserItemRating(
+        @Path("userId") userId: String,
+        @Path("itemId") itemId: String
+    )
+
+    /**
+     * Recently played titles of [userId]. [userToken] signs the request as that user (another
+     * profile on this TV); null = the active profile / an administrator reading another user.
+     */
+    @GET("Users/{userId}/Items")
+    suspend fun getRecentlyPlayedForUser(
+        @retrofit2.http.Header(JELLYFIN_USER_TOKEN_HEADER) userToken: String?,
+        @Path("userId") userId: String,
+        @Query("Filters") filters: String = "IsPlayed",
+        @Query("Recursive") recursive: Boolean = true,
+        @Query("IncludeItemTypes") includeItemTypes: String = "Movie,Episode",
+        @Query("Fields") fields: String = "ProviderIds",
+        @Query("SortBy") sortBy: String = "DatePlayed",
+        @Query("SortOrder") sortOrder: String = "Descending",
+        @Query("Limit") limit: Int = 40,
+        @Query("EnableImages") enableImages: Boolean = false,
+        @Query("EnableTotalRecordCount") enableTotalRecordCount: Boolean = false
+    ): JellyfinItemsResponse
+
+    /** Every user on the server (administrators only; others get 403). */
+    @GET("Users")
+    suspend fun getUsers(): List<JellyfinUserDto>
+
     @POST("Users/{userId}/Items/{itemId}/UserData")
     suspend fun updateUserData(
         @Path("userId") userId: String,
