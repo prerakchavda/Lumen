@@ -11,6 +11,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
@@ -47,6 +48,8 @@ class ServerRoutingTest {
     private val sent = CopyOnWriteArrayList<Request>()
     private val unreachableHosts = CopyOnWriteArrayList<String>()
     private val unauthorizedHosts = CopyOnWriteArrayList<String>()
+    /** Hosts that accept the request but never answer (read timeout after it was sent). */
+    private val readTimeoutHosts = CopyOnWriteArrayList<String>()
 
     @Before
     fun setUp() = runBlocking {
@@ -86,7 +89,8 @@ class ServerRoutingTest {
             .addInterceptor { chain ->
                 val request = chain.request()
                 sent += request
-                if (request.url.host in unreachableHosts) throw IOException("unreachable: ${request.url.host}")
+                if (request.url.host in unreachableHosts) throw java.net.ConnectException("unreachable: ${request.url.host}")
+                if (request.url.host in readTimeoutHosts) throw java.net.SocketTimeoutException("timeout")
                 val unauthorized = request.url.host in unauthorizedHosts
                 Response.Builder()
                     .request(request)
@@ -138,6 +142,28 @@ class ServerRoutingTest {
         assertEquals("friend-token", request.token())
         // The home server's token never leaves for another server.
         assertFalse(sent.any { it.token() == "home-token" })
+    }
+
+    @Test
+    fun `a POST that may have reached the server is not resent to the next address`() {
+        readTimeoutHosts += "10.0.0.5"
+        val post = Request.Builder()
+            .url(jellyfinPlaceholderBaseUrl(friendId).trimEnd('/') + "/Sessions/Playing")
+            .post("{}".toRequestBody("application/json".toMediaType()))
+            .build()
+
+        try {
+            client.newCall(post).execute().close()
+            fail("expected the read timeout to surface")
+        } catch (_: IOException) {
+        }
+        // Sent once: resending could duplicate a request / timer / playlist on the server.
+        assertEquals(listOf("10.0.0.5"), sent.map { it.url.host })
+
+        // A GET is safe to retry on the remote address.
+        sent.clear()
+        runBlocking { api(friendId).getPublicSystemInfo() }
+        assertEquals(listOf("10.0.0.5", "friend.example.net"), sent.map { it.url.host })
     }
 
     @Test

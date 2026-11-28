@@ -165,6 +165,7 @@ import com.seerflix.tv.core.player.SubtitleTrackSelector
 import com.seerflix.tv.core.player.TrickplayThumbnailLoader
 import com.seerflix.tv.ui.components.HeroPillButton
 import com.seerflix.tv.ui.theme.SeerflixTokens
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
@@ -1105,7 +1106,11 @@ fun PlayerScreen(
 
     // SyncPlay: the server's timed commands, applied at the same wall-clock moment on every TV.
     LaunchedEffect(player) {
+        // Only the latest timed command may run: a stale "Unpause" must not fire after a newer
+        // "Seek"/"Pause" (this TV would play while the group waits for everyone to be ready).
+        var pendingCommand: Job? = null
         viewModel.syncPlayActions.collect { action ->
+            pendingCommand?.cancel()
             when (action) {
                 is SyncPlayAction.LoadItem -> {
                     val startMs = action.startPositionTicks / 10_000L
@@ -1120,7 +1125,7 @@ fun PlayerScreen(
                         viewModel.loadItem(action.itemId, resumeOverrideMs = startMs, fromSyncPlay = true)
                     }
                 }
-                is SyncPlayAction.Command -> launch {
+                is SyncPlayAction.Command -> pendingCommand = launch {
                     val positionMs = action.positionTicks / 10_000L
                     val waitMs = action.atLocalMs - System.currentTimeMillis()
                     when (action.command) {
@@ -1416,7 +1421,7 @@ fun PlayerScreen(
                         session = session,
                         selectedQuality = state.selectedQuality,
                         playbackSpeed = state.selectedSpeed,
-                        liveStats = liveStreamStats,
+                        liveStatsProvider = { liveStreamStats },
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(top = 28.dp, end = 48.dp)
@@ -1523,7 +1528,7 @@ fun PlayerScreen(
                     NextEpisodeOverlayCard(
                         nextEpisodeTitle = upNextTitle ?: strings.playerNextEpisode,
                         autoplayEnabled = state.autoplayNextEpisode && !state.autoplayCancelled && state.sleepTimerOption != SleepTimerOption.END_OF_VIDEO,
-                        countdownSeconds = nextEpisodeCountdown,
+                        countdownSeconds = { nextEpisodeCountdown },
                         onPlayNow = {
                             viewModel.playNextInQueueOrEpisode(currentPosMs, buildLiveReportState())
                         },
@@ -1931,7 +1936,7 @@ fun PlayerScreen(
                     )
                     PlayerSheet.CHAPTERS -> ChaptersSideSheet(
                         chapters = session?.chapters.orEmpty(),
-                        currentPosMs = currentPosMs,
+                        positionMs = { currentPosMs },
                         onJumpToChapter = { chapter ->
                             activeSheet = null
                             seekExact(chapter.startPositionMs)
@@ -2008,8 +2013,10 @@ fun StreamInfoOverlay(
     selectedQuality: QualityPreset,
     playbackSpeed: Float,
     modifier: Modifier = Modifier,
-    liveStats: LiveStreamStats? = null
+    // Lambda: the once-a-second stats refresh recomposes only this overlay, not the screen.
+    liveStatsProvider: () -> LiveStreamStats? = { null }
 ) {
+    val liveStats = liveStatsProvider()
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
     val spec = SeerflixTokens.spec
@@ -2165,7 +2172,8 @@ private fun StillWatchingOverlay(
 fun NextEpisodeOverlayCard(
     nextEpisodeTitle: String,
     autoplayEnabled: Boolean,
-    countdownSeconds: Int,
+    // Lambda: the per-second countdown recomposes only this card, not the screen.
+    countdownSeconds: () -> Int,
     onPlayNow: () -> Unit,
     onWatchCredits: () -> Unit,
     modifier: Modifier = Modifier
@@ -2184,7 +2192,7 @@ fun NextEpisodeOverlayCard(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = if (autoplayEnabled) strings.playerNextIn.format(countdownSeconds) else strings.playerUpNext,
+            text = if (autoplayEnabled) strings.playerNextIn.format(countdownSeconds()) else strings.playerUpNext,
             color = if (autoplayEnabled) colors.accent else colors.textSecondary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold
@@ -2262,7 +2270,6 @@ private fun OsdSeekBar(
     }
 
     val totalFloat = duration.coerceAtLeast(1L).toFloat()
-    val barPosMs = previewTargetMs ?: positionMs()
     val accent = colors.accent
     var focused by remember { mutableStateOf(false) }
     Canvas(
@@ -2305,7 +2312,9 @@ private fun OsdSeekBar(
     ) {
         // Lightweight seek bar (replaces Material3 Slider, whose vertical-bar thumb and gapped
         // track rendered as stray bars over the video): track, progress, chapter ticks, and a
-        // round thumb only while focused.
+        // round thumb only while focused. Position is read here (draw phase) so playback ticks
+        // only redraw the bar instead of recomposing it.
+        val barPosMs = scrubPreviewMs() ?: positionMs()
         val frac = (barPosMs.toFloat() / totalFloat).coerceIn(0f, 1f)
         val trackHeight = if (focused) 6.dp.toPx() else 4.dp.toPx()
         val centerY = size.height / 2f
@@ -3418,18 +3427,23 @@ private fun formatAudioTrackLabel(
 @Composable
 private fun ChaptersSideSheet(
     chapters: List<ChapterMarker>,
-    currentPosMs: Long,
+    positionMs: () -> Long,
     onJumpToChapter: (ChapterMarker) -> Unit,
     onClose: () -> Unit
 ) {
     val strings = AppStrings.current
-    val activeIdx = remember(chapters, currentPosMs) {
-        chapters.indexOfLast { it.startPositionMs <= currentPosMs }.coerceAtLeast(0)
+    // Position is read through derivedStateOf so the sheet (and the screen around it) only
+    // recomposes when playback crosses a chapter boundary, not on every position tick.
+    val activeIdx by remember(chapters) {
+        derivedStateOf { chapters.indexOfLast { it.startPositionMs <= positionMs() }.coerceAtLeast(0) }
     }
+    // Focus the playing chapter once when the sheet opens; don't pull focus back while the
+    // user is scrolling and playback moves into the next chapter.
+    val initialIdx = remember(chapters) { activeIdx }
     val activeChapterFocusRequester = remember { FocusRequester() }
     val closeFocusRequester = remember { FocusRequester() }
 
-    LaunchedEffect(chapters.size, activeIdx) {
+    LaunchedEffect(chapters.size) {
         delay(60L)
         if (chapters.isNotEmpty()) {
             runCatching { activeChapterFocusRequester.requestFocus() }
@@ -3457,7 +3471,7 @@ private fun ChaptersSideSheet(
                     label = "${formatMs(chapter.startPositionMs)}  •  ${chapter.name}",
                     selected = isCurrent,
                     onClick = { onJumpToChapter(chapter) },
-                    modifier = if (isCurrent) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
+                    modifier = if (idx == initialIdx) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
                 )
             }
         }

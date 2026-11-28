@@ -618,7 +618,7 @@ class ScreenshotGeneratorTest {
                 NextEpisodeOverlayCard(
                     nextEpisodeTitle = "S2:E5 • Trojan's Horse",
                     autoplayEnabled = true,
-                    countdownSeconds = 4,
+                    countdownSeconds = { 4 },
                     onPlayNow = {},
                     onWatchCredits = {},
                     modifier = Modifier

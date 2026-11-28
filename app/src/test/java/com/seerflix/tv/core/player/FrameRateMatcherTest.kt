@@ -100,4 +100,24 @@ class FrameRateMatcherTest {
         )
         assertNull(selected)
     }
+
+    @Test
+    fun `stays on a mode that is already a clean multiple of the frame rate`() {
+        assertNull(
+            FrameRateMatcher.selectBestDisplayMode(
+                videoFrameRate = 24.0f,
+                currentMode = mode48,
+                supportedModes = listOf(mode60, mode24, mode48, mode120),
+                matchMode = FrameRateMatchMode.ALWAYS
+            )
+        )
+        assertNull(
+            FrameRateMatcher.selectBestDisplayMode(
+                videoFrameRate = 23.976f,
+                currentMode = mode11988,
+                supportedModes = listOf(mode60, mode23976, mode11988),
+                matchMode = FrameRateMatchMode.ALWAYS
+            )
+        )
+    }
 }

@@ -284,6 +284,29 @@ class CrossServerMergeTest {
     }
 
     @Test
+    fun `interleave order alternates servers by their own rank so a capped Next Up keeps every server`() {
+        val home = listOf(
+            episode("h-a1", "h-a", 1, 2),
+            episode("h-b1", "h-b", 1, 5),
+            episode("h-c1", "h-c", 2, 1)
+        )
+        val other = onFriend(
+            episode("f-x1", "f-x", 1, 1),
+            // Same episode as home's h-b1 (series linked): merged, placed by its better rank.
+            episode("f-b1", "f-b", 1, 5)
+        )
+        val links = CrossServerLinks(
+            primaryOf = mapOf("s1a2b3~f-b" to "h-b"),
+            copies = mapOf("h-b" to listOf("h-b", "s1a2b3~f-b"))
+        )
+
+        val merged = CrossServerMerge.mergeItems(listOf(home, other), links, Order.INTERLEAVE)
+
+        assertEquals(listOf("h-a1", "s1a2b3~f-x1", "h-b1", "h-c1"), merged.map { it.id })
+        assertEquals(listOf("h-a1", "s1a2b3~f-x1"), merged.take(2).map { it.id })
+    }
+
+    @Test
     fun `with a single server answering the list is returned exactly as it came`() {
         val home = listOf(movie("b", "B", tmdb = "2"), movie("a", "A", tmdb = "2"))
         assertEquals(home, CrossServerMerge.mergeItems(listOf(home, emptyList()), order = Order.LAST_PLAYED))

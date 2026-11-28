@@ -123,11 +123,13 @@ class TvChannelSyncManager @Inject constructor(
         }
 
         val currentProviderIds = mutableSetOf<String>()
+        val syncedAt = System.currentTimeMillis()
         // Watch Next mirrors the home server only (titles from the extra servers are left out).
-        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEach { item ->
-            val jfId = item.jellyfinId ?: return@forEach
+        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEachIndexed { index, item ->
+            val jfId = item.jellyfinId ?: return@forEachIndexed
             currentProviderIds += jfId
-            val program = buildWatchNextProgram(item) ?: return@forEach
+            // The launcher sorts by last engagement: step back 1 ms per row to keep our order.
+            val program = buildWatchNextProgram(item, lastEngagementMs = syncedAt - index) ?: return@forEachIndexed
             val existingRowId = existingIds[jfId]
             if (existingRowId != null) {
                 resolver.update(
@@ -163,10 +165,17 @@ class TvChannelSyncManager @Inject constructor(
         }
     }
 
+    /** Channel id + item ids last written, so an unchanged Home load doesn't rewrite the launcher row. */
+    @Volatile
+    private var lastChannelSignature: String? = null
+
     private fun syncSeerflixChannel(items: List<UnifiedMediaItem>) {
         if (items.isEmpty()) return
         val resolver = context.contentResolver
         val channelId = getOrCreateSeerflixChannelId() ?: return
+        val shown = items.take(15)
+        val signature = "$channelId:" + shown.joinToString(",") { it.id }
+        if (signature == lastChannelSignature) return
 
         // Replace channel preview programs cleanly
         resolver.delete(
@@ -175,13 +184,12 @@ class TvChannelSyncManager @Inject constructor(
             null
         )
 
-        items.take(15).forEachIndexed { index, item ->
-            val program = buildPreviewProgram(channelId, item, items.size - index)
-            resolver.insert(
-                TvContractCompat.PreviewPrograms.CONTENT_URI,
-                program.toContentValues()
-            )
-        }
+        val values = shown.mapIndexed { index, item ->
+            buildPreviewProgram(channelId, item, items.size - index).toContentValues()
+        }.toTypedArray()
+        // One provider transaction instead of one insert (and launcher refresh) per program.
+        resolver.bulkInsert(TvContractCompat.PreviewPrograms.CONTENT_URI, values)
+        lastChannelSignature = signature
     }
 
     private fun getOrCreateSeerflixChannelId(): Long? {
@@ -232,7 +240,10 @@ class TvChannelSyncManager @Inject constructor(
             return Uri.parse("seerflix://details/$tmdb/$jf/${item.mediaType.name}")
         }
 
-        fun buildWatchNextProgram(item: UnifiedMediaItem): WatchNextProgram? {
+        fun buildWatchNextProgram(
+            item: UnifiedMediaItem,
+            lastEngagementMs: Long = System.currentTimeMillis()
+        ): WatchNextProgram? {
             val jfId = item.jellyfinId ?: return null
             val type = when (item.mediaType) {
                 MediaType.MOVIE -> TvContractCompat.WatchNextPrograms.TYPE_MOVIE
@@ -246,7 +257,7 @@ class TvChannelSyncManager @Inject constructor(
                     if (item.isNextUp && item.resumePositionTicks <= 0L) TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_NEXT
                     else TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE
                 )
-                .setLastEngagementTimeUtcMillis(System.currentTimeMillis())
+                .setLastEngagementTimeUtcMillis(lastEngagementMs)
                 .setTitle(item.title)
                 .setDescription(item.overview.take(200))
                 .setIntentUri(buildPlayerDeepLink(jfId))

@@ -94,6 +94,7 @@ import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.ExtrasItem
 import com.seerflix.tv.core.model.MediaSourceOption
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.PlaylistSummary
 import com.seerflix.tv.core.model.RelatedVideoItem
 import com.seerflix.tv.core.model.SeerrIssueType
@@ -237,7 +238,7 @@ fun DetailsContent(
     onOpenRequestModal: () -> Unit,
     onCloseRequestModal: () -> Unit,
     onCancelRequest: (Int) -> Unit,
-    onSelectSeason: (Int) -> Unit,
+    onSelectSeason: (SeasonSummary) -> Unit,
     onSelectMediaSource: (String) -> Unit = {},
     onSubmitRequest: (
         requestHd: Boolean,
@@ -439,9 +440,10 @@ fun DetailsContent(
                                     itemsIndexed(item.seasons, key = { idx, s -> "season_${idx}_${s.seasonNumber}" }) { _, season ->
                                         SeasonTabChip(
                                             label = season.name,
-                                            isSelected = season.seasonNumber == state.selectedSeasonNumber,
+                                            isSelected = state.selectedSeasonKey?.let { it == seasonSelectionKey(season) }
+                                                ?: (season.seasonNumber == state.selectedSeasonNumber),
                                             isAvailable = season.isPlayable,
-                                            onClick = { onSelectSeason(season.seasonNumber) }
+                                            onClick = { onSelectSeason(season) }
                                         )
                                     }
                                 }

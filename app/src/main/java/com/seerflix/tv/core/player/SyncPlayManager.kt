@@ -124,7 +124,7 @@ class SyncPlayManager @Inject constructor(
 
     fun serverNowMs(): Long = System.currentTimeMillis() + serverOffsetMs
 
-    suspend fun refreshGroups(): Result<List<SyncPlayGroup>> = runCatching {
+    suspend fun refreshGroups(): Result<List<SyncPlayGroup>> = runCatchingCancellable {
         val groups = jellyfinApi.getSyncPlayGroups().map { it.toModel() }
         _availableGroups.value = groups
         val currentId = _activeGroup.value?.groupId
@@ -134,7 +134,7 @@ class SyncPlayManager @Inject constructor(
         groups
     }
 
-    suspend fun createGroup(groupName: String): Result<SyncPlayGroup?> = runCatching {
+    suspend fun createGroup(groupName: String): Result<SyncPlayGroup?> = runCatchingCancellable {
         val clean = groupName.trim().ifBlank { strings.syncPlayDefaultRoom }
         socket.start()
         jellyfinApi.createSyncPlayGroup(JellyfinCreateSyncPlayRequest(groupName = clean))
@@ -147,7 +147,7 @@ class SyncPlayManager @Inject constructor(
         created
     }
 
-    suspend fun joinGroup(groupId: String): Result<SyncPlayGroup?> = runCatching {
+    suspend fun joinGroup(groupId: String): Result<SyncPlayGroup?> = runCatchingCancellable {
         socket.start()
         jellyfinApi.joinSyncPlayGroup(JellyfinJoinSyncPlayRequest(groupId = groupId))
         val groups = jellyfinApi.getSyncPlayGroups().map { it.toModel() }
@@ -158,7 +158,7 @@ class SyncPlayManager @Inject constructor(
         joined
     }
 
-    suspend fun leaveGroup(): Result<Unit> = runCatching {
+    suspend fun leaveGroup(): Result<Unit> = runCatchingCancellable {
         jellyfinApi.leaveSyncPlayGroup()
         clearGroup()
         refreshGroups()
@@ -203,14 +203,14 @@ class SyncPlayManager @Inject constructor(
             isPlaying = isPlaying,
             playlistItemId = playlistItemId
         )
-        runCatching {
+        runCatchingCancellable {
             if (ready) jellyfinApi.syncPlayReady(body) else jellyfinApi.syncPlayBuffering(body)
         }.onFailure { Log.w(TAG, "Ready/Buffering report failed: ${it.message}") }
     }
 
     private suspend fun request(block: suspend () -> Unit): Boolean {
         if (_activeGroup.value == null) return false
-        return runCatching { block() }
+        return runCatchingCancellable { block() }
             .onFailure { Log.w(TAG, "SyncPlay request failed: ${it.message}") }
             .isSuccess
     }
@@ -231,12 +231,12 @@ class SyncPlayManager @Inject constructor(
     private suspend fun measureOffset() {
         var best: Pair<Long, Long>? = null // rtt to offset
         repeat(CLOCK_SAMPLES) {
-            runCatching {
+            runCatchingCancellable {
                 val t0 = System.currentTimeMillis()
                 val resp = jellyfinApi.getUtcTime()
                 val t3 = System.currentTimeMillis()
-                val t1 = JellyfinSocketClient.parseServerTime(resp.requestReceptionTime) ?: return@runCatching
-                val t2 = JellyfinSocketClient.parseServerTime(resp.responseTransmissionTime) ?: return@runCatching
+                val t1 = JellyfinSocketClient.parseServerTime(resp.requestReceptionTime) ?: return@runCatchingCancellable
+                val t2 = JellyfinSocketClient.parseServerTime(resp.responseTransmissionTime) ?: return@runCatchingCancellable
                 val sample = clockSample(t0, t1, t2, t3)
                 if (best == null || sample.first < best!!.first) best = sample
             }
@@ -244,7 +244,7 @@ class SyncPlayManager @Inject constructor(
         }
         best?.let { (rtt, offset) ->
             serverOffsetMs = offset
-            runCatching { jellyfinApi.syncPlayPing(JellyfinSyncPlayPingRequest(rtt)) }
+            runCatchingCancellable { jellyfinApi.syncPlayPing(JellyfinSyncPlayPingRequest(rtt)) }
         }
     }
 
@@ -276,7 +276,7 @@ class SyncPlayManager @Inject constructor(
     private fun onGroupUpdate(event: ServerEvent.SyncPlayGroupUpdate) {
         when (event.type) {
             "GroupJoined" -> {
-                val dto = runCatching {
+                val dto = runCatchingCancellable {
                     json.decodeFromJsonElement<JellyfinSyncPlayGroupDto>(event.data ?: return)
                 }.getOrNull()
                 if (dto != null) _activeGroup.value = dto.toModel()
