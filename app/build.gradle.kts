@@ -18,8 +18,8 @@ android {
         applicationId = "com.seerflix.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "0.9.5"
+        versionCode = 15
+        versionName = "0.9.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

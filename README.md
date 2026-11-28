@@ -50,7 +50,7 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 > *Note: UI screenshots above are rendered from the real Jetpack Compose TV layouts via CashApp Paparazzi (`./gradlew testDebugUnitTest`) using synthetic poster/backdrop preview artwork.*
 
 ## Key Features
-- **Faster & Sturdier (new in 0.9.5)**:
+- **Faster & Sturdier (new in 0.9.6)**:
   - **Faster Home**: Seerr and Jellyfin calls now run up to 16 at a time instead of 5, the same title's details are fetched once even when several rows ask for it, and a slow or failing extra server no longer makes every screen wait on a full library reload. Trailers are only looked up while the banner is on screen.
   - **Smoother player**: playback starts without blocking on device detection, the player is built once (not twice) when passthrough is off, and the seek bar, chapters, stats and Up Next countdown no longer redraw the whole screen several times a second. Chapters no longer pull focus back while you scroll them.
   - **Playback reporting**: progress, start and stop reach the server in order, so a stopped episode no longer pops back into "Now Playing" or Continue Watching. SyncPlay drops stale commands when a newer one arrives. Switching to another server's version keeps your queue.
