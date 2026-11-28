@@ -43,7 +43,10 @@ data class SettingsUiState(
     /** The extra Jellyfin servers merged into the library, with their state for this profile. */
     val servers: List<ServerStatus> = emptyList(),
     /** Server whose "Remove" was pressed once; a second press removes it. */
-    val pendingRemoveServerId: String? = null
+    val pendingRemoveServerId: String? = null,
+    /** Parent PIN prompt shown before server settings open (null = no prompt). */
+    val serverPinInput: String? = null,
+    val serverPinError: String? = null
 )
 
 @HiltViewModel
@@ -53,8 +56,77 @@ class SettingsViewModel @Inject constructor(
     private val capabilityProvider: DeviceCapabilityProvider,
     private val diagnostics: DiagnosticsRepository,
     private val socketClient: JellyfinSocketClient,
-    private val serverAccounts: ServerAccountRepository
+    private val serverAccounts: ServerAccountRepository,
+    private val pinLimiter: com.seerflix.tv.core.data.PinAttemptLimiter
 ) : ViewModel() {
+
+    private var profiles: List<UserProfile> = emptyList()
+    private var serverAccessUnlocked = false
+    private var pendingServerAction: (() -> Unit)? = null
+
+    private val strings: com.seerflix.tv.core.i18n.UiStrings
+        get() = com.seerflix.tv.core.i18n.stringsForLanguage(prefs.cachedUiLanguage)
+
+    /** Unrestricted profiles protected by a PIN: one of their PINs unlocks server settings. */
+    private fun guardians(): List<UserProfile> = profiles.filter { it.hasPin && !it.isRestricted }
+
+    /**
+     * Server settings show the Seerr API key and can repoint, add or remove servers. The profile
+     * picker's "Servers" button asks for a parent PIN; Settings must too, or any unrestricted
+     * profile without a PIN (a teenager's) could get there from Home.
+     */
+    fun requestServerAccess(action: () -> Unit) {
+        val active = _uiState.value.profile
+        val guardians = guardians()
+        if (serverAccessUnlocked || guardians.isEmpty() || guardians.any { it.id == active?.id }) {
+            action()
+            return
+        }
+        pendingServerAction = action
+        _uiState.update { it.copy(serverPinInput = "", serverPinError = lockoutMessage()) }
+    }
+
+    fun appendServerPinDigit(digit: String) {
+        val current = _uiState.value.serverPinInput ?: return
+        lockoutMessage()?.let { msg -> _uiState.update { it.copy(serverPinInput = "", serverPinError = msg) }; return }
+        if (current.length >= 4) return
+        val next = current + digit
+        _uiState.update { it.copy(serverPinInput = next, serverPinError = null) }
+        if (next.length < 4) return
+        if (guardians().any { authRepository.verifyProfilePin(it, next) }) {
+            pinLimiter.recordSuccess()
+            serverAccessUnlocked = true
+            val action = pendingServerAction
+            pendingServerAction = null
+            _uiState.update { it.copy(serverPinInput = null, serverPinError = null) }
+            action?.invoke()
+        } else {
+            val error = if (pinLimiter.recordFailure()) {
+                strings.profilePinLockedOut.format(com.seerflix.tv.core.data.PinAttemptLimiter.LOCKOUT_MS / 1000)
+            } else strings.profilePinIncorrect
+            _uiState.update { it.copy(serverPinInput = "", serverPinError = error) }
+        }
+    }
+
+    fun backspaceServerPin() {
+        val current = _uiState.value.serverPinInput ?: return
+        if (current.isNotEmpty()) _uiState.update { it.copy(serverPinInput = current.dropLast(1), serverPinError = null) }
+    }
+
+    fun clearServerPin() {
+        if (_uiState.value.serverPinInput != null) _uiState.update { it.copy(serverPinInput = "", serverPinError = null) }
+    }
+
+    fun dismissServerPin() {
+        pendingServerAction = null
+        _uiState.update { it.copy(serverPinInput = null, serverPinError = null) }
+    }
+
+    private fun lockoutMessage(): String? {
+        val remaining = pinLimiter.remainingLockoutMs()
+        if (remaining <= 0L) return null
+        return strings.profilePinLockedOut.format((remaining + 999L) / 1000L)
+    }
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -62,6 +134,9 @@ class SettingsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             authRepository.activeProfileFlow.collect { p -> _uiState.update { it.copy(profile = p) } }
+        }
+        viewModelScope.launch {
+            authRepository.profilesFlow.collect { profiles = it }
         }
         viewModelScope.launch {
             prefs.matchDeviceCapabilitiesFlow.collect { v -> _uiState.update { it.copy(matchDeviceCapabilities = v) } }

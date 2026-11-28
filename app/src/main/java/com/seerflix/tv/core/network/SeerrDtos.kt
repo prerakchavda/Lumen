@@ -19,6 +19,18 @@ data class SeerrUserDto(
 )
 
 @Serializable
+data class SeerrUserListItemDto(
+    val id: Int,
+    val jellyfinUserId: String? = null,
+    val jellyfinUsername: String? = null
+)
+
+@Serializable
+data class SeerrUserListResponseDto(
+    val results: List<SeerrUserListItemDto> = emptyList()
+)
+
+@Serializable
 data class SeerrJellyfinLoginRequest(
     val username: String,
     val password: String,

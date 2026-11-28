@@ -44,7 +44,8 @@ data class ProfilePickerUiState(
 @HiltViewModel
 class ProfilePickerViewModel @Inject constructor(
     private val authRepository: AuthRepository,
-    private val sessionPreferences: SessionPreferences
+    private val sessionPreferences: SessionPreferences,
+    private val pinLimiter: com.seerflix.tv.core.data.PinAttemptLimiter
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProfilePickerUiState())
@@ -55,8 +56,6 @@ class ProfilePickerViewModel @Inject constructor(
         get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private var qcPollingJob: Job? = null
-    private var pinFailedAttempts = 0
-    private var pinLockedUntilMs = 0L
 
     init {
         viewModelScope.launch {
@@ -173,7 +172,7 @@ class ProfilePickerViewModel @Inject constructor(
             authRepository.verifyProfilePin(target, pin)
         }
         if (verified) {
-            pinFailedAttempts = 0
+            pinLimiter.recordSuccess()
             val serversAction = pendingServersAction
             if (serversAction != null) {
                 pendingServersAction = null
@@ -201,10 +200,7 @@ class ProfilePickerViewModel @Inject constructor(
                 }
             }
         } else {
-            pinFailedAttempts++
-            val error = if (pinFailedAttempts >= MAX_PIN_ATTEMPTS) {
-                pinFailedAttempts = 0
-                pinLockedUntilMs = System.currentTimeMillis() + PIN_LOCKOUT_MS
+            val error = if (pinLimiter.recordFailure()) {
                 strings.profilePinLockedOut.format(PIN_LOCKOUT_MS / 1000)
             } else {
                 strings.profilePinIncorrect
@@ -215,7 +211,7 @@ class ProfilePickerViewModel @Inject constructor(
 
     /** Simple brute-force throttle: a 4-digit PIN is otherwise trivially enumerable with a remote. */
     private fun isPinLockedOut(): Boolean {
-        val remainingMs = pinLockedUntilMs - System.currentTimeMillis()
+        val remainingMs = pinLimiter.remainingLockoutMs()
         if (remainingMs <= 0L) return false
         val secs = (remainingMs + 999L) / 1000L
         _uiState.update {
@@ -430,8 +426,8 @@ class ProfilePickerViewModel @Inject constructor(
     }
 
     private companion object {
-        const val MAX_PIN_ATTEMPTS = 5
-        const val PIN_LOCKOUT_MS = 30_000L
+        const val MAX_PIN_ATTEMPTS = com.seerflix.tv.core.data.PinAttemptLimiter.MAX_ATTEMPTS
+        const val PIN_LOCKOUT_MS = com.seerflix.tv.core.data.PinAttemptLimiter.LOCKOUT_MS
         const val MAX_QC_POLL_FAILURES = 6
     }
 }

@@ -3384,6 +3384,7 @@ private fun formatServerAudioTrackLabel(track: TrackOption, strings: UiStrings):
     ).distinct().joinToString(" • ").ifBlank { strings.playerAudioTrackN.format(track.index + 1) }
 }
 
+@OptIn(UnstableApi::class)
 private fun formatAudioTrackLabel(
     format: androidx.media3.common.Format,
     index: Int,

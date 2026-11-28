@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- androidx.tvprovider's PreviewProgram builders and ComponentActivity.dispatchKeyEvent are
+         public API wrongly flagged as restricted (known lint false positives). -->
+    <issue id="RestrictedApi">
+        <ignore path="src/main/java/com/seerflix/tv/core/tv/TvChannelSyncManager.kt" />
+        <ignore path="src/main/java/com/seerflix/tv/MainActivity.kt" />
+    </issue>
+    <!-- Flags multi-line local declarations that are correctly indented. -->
+    <issue id="SuspiciousIndentation" severity="warning" />
+    <!-- Dependency upgrades are done deliberately, not on every lint run. -->
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+</lint>

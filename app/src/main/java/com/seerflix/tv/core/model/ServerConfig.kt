@@ -130,6 +130,8 @@ data class UserProfile(
     val avatarUrl: String? = null,
     val avatarColorHex: Long = 0xFFE50914,
     val seerrCookie: String? = null,
+    /** This profile's Seerr user id: Seerr calls made with the API key act as this user. */
+    val seerrUserId: Int? = null,
     val isAdmin: Boolean = false,
     val pinHash: String? = null,
     val autoplayNextEpisode: Boolean = true,

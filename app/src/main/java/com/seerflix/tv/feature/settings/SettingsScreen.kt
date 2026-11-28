@@ -66,6 +66,19 @@ fun SettingsScreen(
     val profile = state.profile
     val firstFocus = remember { FocusRequester() }
     BackHandler(onBack = onBack)
+    state.serverPinInput?.let { pin ->
+        androidx.compose.ui.window.Dialog(onDismissRequest = viewModel::dismissServerPin) {
+            com.seerflix.tv.feature.profiles.PinEntryCard(
+                profileName = strings.profileParentPinName,
+                pinInput = pin,
+                errorMessage = state.serverPinError,
+                onDigit = viewModel::appendServerPinDigit,
+                onBackspace = viewModel::backspaceServerPin,
+                onClear = viewModel::clearServerPin,
+                onDismiss = viewModel::dismissServerPin
+            )
+        }
+    }
     LaunchedEffect(Unit) {
         delay(80L)
         runCatching { firstFocus.requestFocus() }
@@ -289,7 +302,13 @@ fun SettingsScreen(
         // would let a child repoint or reconfigure the app.
         if (state.profile?.isRestricted != true) {
             item { SectionHeader(strings.settingsServerSection) }
-            item { ActionRow(strings.settingsServerTitle, strings.settingsServerDesc, onClick = onOpenServerSettings) }
+            item {
+                ActionRow(
+                    strings.settingsServerTitle,
+                    strings.settingsServerDesc,
+                    onClick = { viewModel.requestServerAccess(onOpenServerSettings) }
+                )
+            }
             state.homeServer?.let { home ->
                 item(key = "home_server_bitrate") {
                     ChoiceRow(
@@ -337,11 +356,13 @@ fun SettingsScreen(
                         title = if (armed) strings.serverRemoveConfirm.format(server.displayName)
                         else strings.serverRemove.format(server.displayName),
                         description = strings.serverRemoveDesc,
-                        onClick = { viewModel.removeServer(server.id) }
+                        onClick = { viewModel.requestServerAccess { viewModel.removeServer(server.id) } }
                     )
                 }
             }
-            item { ActionRow(strings.serversAddTitle, strings.serversAddDesc, onClick = onAddServer) }
+            item {
+                ActionRow(strings.serversAddTitle, strings.serversAddDesc, onClick = { viewModel.requestServerAccess(onAddServer) })
+            }
         }
 
         item { SectionHeader(strings.settingsAboutSection) }

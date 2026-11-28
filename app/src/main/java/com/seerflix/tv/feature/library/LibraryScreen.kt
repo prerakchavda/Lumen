@@ -39,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -83,10 +84,16 @@ fun LibraryScreen(
     }
 
     // Land in the grid as soon as the first page is in; until then the Sort & Filter button holds focus.
-    var focusedFirstPage by remember { mutableStateOf(false) }
+    // Saveable, like the grid's scroll position: coming back from Details must not reset to the top.
+    var focusedFirstPage by rememberSaveable { mutableStateOf(false) }
+    // The title opened from the grid, so Back from Details lands on it instead of the top.
+    var openedItemId by rememberSaveable { mutableStateOf<String?>(null) }
+    val openedItemFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         delay(60L)
-        runCatching { filterButtonFocus.requestFocus() }
+        val returned = focusedFirstPage && openedItemId != null &&
+            runCatching { openedItemFocus.requestFocus() }.getOrDefault(false)
+        if (!returned) runCatching { filterButtonFocus.requestFocus() }
     }
     LaunchedEffect(state.items.isNotEmpty()) {
         if (state.items.isNotEmpty() && !focusedFirstPage) {
@@ -228,6 +235,7 @@ fun LibraryScreen(
                                     if (item.isFolder && !item.jellyfinId.isNullOrBlank()) {
                                         viewModel.enterFolder(item.jellyfinId, item.title)
                                     } else {
+                                        openedItemId = item.id
                                         onOpenDetails(item)
                                     }
                                 },
@@ -236,7 +244,9 @@ fun LibraryScreen(
                                     index == 0 -> Modifier.focusRequester(firstItemFocus)
                                     state.focusTargetId != null && item.jellyfinId == state.focusTargetId -> Modifier.focusRequester(restoreFocus)
                                     else -> Modifier
-                                }
+                                }.then(
+                                    if (item.id == openedItemId) Modifier.focusRequester(openedItemFocus) else Modifier
+                                )
                             )
                         }
                         if (state.loadMoreFailed) {

@@ -638,8 +638,16 @@ data class ArrServerOption(
     val is4k: Boolean,
     val isDefault: Boolean,
     val profiles: List<ArrQualityProfile> = emptyList(),
-    val rootFolders: List<String> = emptyList()
-)
+    val rootFolders: List<String> = emptyList(),
+    /** The quality profile / root folder the Seerr admin set as this server's default. */
+    val defaultProfileId: Int? = null,
+    val defaultRootFolder: String? = null
+) {
+    val initialProfileId: Int?
+        get() = profiles.firstOrNull { it.id == defaultProfileId }?.id ?: profiles.firstOrNull()?.id
+    val initialRootFolder: String?
+        get() = rootFolders.firstOrNull { it == defaultRootFolder } ?: rootFolders.firstOrNull()
+}
 
 enum class SeerrIssueType(val code: Int, val label: String) {
     VIDEO(1, "Video Problem"),

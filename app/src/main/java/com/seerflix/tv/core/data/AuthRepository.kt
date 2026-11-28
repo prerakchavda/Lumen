@@ -44,7 +44,10 @@ class AuthRepository @Inject constructor(
         val result = testAndSaveServersInternal(
             jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
         )
-        if (result.isFailure && previous.isConfigured) {
+        if (result.isFailure) {
+            // First-time setup included: `isConfigured` only checks for a Jellyfin URL, so leaving
+            // a URL that just failed saved would skip Setup on the next launch and open an empty
+            // profile picker against an unreachable server.
             prefs.saveServerUrls(
                 jellyfinUrl = previous.jellyfinUrl,
                 seerrUrl = previous.seerrUrl,
@@ -92,16 +95,22 @@ class AuthRepository @Inject constructor(
         // A failed sign-in (wrong password, cancelled "add profile") must not log the still-active
         // profile out of Seerr for the rest of the session.
         val previousSeerrCookie = prefs.cachedSeerrCookie
+        val previousSeerrUserId = prefs.cachedSeerrUserId
         return signInWithPasswordInternal(username, password)
-            .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+            .onFailure {
+                prefs.setImmediateSeerrCookie(previousSeerrCookie)
+                prefs.setImmediateSeerrUserId(previousSeerrUserId)
+            }
     }
 
     private suspend fun signInWithPasswordInternal(username: String, password: String): Result<UserProfile> = runCatchingCancellable {
         prefs.setImmediateSeerrCookie(null)
+        prefs.setImmediateSeerrUserId(null)
         val jfAuth = jellyfinApi.authenticateByName(
             JellyfinAuthRequest(username = username.trim(), password = password)
         )
         val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
+        var seerrUserId: Int? = null
         if (prefs.isSeerrConfigured) {
             // Best-effort Seerr v3+ login using the same Jellyfin credentials
             val primaryAttempt = runCatchingCancellable {
@@ -109,8 +118,9 @@ class AuthRepository @Inject constructor(
                     SeerrJellyfinLoginRequest(username = username.trim(), password = password)
                 )
             }
+            seerrUserId = primaryAttempt.getOrNull()?.id
             if (primaryAttempt.isFailure && activeJfBase.isNotBlank()) {
-                runCatchingCancellable {
+                seerrUserId = runCatchingCancellable {
                     seerrApi.loginWithJellyfin(
                         SeerrJellyfinLoginRequest(
                             username = username.trim(),
@@ -118,7 +128,7 @@ class AuthRepository @Inject constructor(
                             hostname = activeJfBase
                         )
                     )
-                }
+                }.getOrNull()?.id
             }
         }
         // AuthenticateByName returns the user's Configuration. If it ever doesn't, the sync that runs
@@ -135,6 +145,7 @@ class AuthRepository @Inject constructor(
             },
             avatarColorHex = pickNetflixAvatarColor(jfAuth.user.name),
             seerrCookie = prefs.cachedSeerrCookie,
+            seerrUserId = seerrUserId,
             isAdmin = jfAuth.user.policy?.isAdministrator == true,
             preferredAudioLang = serverCfg?.audioLanguagePreference?.takeIf { it.isNotBlank() },
             preferredSubtitleLang = serverCfg?.subtitleLanguagePreference?.takeIf { it.isNotBlank() },
@@ -162,8 +173,12 @@ class AuthRepository @Inject constructor(
 
     suspend fun pollAndCompleteQuickConnect(secret: String): Result<UserProfile?> {
         val previousSeerrCookie = prefs.cachedSeerrCookie
+        val previousSeerrUserId = prefs.cachedSeerrUserId
         return pollAndCompleteQuickConnectInternal(secret)
-            .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+            .onFailure {
+                prefs.setImmediateSeerrCookie(previousSeerrCookie)
+                prefs.setImmediateSeerrUserId(previousSeerrUserId)
+            }
     }
 
     private suspend fun pollAndCompleteQuickConnectInternal(secret: String): Result<UserProfile?> = runCatchingCancellable {
@@ -174,14 +189,15 @@ class AuthRepository @Inject constructor(
         if (!isReady) return@runCatchingCancellable null
 
         prefs.setImmediateSeerrCookie(null)
+        prefs.setImmediateSeerrUserId(null)
         val jfAuth = jellyfinApi.authenticateWithQuickConnect(
             JellyfinQuickConnectAuthRequest(secret = secret)
         )
-        if (prefs.isSeerrConfigured) {
+        val seerrUserId = if (prefs.isSeerrConfigured) {
             runCatchingCancellable {
                 seerrApi.authenticateQuickConnect(SeerrQuickConnectAuthRequest(secret = secret))
-            }
-        }
+            }.getOrNull()?.id
+        } else null
 
         val activeJfBase = prefs.cachedResolvedJellyfinUrl.ifBlank { prefs.cachedJellyfinUrl }
         // AuthenticateByName returns the user's Configuration. If it ever doesn't, the sync that runs
@@ -198,6 +214,7 @@ class AuthRepository @Inject constructor(
             },
             avatarColorHex = pickNetflixAvatarColor(jfAuth.user.name),
             seerrCookie = prefs.cachedSeerrCookie,
+            seerrUserId = seerrUserId,
             isAdmin = jfAuth.user.policy?.isAdministrator == true,
             preferredAudioLang = serverCfg?.audioLanguagePreference?.takeIf { it.isNotBlank() },
             preferredSubtitleLang = serverCfg?.subtitleLanguagePreference?.takeIf { it.isNotBlank() },
@@ -215,6 +232,7 @@ class AuthRepository @Inject constructor(
      */
     suspend fun syncUserConfigurationFromServer() {
         val profile = prefs.activeProfileFlow.first() ?: return
+        runCatchingCancellable { linkSeerrAccount(profile) }
         if (profile.jellyfinUserId.isBlank() || profile.hasLocalTrackPreferenceOverride) return
         val cfg = runCatchingCancellable {
             jellyfinApi.getUser(profile.jellyfinUserId).configuration
@@ -227,6 +245,29 @@ class AuthRepository @Inject constructor(
             playDefaultAudioTrack = cfg.playDefaultAudioTrack
         )
     }
+
+    /**
+     * Profiles signed in before 1.0 don't know their Seerr user id, so the API key acted as the
+     * Seerr admin for them. Look it up once: from the profile's own Seerr session, else (admin key)
+     * by matching the Jellyfin user id in Seerr's user list.
+     */
+    private suspend fun linkSeerrAccount(profile: com.seerflix.tv.core.model.UserProfile) {
+        if (profile.seerrUserId != null || !prefs.isSeerrConfigured) return
+        val fromSession = if (!profile.seerrCookie.isNullOrBlank()) {
+            runCatchingCancellable { seerrApi.getMeFromSession() }.getOrNull()
+                ?.takeIf { it.jellyfinUsername == null || it.jellyfinUsername.equals(profile.name, ignoreCase = true) }
+                ?.id
+        } else null
+        val id = fromSession ?: if (prefs.cachedSeerrApiKey.isNotBlank()) {
+            runCatchingCancellable { seerrApi.listUsers() }.getOrNull()?.results
+                ?.firstOrNull { sameJellyfinId(it.jellyfinUserId, profile.jellyfinUserId) }
+                ?.id
+        } else null
+        if (id != null) prefs.updateProfileSeerrUserId(profile.id, id)
+    }
+
+    private fun sameJellyfinId(a: String?, b: String): Boolean =
+        !a.isNullOrBlank() && a.replace("-", "").equals(b.replace("-", ""), ignoreCase = true)
 
     suspend fun switchProfile(profileId: String) {
         prefs.setActiveProfile(profileId)

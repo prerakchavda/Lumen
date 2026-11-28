@@ -533,144 +533,153 @@ fun HomeContent(
         }
     }
 
-    when (spec.navStyle) {
-        NavLayoutStyle.LEFT_RAIL -> {
-            // The rail OVERLAYS the content instead of sitting next to it in a Row: expanding it
-            // (68 -> 216 dp on focus) used to re-measure and re-layout every visible row and the hero.
-            // Content is permanently inset by the collapsed width, so the collapsed look is identical.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(canvasBg)
-            ) {
-                HomeMainCanvas(
-                    state = state,
-                    onOpenDetails = onOpenDetails,
-                    onPlayDirect = onPlayDirect,
-                    onRefresh = onRefresh,
-                    onTogglePreviewMute = onTogglePreviewMute,
-                    onItemFocused = onItemFocused,
-                    onSelectTab = onSelectTab,
-                    onSelectGenre = onSelectGenre,
-                    onSelectAvailabilityFilter = onSelectAvailabilityFilter,
-                    onToggleFeaturedMyList = onToggleFeaturedMyList,
-                    onOpenContinueWatchingOptions = onOpenContinueWatchingOptions,
-                    onOpenPosterOptions = onOpenPosterOptions,
-                    onOpenCollection = onOpenCollection,
-                    onPlayReadyAlert = onPlayReadyAlert,
-                    onDismissReadyAlert = onDismissReadyAlert,
-                    onBackToNav = onBackToNav,
-                    extraActions = extraActions,
-                    previewHttpClient = previewHttpClient,
+    // When content under focus disappears (a tab swaps in a spinner, the last Continue Watching
+    // card is removed...) nothing on Home holds focus and the content Back handler is disabled,
+    // so Back would close the app. Hand focus to the nav instead; Back from the nav still exits.
+    var homeHasFocus by remember { mutableStateOf(true) }
+    if (LocalOnBackPressedDispatcherOwner.current != null) {
+        BackHandler(enabled = !homeHasFocus) { onBackToNav() }
+    }
+    Box(modifier = Modifier.fillMaxSize().onFocusChanged { homeHasFocus = it.hasFocus }) {
+        when (spec.navStyle) {
+            NavLayoutStyle.LEFT_RAIL -> {
+                // The rail OVERLAYS the content instead of sitting next to it in a Row: expanding it
+                // (68 -> 216 dp on focus) used to re-measure and re-layout every visible row and the hero.
+                // Content is permanently inset by the collapsed width, so the collapsed look is identical.
+                Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(start = NETFLIX_RAIL_COLLAPSED_WIDTH)
-                )
+                        .background(canvasBg)
+                ) {
+                    HomeMainCanvas(
+                        state = state,
+                        onOpenDetails = onOpenDetails,
+                        onPlayDirect = onPlayDirect,
+                        onRefresh = onRefresh,
+                        onTogglePreviewMute = onTogglePreviewMute,
+                        onItemFocused = onItemFocused,
+                        onSelectTab = onSelectTab,
+                        onSelectGenre = onSelectGenre,
+                        onSelectAvailabilityFilter = onSelectAvailabilityFilter,
+                        onToggleFeaturedMyList = onToggleFeaturedMyList,
+                        onOpenContinueWatchingOptions = onOpenContinueWatchingOptions,
+                        onOpenPosterOptions = onOpenPosterOptions,
+                        onOpenCollection = onOpenCollection,
+                        onPlayReadyAlert = onPlayReadyAlert,
+                        onDismissReadyAlert = onDismissReadyAlert,
+                        onBackToNav = onBackToNav,
+                        extraActions = extraActions,
+                        previewHttpClient = previewHttpClient,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(start = NETFLIX_RAIL_COLLAPSED_WIDTH)
+                    )
 
-                NetflixNavRail(
-                    activeTab = state.activeTab,
-                    activeDownloadCount = state.activeDownloadCount,
-                    isSeerrConfigured = state.isSeerrConfigured,
-                    profileName = profileName,
-                    profileHasAlert = profileHasAlert,
-                    strings = strings,
-                    activeTabFocusRequester = navFocusRequester,
-                    onSelectTab = onSelectTab,
-                    onOpenSearch = onOpenSearch,
-                    onOpenRequests = onOpenRequests,
-                    onOpenProfileMenu = { showProfileMenu = true }
-                )
+                    NetflixNavRail(
+                        activeTab = state.activeTab,
+                        activeDownloadCount = state.activeDownloadCount,
+                        isSeerrConfigured = state.isSeerrConfigured,
+                        profileName = profileName,
+                        profileHasAlert = profileHasAlert,
+                        strings = strings,
+                        activeTabFocusRequester = navFocusRequester,
+                        onSelectTab = onSelectTab,
+                        onOpenSearch = onOpenSearch,
+                        onOpenRequests = onOpenRequests,
+                        onOpenProfileMenu = { showProfileMenu = true }
+                    )
+                }
             }
-        }
-        NavLayoutStyle.TOP_GLASS_PILL -> {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(canvasBg)
-            ) {
-                HomeMainCanvas(
-                    state = state,
-                    onOpenDetails = onOpenDetails,
-                    onPlayDirect = onPlayDirect,
-                    onRefresh = onRefresh,
-                    onTogglePreviewMute = onTogglePreviewMute,
-                    onItemFocused = onItemFocused,
-                    onSelectTab = onSelectTab,
-                    onSelectGenre = onSelectGenre,
-                    onSelectAvailabilityFilter = onSelectAvailabilityFilter,
-                    onToggleFeaturedMyList = onToggleFeaturedMyList,
-                    onOpenContinueWatchingOptions = onOpenContinueWatchingOptions,
-                    onOpenPosterOptions = onOpenPosterOptions,
-                    onOpenCollection = onOpenCollection,
-                    onPlayReadyAlert = onPlayReadyAlert,
-                    onDismissReadyAlert = onDismissReadyAlert,
-                    onBackToNav = onBackToNav,
-                    extraActions = extraActions,
-                    previewHttpClient = previewHttpClient,
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                AppleTvTopGlassBar(
-                    activeTab = state.activeTab,
-                    activeDownloadCount = state.activeDownloadCount,
-                    isSeerrConfigured = state.isSeerrConfigured,
-                    profileName = profileName,
-                    profileHasAlert = profileHasAlert,
-                    strings = strings,
-                    activeTabFocusRequester = navFocusRequester,
-                    onSelectTab = onSelectTab,
-                    onOpenSearch = onOpenSearch,
-                    onOpenRequests = onOpenRequests,
-                    onOpenProfileMenu = { showProfileMenu = true },
+            NavLayoutStyle.TOP_GLASS_PILL -> {
+                Box(
                     modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 18.dp, start = 16.dp, end = 16.dp)
-                )
+                        .fillMaxSize()
+                        .background(canvasBg)
+                ) {
+                    HomeMainCanvas(
+                        state = state,
+                        onOpenDetails = onOpenDetails,
+                        onPlayDirect = onPlayDirect,
+                        onRefresh = onRefresh,
+                        onTogglePreviewMute = onTogglePreviewMute,
+                        onItemFocused = onItemFocused,
+                        onSelectTab = onSelectTab,
+                        onSelectGenre = onSelectGenre,
+                        onSelectAvailabilityFilter = onSelectAvailabilityFilter,
+                        onToggleFeaturedMyList = onToggleFeaturedMyList,
+                        onOpenContinueWatchingOptions = onOpenContinueWatchingOptions,
+                        onOpenPosterOptions = onOpenPosterOptions,
+                        onOpenCollection = onOpenCollection,
+                        onPlayReadyAlert = onPlayReadyAlert,
+                        onDismissReadyAlert = onDismissReadyAlert,
+                        onBackToNav = onBackToNav,
+                        extraActions = extraActions,
+                        previewHttpClient = previewHttpClient,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    AppleTvTopGlassBar(
+                        activeTab = state.activeTab,
+                        activeDownloadCount = state.activeDownloadCount,
+                        isSeerrConfigured = state.isSeerrConfigured,
+                        profileName = profileName,
+                        profileHasAlert = profileHasAlert,
+                        strings = strings,
+                        activeTabFocusRequester = navFocusRequester,
+                        onSelectTab = onSelectTab,
+                        onOpenSearch = onOpenSearch,
+                        onOpenRequests = onOpenRequests,
+                        onOpenProfileMenu = { showProfileMenu = true },
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 18.dp, start = 16.dp, end = 16.dp)
+                    )
+                }
             }
-        }
-        NavLayoutStyle.TOP_HEADER_BAR -> {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(canvasBg)
-            ) {
-                DisneyTopHeaderBar(
-                    activeTab = state.activeTab,
-                    activeDownloadCount = state.activeDownloadCount,
-                    isSeerrConfigured = state.isSeerrConfigured,
-                    profileName = profileName,
-                    profileHasAlert = profileHasAlert,
-                    strings = strings,
-                    activeTabFocusRequester = navFocusRequester,
-                    onSelectTab = onSelectTab,
-                    onOpenSearch = onOpenSearch,
-                    onOpenRequests = onOpenRequests,
-                    onOpenProfileMenu = { showProfileMenu = true }
-                )
-
-                HomeMainCanvas(
-                    state = state,
-                    onOpenDetails = onOpenDetails,
-                    onPlayDirect = onPlayDirect,
-                    onRefresh = onRefresh,
-                    onTogglePreviewMute = onTogglePreviewMute,
-                    onItemFocused = onItemFocused,
-                    onSelectTab = onSelectTab,
-                    onSelectGenre = onSelectGenre,
-                    onSelectAvailabilityFilter = onSelectAvailabilityFilter,
-                    onToggleFeaturedMyList = onToggleFeaturedMyList,
-                    onOpenContinueWatchingOptions = onOpenContinueWatchingOptions,
-                    onOpenPosterOptions = onOpenPosterOptions,
-                    onOpenCollection = onOpenCollection,
-                    onPlayReadyAlert = onPlayReadyAlert,
-                    onDismissReadyAlert = onDismissReadyAlert,
-                    onBackToNav = onBackToNav,
-                    extraActions = extraActions,
-                    previewHttpClient = previewHttpClient,
+            NavLayoutStyle.TOP_HEADER_BAR -> {
+                Column(
                     modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                )
+                        .fillMaxSize()
+                        .background(canvasBg)
+                ) {
+                    DisneyTopHeaderBar(
+                        activeTab = state.activeTab,
+                        activeDownloadCount = state.activeDownloadCount,
+                        isSeerrConfigured = state.isSeerrConfigured,
+                        profileName = profileName,
+                        profileHasAlert = profileHasAlert,
+                        strings = strings,
+                        activeTabFocusRequester = navFocusRequester,
+                        onSelectTab = onSelectTab,
+                        onOpenSearch = onOpenSearch,
+                        onOpenRequests = onOpenRequests,
+                        onOpenProfileMenu = { showProfileMenu = true }
+                    )
+
+                    HomeMainCanvas(
+                        state = state,
+                        onOpenDetails = onOpenDetails,
+                        onPlayDirect = onPlayDirect,
+                        onRefresh = onRefresh,
+                        onTogglePreviewMute = onTogglePreviewMute,
+                        onItemFocused = onItemFocused,
+                        onSelectTab = onSelectTab,
+                        onSelectGenre = onSelectGenre,
+                        onSelectAvailabilityFilter = onSelectAvailabilityFilter,
+                        onToggleFeaturedMyList = onToggleFeaturedMyList,
+                        onOpenContinueWatchingOptions = onOpenContinueWatchingOptions,
+                        onOpenPosterOptions = onOpenPosterOptions,
+                        onOpenCollection = onOpenCollection,
+                        onPlayReadyAlert = onPlayReadyAlert,
+                        onDismissReadyAlert = onDismissReadyAlert,
+                        onBackToNav = onBackToNav,
+                        extraActions = extraActions,
+                        previewHttpClient = previewHttpClient,
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                    )
+                }
             }
         }
     }
@@ -1009,6 +1018,31 @@ private fun HomeMainCanvas(
         else -> state.rows.isNotEmpty()
     }
 
+    // A load that swaps the rows for a spinner removes the focused card (e.g. the Collections
+    // chip, a genre chip). Put focus back on the new content once it arrives instead of leaving
+    // the remote pointing at nothing.
+    val collectionsFocusRequester = remember { FocusRequester() }
+    var refocusAfterLoad by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isLoading, hasContentForTab) {
+        if (state.isLoading && !hasContentForTab) {
+            if (contentHasFocus) refocusAfterLoad = true
+            return@LaunchedEffect
+        }
+        if (!refocusAfterLoad || state.isLoading) return@LaunchedEffect
+        refocusAfterLoad = false
+        withFrameNanos { }
+        withFrameNanos { }
+        if (contentHasFocus) return@LaunchedEffect
+        val ok = when (state.activeTab) {
+            HomeTab.COLLECTIONS ->
+                runCatching { collectionsFocusRequester.requestFocus() }.getOrDefault(false)
+            HomeTab.LIVE_TV -> false
+            else -> runCatching { firstCardFocusRequester.requestFocus() }.getOrDefault(false) ||
+                runCatching { heroFocusRequester.requestFocus() }.getOrDefault(false)
+        }
+        if (!ok) onBackToNav()
+    }
+
     Box(modifier = modifier.onFocusChanged { contentHasFocus = it.hasFocus }) {
         when {
             // Per-tab check: switching to Collections / Live TV used to flash their
@@ -1065,7 +1099,8 @@ private fun HomeMainCanvas(
                     collections = state.collections,
                     onOpenCollection = { col ->
                         onOpenCollection(col.id, col.name, col.tmdbCollectionId)
-                    }
+                    },
+                    firstCardFocusRequester = collectionsFocusRequester
                 )
             }
             state.activeTab == HomeTab.LIVE_TV -> {
@@ -2717,7 +2752,8 @@ private fun NavRailItem(
 @Composable
 private fun CollectionsHubContent(
     collections: List<CollectionSummary>,
-    onOpenCollection: (CollectionSummary) -> Unit
+    onOpenCollection: (CollectionSummary) -> Unit,
+    firstCardFocusRequester: FocusRequester? = null
 ) {
     val colors = SeerflixTokens.colors
     val strings = AppStrings.current
@@ -2770,16 +2806,24 @@ private fun CollectionsHubContent(
             }
         }
 
-        items(rows, contentType = { "collection_row" }) { chunk ->
+        itemsIndexed(
+            rows,
+            contentType = { _, _ -> "collection_row" }
+        ) { rowIndex, chunk ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                chunk.forEach { col ->
+                chunk.forEachIndexed { colIndex, col ->
                     var focused by remember { mutableStateOf(false) }
                     Column(
                         modifier = Modifier
                             .weight(1f)
+                            .then(
+                                if (rowIndex == 0 && colIndex == 0 && firstCardFocusRequester != null) {
+                                    Modifier.focusRequester(firstCardFocusRequester)
+                                } else Modifier
+                            )
                             .clip(cardCorner)
                             .background(if (focused) colors.surfaceElevated else colors.surface)
                             .then(
@@ -3738,61 +3782,65 @@ private fun LiveTvGuideContent(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         cells.forEach { cell ->
-                            var cellFocused by remember { mutableStateOf(false) }
-                            val prog = cell.program
-                            val bg = when {
-                                cellFocused -> colors.white
-                                cell.isCurrent -> colors.accent.copy(alpha = 0.24f)
-                                prog != null -> colors.surface
-                                else -> colors.surface.copy(alpha = 0.45f)
-                            }
-                            val fg = if (cellFocused) colors.deepBlack else colors.white
-                            val subFg = if (cellFocused) colors.deepBlack.copy(alpha = 0.72f) else colors.textSecondary
-                            Column(
-                                verticalArrangement = Arrangement.Center,
-                                modifier = Modifier
-                                    .weight(cell.weightFraction)
-                                    .height(64.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(bg)
-                                    .border(
-                                        if (cellFocused) 2.dp else 1.dp,
-                                        when {
-                                            cellFocused -> colors.accent
-                                            cell.isCurrent -> colors.accent.copy(alpha = 0.65f)
-                                            else -> colors.badgeBorder
-                                        },
-                                        RoundedCornerShape(8.dp)
-                                    )
-                                    .onFocusChanged { cellFocused = it.isFocused || it.hasFocus }
-                                    .combinedClickable(
-                                        onClick = {
-                                            if (prog != null) onOpenChannelMenu(ch, prog)
-                                            else onTuneChannel(ch.id)
-                                        },
-                                        onLongClick = { onTuneChannel(ch.id) }
-                                    )
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (prog?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
-                                    Text(
-                                        text = prog?.title ?: strings.liveNoProgramData,
-                                        color = if (prog != null) fg else colors.textMuted,
-                                        fontSize = 12.sp,
-                                        fontWeight = if (cell.isCurrent) FontWeight.Bold else FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                            // Keyed: the minute tick drops ended programmes, and positional state
+                            // would move the focus highlight onto a different programme.
+                            androidx.compose.runtime.key(cell.startMs, cell.program?.id) {
+                                var cellFocused by remember { mutableStateOf(false) }
+                                val prog = cell.program
+                                val bg = when {
+                                    cellFocused -> colors.white
+                                    cell.isCurrent -> colors.accent.copy(alpha = 0.24f)
+                                    prog != null -> colors.surface
+                                    else -> colors.surface.copy(alpha = 0.45f)
                                 }
-                                if (prog != null && prog.timeRangeLabel.isNotBlank()) {
-                                    Text(
-                                        text = prog.timeRangeLabel,
-                                        color = subFg,
-                                        fontSize = 10.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                val fg = if (cellFocused) colors.deepBlack else colors.white
+                                val subFg = if (cellFocused) colors.deepBlack.copy(alpha = 0.72f) else colors.textSecondary
+                                Column(
+                                    verticalArrangement = Arrangement.Center,
+                                    modifier = Modifier
+                                        .weight(cell.weightFraction)
+                                        .height(64.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(bg)
+                                        .border(
+                                            if (cellFocused) 2.dp else 1.dp,
+                                            when {
+                                                cellFocused -> colors.accent
+                                                cell.isCurrent -> colors.accent.copy(alpha = 0.65f)
+                                                else -> colors.badgeBorder
+                                            },
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .onFocusChanged { cellFocused = it.isFocused || it.hasFocus }
+                                        .combinedClickable(
+                                            onClick = {
+                                                if (prog != null) onOpenChannelMenu(ch, prog)
+                                                else onTuneChannel(ch.id)
+                                            },
+                                            onLongClick = { onTuneChannel(ch.id) }
+                                        )
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (prog?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
+                                        Text(
+                                            text = prog?.title ?: strings.liveNoProgramData,
+                                            color = if (prog != null) fg else colors.textMuted,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (cell.isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (prog != null && prog.timeRangeLabel.isNotBlank()) {
+                                        Text(
+                                            text = prog.timeRangeLabel,
+                                            color = subFg,
+                                            fontSize = 10.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -3876,7 +3924,12 @@ private fun LiveTvGuideContent(
 
                     // Now Playing & Progress
                     Column(modifier = Modifier.weight(1.2f)) {
-                        val cur = ch.currentProgram
+                        // currentProgram is a snapshot from when the guide loaded; follow the
+                        // minute tick so an ended programme doesn't stay "On now".
+                        val cur = remember(ch, nowMs) {
+                            ch.programs.firstOrNull { it.startMs <= nowMs && nowMs < it.endMs }
+                                ?: ch.currentProgram?.takeIf { it.endMs <= it.startMs || nowMs < it.endMs }
+                        }
                         if (cur?.isRecording == true) RecBadge(strings.dvrRecordingBadge)
                         Text(
                             text = cur?.title ?: strings.liveStream,
@@ -3894,7 +3947,7 @@ private fun LiveTvGuideContent(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
-                            val progress = cur.progressFraction()
+                            val progress = cur.progressFraction(nowMs)
                             if (progress > 0f) {
                                 Spacer(Modifier.height(6.dp))
                                 Box(
@@ -4038,6 +4091,22 @@ private fun LiveTvGuideContent(
     }
 }
 
+/**
+ * The dialog only lists the rows of the tab it was opened from. Rows saved in [savedOrder] that
+ * the dialog didn't show keep their slots; the slots of the rows it did show are refilled in
+ * the user's new order, and rows that were never saved go at the end.
+ */
+internal fun mergeRowOrder(savedOrder: List<String>, editedOrder: List<String>): List<String> {
+    if (savedOrder.isEmpty()) return editedOrder.distinct()
+    val edited = editedOrder.distinct()
+    val editedSet = edited.toSet()
+    val queue = ArrayDeque(edited.filter { it in savedOrder })
+    val merged = savedOrder.distinct().map { id ->
+        if (id in editedSet) queue.removeFirst() else id
+    }
+    return merged + edited.filterNot { it in savedOrder }
+}
+
 @Composable
 private fun CustomizeHomeDialog(
     profile: UserProfile,
@@ -4056,7 +4125,9 @@ private fun CustomizeHomeDialog(
     val hiddenRows = remember(profile.id) {
         mutableStateListOf<String>().apply { addAll(profile.hiddenHomeRowIds) }
     }
-    val orderedRows = remember(profile.id, currentRows) {
+    // Snapshot the rows when the dialog opens: keying on `currentRows` reset the user's edits
+    // whenever a background refresh (Continue Watching, library update) landed mid-edit.
+    val orderedRows = remember(profile.id) {
         val visible = currentRows.distinctBy { it.id }.map { it.id to it.title }
         // Hidden rows are filtered out of `currentRows` by the repository, so without this they
         // vanished from the dialog and could never be shown again.
@@ -4243,7 +4314,7 @@ private fun CustomizeHomeDialog(
                         onSave(
                             pinnedLibs.toList(),
                             hiddenRows.toList(),
-                            orderedRows.map { it.first },
+                            mergeRowOrder(profile.homeRowOrder, orderedRows.map { it.first }),
                             startupTab
                         )
                     },
@@ -4738,11 +4809,15 @@ private fun LiveTvProgramDialog(
         recordAnyChannel = recordAnyChannel
     )
 
-    LaunchedEffect(Unit) {
-        delay(80L)
-        runCatching { firstFocus.requestFocus() }
-    }
     Dialog(onDismissRequest = onDismiss) {
+        // Inside the Dialog: requested from the parent, focus could fire before the dialog
+        // window's content is attached and silently fail on slow sticks.
+        LaunchedEffect(Unit) {
+            repeat(5) {
+                withFrameNanos { }
+                if (runCatching { firstFocus.requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+            }
+        }
         Column(
             modifier = Modifier
                 .width(600.dp)

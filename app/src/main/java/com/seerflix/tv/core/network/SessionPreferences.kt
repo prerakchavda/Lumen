@@ -152,6 +152,38 @@ class SessionPreferences private constructor(
         cachedSeerrCookie = cookie
     }
 
+    /** The active profile's Seerr user id (null = not known yet). */
+    @Volatile
+    var cachedSeerrUserId: Int? = null
+        private set
+
+    /** Kids / rating-limited profile: never lets the admin API key act on its behalf. */
+    @Volatile
+    var cachedProfileRestricted: Boolean = false
+        private set
+
+    fun setImmediateSeerrUserId(id: Int?) {
+        cachedSeerrUserId = id
+    }
+
+    private fun installSeerrIdentity(profile: UserProfile?) {
+        cachedSeerrUserId = profile?.seerrUserId
+        cachedProfileRestricted = profile?.isRestricted == true
+    }
+
+    suspend fun updateProfileSeerrUserId(profileId: String, seerrUserId: Int) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: return@edit
+            if (current.none { it.id == profileId }) return@edit
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(
+                current.map { if (it.id == profileId) it.copy(seerrUserId = seerrUserId) else it }
+            )
+            if (prefs[Keys.ACTIVE_PROFILE_ID] == profileId) cachedSeerrUserId = seerrUserId
+        }
+    }
+
     // ---- Multiple Jellyfin servers ----
 
     /** Every configured server, home first. Kept in sync by [serversFlow] and the write paths. */
@@ -279,6 +311,7 @@ class SessionPreferences private constructor(
     }
 
     private fun installActiveProfile(profile: UserProfile?) {
+        installSeerrIdentity(profile)
         val creds = profile?.serverCredentials.orEmpty()
         val homeUser = profile?.jellyfinUserId.orEmpty()
         if (creds != cachedServerCredentials || homeUser != cachedHomeUserId) {
@@ -561,6 +594,7 @@ class SessionPreferences private constructor(
                 val keepLocalTracks = existing.hasLocalTrackPreferenceOverride
                 profile.copy(
                     seerrCookie = effectiveCookie,
+                    seerrUserId = profile.seerrUserId ?: existing.seerrUserId,
                     pinHash = existing.pinHash,
                     autoplayNextEpisode = existing.autoplayNextEpisode,
                     autoplayPreviews = existing.autoplayPreviews,

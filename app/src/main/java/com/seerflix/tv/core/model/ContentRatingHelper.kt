@@ -5,9 +5,11 @@ object ContentRatingHelper {
     private val FAMILY = setOf("PG", "TV-PG")
     private val TEEN = setOf("PG-13", "TV-14", "12", "12A", "13+", "14+", "M")
     private val MATURE = setOf(
-        "R", "NC-17", "TV-MA", "18", "18+", "X", "NR", "UNRATED", "MA", "AO", "XXX", "R18", "R18+"
+        "R", "NC-17", "TV-MA", "18", "18+", "X", "NR", "UNRATED", "NOT RATED", "MA", "AO", "XXX", "R18", "R18+"
     )
-    private val COUNTRY_PREFIX = Regex("^[A-Z]{2}-(.+)$")
+    // "DE-16", "GB-15" (Jellyfin) and "US:R" (some metadata providers / NFO files).
+    private val COUNTRY_PREFIX = Regex("^[A-Z]{2}\\s*[-:]\\s*(.+)$")
+    private val RATED_PREFIX = Regex("^RATED\\s+")
     private val AGE_DIGITS = Regex("(\\d{1,2})")
 
     /**
@@ -19,11 +21,12 @@ object ContentRatingHelper {
 
     fun ratingRank(officialRating: String?): Int {
         if (officialRating.isNullOrBlank()) return UNRATED_RANK
-        val norm = officialRating.trim().uppercase()
+        // OMDb / NFO style values: "Rated R", "rated pg-13".
+        val norm = officialRating.trim().uppercase().replace(RATED_PREFIX, "")
         knownRank(norm)?.let { return it }
         // Jellyfin often stores country-prefixed ratings ("DE-16", "GB-15", "AU-MA15+").
         val unprefixed = COUNTRY_PREFIX.find(norm)?.groupValues?.get(1)
-        if (unprefixed != null) knownRank(unprefixed)?.let { return it }
+        if (unprefixed != null) knownRank(unprefixed.replace(RATED_PREFIX, ""))?.let { return it }
         // Age-based systems (FSK-16, "16+", "MA15+", PEGI 18, "15"): rank by the minimum age.
         val age = AGE_DIGITS.find(unprefixed ?: norm)?.groupValues?.get(1)?.toIntOrNull()
         if (age != null) {
@@ -34,7 +37,9 @@ object ContentRatingHelper {
                 else -> 4
             }
         }
-        return 2
+        // Unrecognised ("Approved", "Passed", a typo in an NFO): fail closed like a missing rating.
+        // Ranking these as PG let them through to PG / PG-13 profiles.
+        return UNRATED_RANK
     }
 
     private fun knownRank(norm: String): Int? = when (norm) {

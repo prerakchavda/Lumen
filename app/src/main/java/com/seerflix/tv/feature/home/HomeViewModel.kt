@@ -717,6 +717,7 @@ class HomeViewModel @Inject constructor(
         if (lastLoadedTab != tab || state.isLoading || catalogJob?.isActive == true) return
         if (continueWatchingJob?.isActive == true) return
         val profile = state.profile ?: return
+        val startGeneration = catalogGeneration
         continueWatchingJob = viewModelScope.launch(Dispatchers.IO) {
             val (allCw, allNextUp) = try {
                 catalogRepository.loadContinueWatchingAndNextUp(profile.jellyfinUserId, profile)
@@ -737,7 +738,7 @@ class HomeViewModel @Inject constructor(
                 ?: cwStrings.rowContinueWatching
             val hiddenRows = profile.hiddenHomeRowIds.toSet()
             _uiState.update { s ->
-                if (s.activeTab != tab || s.isLoading) return@update s
+                if (s.activeTab != tab || s.isLoading || catalogGeneration != startGeneration) return@update s
                 var updated = s.rows.toMutableList()
                 val cwIdx = updated.indexOfFirst { it.id == "continue_watching" }
                 when {
@@ -1190,6 +1191,9 @@ class HomeViewModel @Inject constructor(
         // Cancel any in-flight load so rapid tab/filter switching can't race and let a stale
         // (slower) response overwrite the rows of the tab the user actually selected.
         catalogJob?.cancel()
+        // A Continue Watching refresh started for the previous page would otherwise land on the
+        // new one (e.g. an unfiltered row dropped into a genre page and cached there).
+        continueWatchingJob?.cancel()
         val generation = ++catalogGeneration
         // Switching tabs: the previous tab's rows must not sit under the new tab while it loads
         // (they'd be focusable, then swapped out from under the focused card).

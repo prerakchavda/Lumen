@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -62,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -273,7 +275,13 @@ fun DetailsContent(
     val strings = AppStrings.current
     // Lives outside the LazyColumn so scrolling the header away and back (or the seed -> full data
     // swap) never re-runs the initial focus request and yanks focus back to Play.
-    val focusMemory = remember { DetailsFocusMemory() }
+    // Saveable: coming back from the player recreates this screen, and with a plain remember the
+    // restored scroll position (often deep in the episode list) was left with nothing focused.
+    val focusMemory = rememberSaveable(saver = DetailsFocusMemory.Saver) { DetailsFocusMemory() }
+    // Re-entering the screen without an episode to return to: let the header focus Play again.
+    remember(focusMemory) {
+        if (focusMemory.lastPlayedEpisodeId == null) focusMemory.initialFocusDone = false
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -328,7 +336,25 @@ fun DetailsContent(
                 val episodes = state.episodes
                 val selectedSourceId = state.selectedMediaSourceId
                 val hasPlayableEpisode = remember(episodes) { episodes.any { it.isAvailableInJellyfin } }
+                val listState = rememberLazyListState()
+                val returnEpisodeFocusRequester = remember { FocusRequester() }
+                // Back from the player: land on the episode that was playing. If it can't take
+                // focus (list changed, episodes still loading), go to the top so the header's
+                // initial-focus effect puts the remote on Play instead of on nothing.
+                LaunchedEffect(Unit) {
+                    if (!focusMemory.initialFocusDone || focusMemory.lastPlayedEpisodeId == null) return@LaunchedEffect
+                    repeat(10) {
+                        delay(80L)
+                        if (runCatching { returnEpisodeFocusRequester.requestFocus() }.getOrDefault(false)) {
+                            return@LaunchedEffect
+                        }
+                    }
+                    focusMemory.lastPlayedEpisodeId = null
+                    focusMemory.initialFocusDone = false
+                    runCatching { listState.scrollToItem(0) }
+                }
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 56.dp)
                 ) {
@@ -498,6 +524,7 @@ fun DetailsContent(
                                         episode = ep,
                                         onClick = {
                                             if (ep.isAvailableInJellyfin) {
+                                                focusMemory.lastPlayedEpisodeId = ep.id
                                                 onPlayItem(ep.id, null)
                                             } else {
                                                 onOpenRequestModal()
@@ -506,7 +533,13 @@ fun DetailsContent(
                                         onLongClick = if (ep.isAvailableInJellyfin) {
                                             { extraActions.onOpenEpisodeMenu(ep) }
                                         } else null,
-                                        modifier = Modifier.padding(horizontal = 48.dp, vertical = 6.dp)
+                                        modifier = Modifier
+                                            .then(
+                                                if (ep.id == focusMemory.lastPlayedEpisodeId) {
+                                                    Modifier.focusRequester(returnEpisodeFocusRequester)
+                                                } else Modifier
+                                            )
+                                            .padding(horizontal = 48.dp, vertical = 6.dp)
                                     )
                                 }
                             }
@@ -1333,7 +1366,8 @@ private fun DetailsHeaderSection(
                         return@LaunchedEffect
                     }
                     // Throws until the requester's node is attached; retry briefly.
-                    if (runCatching { primaryActionFocusRequester.requestFocus() }.isSuccess) {
+                    // requestFocus() returns false (no longer throws) while the node isn't attached.
+                    if (runCatching { primaryActionFocusRequester.requestFocus() }.getOrDefault(false)) {
                         focusMemory.initialFocusDone = true
                         return@LaunchedEffect
                     }
@@ -1874,20 +1908,20 @@ private fun RequestQualityModal(
         mutableStateOf(hdServers.firstOrNull { it.isDefault } ?: hdServers.firstOrNull())
     }
     var selectedHdProfileId by remember(selectedHdServer) {
-        mutableStateOf(selectedHdServer?.profiles?.firstOrNull()?.id)
+        mutableStateOf(selectedHdServer?.initialProfileId)
     }
     var selectedHdRoot by remember(selectedHdServer) {
-        mutableStateOf(selectedHdServer?.rootFolders?.firstOrNull())
+        mutableStateOf(selectedHdServer?.initialRootFolder)
     }
 
     var selectedUhdServer by remember(uhdServers) {
         mutableStateOf(uhdServers.firstOrNull { it.isDefault } ?: uhdServers.firstOrNull())
     }
     var selectedUhdProfileId by remember(selectedUhdServer) {
-        mutableStateOf(selectedUhdServer?.profiles?.firstOrNull()?.id)
+        mutableStateOf(selectedUhdServer?.initialProfileId)
     }
     var selectedUhdRoot by remember(selectedUhdServer) {
-        mutableStateOf(selectedUhdServer?.rootFolders?.firstOrNull())
+        mutableStateOf(selectedUhdServer?.initialRootFolder)
     }
 
     val selectedSeasons = remember {
@@ -2253,6 +2287,23 @@ private class DetailsFocusMemory {
     var initialFocusDone: Boolean = false
     /** Selected section tab; state so switching tabs recomposes the list. */
     var section: DetailsSection? by mutableStateOf(null)
+    /** The episode last started from the list, so Back from the player lands on it. */
+    var lastPlayedEpisodeId: String? = null
+
+    companion object {
+        val Saver: androidx.compose.runtime.saveable.Saver<DetailsFocusMemory, Any> =
+            androidx.compose.runtime.saveable.listSaver(
+                save = { listOf(it.initialFocusDone, it.section?.name.orEmpty(), it.lastPlayedEpisodeId.orEmpty()) },
+                restore = { saved ->
+                    DetailsFocusMemory().apply {
+                        initialFocusDone = saved[0] as Boolean
+                        section = (saved[1] as String).takeIf { it.isNotEmpty() }
+                            ?.let { name -> DetailsSection.entries.firstOrNull { it.name == name } }
+                        lastPlayedEpisodeId = (saved[2] as String).takeIf { it.isNotEmpty() }
+                    }
+                }
+            )
+    }
 }
 
 private enum class DetailsSection {

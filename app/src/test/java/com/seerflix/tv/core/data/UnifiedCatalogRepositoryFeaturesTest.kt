@@ -366,6 +366,8 @@ class UnifiedCatalogRepositoryFeaturesTest {
 
         override suspend fun getStatus(): SeerrStatusDto { seerrCallCount++; return SeerrStatusDto() }
         override suspend fun getMe(): SeerrUserDto { seerrCallCount++; return SeerrUserDto(1) }
+        override suspend fun getMeFromSession() = SeerrUserDto(1)
+        override suspend fun listUsers(take: Int, skip: Int) = com.seerflix.tv.core.network.SeerrUserListResponseDto()
         override suspend fun loginWithJellyfin(body: SeerrJellyfinLoginRequest) = SeerrUserDto(1)
         override suspend fun initiateQuickConnect() = SeerrQuickConnectInitiateResponse("c", "s")
         override suspend fun checkQuickConnect(secret: String) = SeerrQuickConnectCheckResponse(false)

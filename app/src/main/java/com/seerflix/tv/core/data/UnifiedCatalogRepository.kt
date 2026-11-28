@@ -3366,7 +3366,10 @@ class UnifiedCatalogRepository @Inject constructor(
                     is4k = srv.is4k,
                     isDefault = srv.isDefault,
                     profiles = profiles,
-                    rootFolders = roots
+                    rootFolders = roots,
+                    defaultProfileId = detail?.server?.activeProfileId ?: srv.activeProfileId,
+                    defaultRootFolder = (detail?.server?.activeDirectory ?: srv.activeDirectory)
+                        ?.takeIf { it.isNotBlank() }
                 )
             }
         }.map { it.await() }

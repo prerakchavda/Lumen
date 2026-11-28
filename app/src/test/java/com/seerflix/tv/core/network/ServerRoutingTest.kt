@@ -125,7 +125,13 @@ class ServerRoutingTest {
         assertEquals("192.168.1.50", info.serverName)
         val request = sent.single()
         assertEquals("http://192.168.1.50:8096/System/Info/Public", request.url.toString())
-        assertEquals("home-token", request.token())
+        // Public probes (also used to test URLs typed into Server settings) carry no token.
+        assertEquals(null, request.token())
+
+        sent.clear()
+        api(ServerScopedId.HOME).getResumeItems(userId = "home-user")
+        assertEquals("192.168.1.50", sent.single().url.host)
+        assertEquals("home-token", sent.single().token())
     }
 
     @Test
@@ -157,7 +163,7 @@ class ServerRoutingTest {
             ),
             sent.map { it.url.toString() }
         )
-        assertEquals(listOf("friend-token", "friend-token", "home-token"), sent.map { it.token() })
+        assertEquals(listOf(null, null, null), sent.map { it.token() })
 
         // The address that worked is remembered per server (used for image / stream URLs too).
         assertEquals("https://friend.example.net/jellyfin", prefs.resolvedUrlFor(friendId))

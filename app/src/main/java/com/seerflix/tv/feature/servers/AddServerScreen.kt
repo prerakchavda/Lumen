@@ -67,6 +67,12 @@ fun AddServerScreen(
     viewModel: AddServerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+        viewModel.onScreenStopped()
+    }
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) {
+        viewModel.onScreenStarted()
+    }
     val strings = AppStrings.current
     val colors = SeerflixTokens.colors
 

@@ -245,6 +245,22 @@ class AddServerViewModel @Inject constructor(
         _uiState.update { it.copy(step = AddServerStep.DONE) }
     }
 
+    // The phone form stays reachable only while this screen is in the foreground.
+    private var companionPaused = false
+
+    fun onScreenStopped() {
+        if (companionServer.companionUrl == null) return
+        companionServer.stop()
+        companionPaused = true
+        _uiState.update { it.copy(companionUrl = null) }
+    }
+
+    fun onScreenStarted() {
+        if (!companionPaused) return
+        companionPaused = false
+        startCompanion()
+    }
+
     override fun onCleared() {
         companionServer.stop()
         // A draft that was never signed in to must not linger in the network layer.

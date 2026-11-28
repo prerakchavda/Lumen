@@ -147,7 +147,12 @@ internal class JellyfinAuthInterceptor(
             path.endsWith("/QuickConnect/Connect", ignoreCase = true)
         // Each server only ever sees its own token (the routing interceptor tagged the request).
         val serverId = chain.request().tag(JellyfinServerTag::class.java)?.serverId ?: ServerScopedId.HOME
-        val token = if (isSignInCall) null else prefs.tokenFor(serverId)
+        // Public endpoints (also used to test a URL typed into Server settings, which may be a
+        // typo or someone else's host) never get the signed-in profile's token.
+        val isPublicProbe = path.endsWith("/System/Info/Public", ignoreCase = true) ||
+            path.endsWith("/Users/Public", ignoreCase = true) ||
+            path.endsWith("/System/Ping", ignoreCase = true)
+        val token = if (isSignInCall || isPublicProbe) null else prefs.tokenFor(serverId)
         val authHeader = buildJellyfinAuthHeader(prefs.cachedDeviceId, token)
         val request = chain.request().newBuilder()
             .header("Authorization", authHeader)
@@ -168,15 +173,53 @@ internal fun buildJellyfinAuthHeader(deviceId: String, token: String?): String =
     }
 }
 
+internal sealed interface SeerrKeyMode {
+    /** No API key: the profile's own Seerr session cookie (if any) authenticates the call. */
+    data object NONE : SeerrKeyMode
+    /** The API key alone, which Seerr treats as its admin (user 1). */
+    data object ADMIN : SeerrKeyMode
+    /** The API key acting as this Seerr user (`X-API-User`), with that user's permissions. */
+    data class AsUser(val seerrUserId: Int) : SeerrKeyMode
+}
+
+/**
+ * Which identity a Seerr call goes out as. Seerr lets the API key override the session cookie, so
+ * sending it alone made every profile (Kids included) the Seerr admin: auto-approved requests,
+ * no quotas, and everyone's requests shown as the admin's.
+ */
+internal fun seerrKeyMode(
+    marker: String?,
+    hasApiKey: Boolean,
+    seerrUserId: Int?,
+    profileRestricted: Boolean
+): SeerrKeyMode = when {
+    !hasApiKey || marker == "1" -> SeerrKeyMode.NONE
+    marker == "0" -> SeerrKeyMode.ADMIN
+    seerrUserId != null -> SeerrKeyMode.AsUser(seerrUserId)
+    // Not linked to a Seerr account yet: unrestricted profiles keep working through the key
+    // (the behaviour before 1.0); Kids / rating-limited profiles never act as the admin.
+    profileRestricted -> SeerrKeyMode.NONE
+    else -> SeerrKeyMode.ADMIN
+}
+
 private class SeerrAuthInterceptor(
     private val prefs: SessionPreferences
 ) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
-        val builder = chain.request().newBuilder()
+        val original = chain.request()
+        val marker = original.header(SEERR_SESSION_ONLY_HEADER)
+        val builder = original.newBuilder()
+            .removeHeader(SEERR_SESSION_ONLY_HEADER)
             .header("Accept", "application/json")
-        val apiKey = prefs.cachedSeerrApiKey
-        if (apiKey.isNotBlank()) {
-            builder.header("X-Api-Key", apiKey)
+        // A pasted key with an invisible / non-ASCII character makes OkHttp throw from header(),
+        // which kills the process on an async call. Skip it; Seerr then answers 401 instead.
+        val apiKey = prefs.cachedSeerrApiKey.trim().takeIf { key -> key.all { it in ' '..'~' } }.orEmpty()
+        when (val mode = seerrKeyMode(marker, apiKey.isNotBlank(), prefs.cachedSeerrUserId, prefs.cachedProfileRestricted)) {
+            SeerrKeyMode.NONE -> Unit
+            SeerrKeyMode.ADMIN -> builder.header("X-Api-Key", apiKey)
+            is SeerrKeyMode.AsUser -> builder
+                .header("X-Api-Key", apiKey)
+                .header("X-API-User", mode.seerrUserId.toString())
         }
         return chain.proceed(builder.build())
     }
@@ -201,6 +244,8 @@ private class SeerrSessionCookieJar(
     }
 
     override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        // The status probe also tests URLs typed into Server settings: don't hand them a session.
+        if (url.encodedPath.endsWith("/api/v1/status")) return emptyList()
         val saved = prefs.cachedSeerrCookie ?: return emptyList()
         val parts = saved.split("=", limit = 2)
         if (parts.size != 2) return emptyList()

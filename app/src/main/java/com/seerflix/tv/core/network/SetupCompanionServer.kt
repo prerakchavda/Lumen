@@ -27,9 +27,14 @@ data class CompanionFormResult(
 )
 
 class SetupCompanionServer {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Own small pool: handlers block on socket reads, and on the shared IO dispatcher a LAN
+    // device holding many slow connections open could starve the whole app's IO.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(MAX_CLIENTS + 1))
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
+    private val clientSlots = java.util.concurrent.Semaphore(MAX_CLIENTS)
+    private val openClients = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
 
     var companionUrl: String? = null
         private set
@@ -61,10 +66,21 @@ class SetupCompanionServer {
         acceptJob = scope.launch {
             while (isActive && !socket.isClosed) {
                 val client = runCatching { socket.accept() }.getOrNull() ?: break
-                launch {
-                    // Never let one bad connection crash the app (uncaught exception in scope).
-                    runCatching { handleClient(client, token, currentValues, jellyfinOnly, onSubmitted) }
+                // A phone needs one or two connections; turn away anything beyond a few at once.
+                if (!clientSlots.tryAcquire()) {
                     runCatching { client.close() }
+                    continue
+                }
+                openClients.add(client)
+                launch {
+                    try {
+                        // Never let one bad connection crash the app (uncaught exception in scope).
+                        runCatching { handleClient(client, token, currentValues, jellyfinOnly, onSubmitted) }
+                    } finally {
+                        runCatching { client.close() }
+                        openClients.remove(client)
+                        clientSlots.release()
+                    }
                 }
             }
         }
@@ -76,6 +92,9 @@ class SetupCompanionServer {
         acceptJob = null
         runCatching { serverSocket?.close() }
         serverSocket = null
+        // In-flight connections would otherwise outlive the setup screen.
+        openClients.toList().forEach { runCatching { it.close() } }
+        openClients.clear()
         companionUrl = null
     }
 
@@ -87,7 +106,7 @@ class SetupCompanionServer {
         onSubmitted: (CompanionFormResult) -> Unit
     ) {
         socket.use { client ->
-            client.soTimeout = 5_000
+            client.soTimeout = 3_000
             val input = BufferedInputStream(client.getInputStream())
             val rawRequest = readHttpRequest(input) ?: return
             val headerEnd = rawRequest.indexOf("\r\n\r\n")
@@ -127,8 +146,12 @@ class SetupCompanionServer {
         val chunk = ByteArray(2048)
         var headerEnd = -1
         var expectedBodyBytes = 0
+        // Whole-request deadline: the socket timeout only bounds each read, so a client dripping
+        // a byte every few seconds could otherwise hold its slot indefinitely.
+        val deadline = System.currentTimeMillis() + REQUEST_DEADLINE_MS
 
         while (true) {
+            if (System.currentTimeMillis() > deadline) return null
             val read = runCatching { input.read(chunk) }.getOrDefault(-1)
             if (read <= 0) break
             buf.write(chunk, 0, read)
@@ -138,13 +161,14 @@ class SetupCompanionServer {
                 if (headerEnd >= 0) {
                     val headers = current.substring(0, headerEnd)
                     expectedBodyBytes = extractContentLength(headers)
+                    if (expectedBodyBytes > MAX_REQUEST_BYTES) return null
                 }
             }
             if (headerEnd >= 0) {
                 val receivedBody = current.length - (headerEnd + 4)
                 if (receivedBody >= expectedBodyBytes) break
             }
-            if (buf.size() > 32_768) break
+            if (buf.size() > MAX_REQUEST_BYTES) break
         }
         val text = buf.toString(StandardCharsets.UTF_8.name())
         return text.takeIf { it.isNotBlank() }
@@ -182,7 +206,7 @@ class SetupCompanionServer {
             <label>Seerr Local LAN URL (Optional)</label>
             <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
             <label>Seerr API Key (Optional)</label>
-            <input type="text" name="seerrApiKey" placeholder="Optional X-Api-Key from Seerr Settings" value="${escapeHtml(defaults.seerrApiKey)}"/>
+            <input type="password" autocomplete="off" name="seerrApiKey" placeholder="Optional · leave blank to keep the current key" value=""/>
     """
 
     private fun buildFormHtml(defaults: CompanionFormResult, token: String, jellyfinOnly: Boolean = false): String = """
@@ -196,7 +220,7 @@ class SetupCompanionServer {
             h1{color:#e50914;font-size:24px;margin-bottom:8px;}
             p{color:#aaa;font-size:14px;margin-bottom:20px;}
             label{display:block;font-size:13px;font-weight:600;margin-top:14px;margin-bottom:6px;color:#ddd;}
-            input[type=text],input[type=url]{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #333;background:#1e1e1e;color:#fff;font-size:15px;}
+            input[type=text],input[type=url],input[type=password]{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #333;background:#1e1e1e;color:#fff;font-size:15px;}
             .check{display:flex;align-items:center;gap:10px;margin-top:16px;}
             button{margin-top:22px;width:100%;padding:14px;border:none;border-radius:8px;background:#e50914;color:#fff;font-weight:700;font-size:16px;cursor:pointer;}
           </style>
@@ -245,6 +269,9 @@ class SetupCompanionServer {
             .replace(">", "&gt;")
 
     companion object {
+        private const val MAX_CLIENTS = 4
+        private const val MAX_REQUEST_BYTES = 32_768
+        private const val REQUEST_DEADLINE_MS = 10_000L
         private val secureRandom = SecureRandom()
 
         internal fun generateAccessToken(): String {

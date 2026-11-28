@@ -93,7 +93,8 @@ class SetupViewModel @Inject constructor(
                 seerrUrl = if (cur.jellyfinOnlyMode) "" else cur.seerrUrl,
                 seerrLocalUrl = if (cur.jellyfinOnlyMode) "" else cur.seerrLocalUrl,
                 trustSelfSigned = cur.trustSelfSignedCerts,
-                seerrApiKey = cur.seerrApiKey
+                // Never served back over plain HTTP; a blank submit keeps the current key.
+                seerrApiKey = ""
             )
         ) { submitted ->
             val onlyJf = submitted.seerrUrl.isBlank() && submitted.seerrLocalUrl.isBlank()
@@ -113,6 +114,22 @@ class SetupViewModel @Inject constructor(
             }
         }
         _uiState.update { it.copy(companionUrl = url) }
+    }
+
+    // The phone form stays reachable only while this screen is in the foreground.
+    private var companionPaused = false
+
+    fun onScreenStopped() {
+        if (companionServer.companionUrl == null) return
+        companionServer.stop()
+        companionPaused = true
+        _uiState.update { it.copy(companionUrl = null) }
+    }
+
+    fun onScreenStarted() {
+        if (!companionPaused) return
+        companionPaused = false
+        startCompanion()
     }
 
     override fun onCleared() {

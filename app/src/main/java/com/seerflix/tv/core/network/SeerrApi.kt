@@ -7,12 +7,33 @@ import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
+/**
+ * Internal marker read and stripped by the Seerr auth interceptor: `1` = send no API key (session
+ * cookie only), `0` = send the API key without acting as the active profile's Seerr user.
+ */
+const val SEERR_SESSION_ONLY_HEADER = "X-Lumen-Seerr-Auth"
+
 interface SeerrApi {
+    /** Public; also probes URLs typed into Server settings, so it never carries the API key. */
     @GET("api/v1/status")
+    @retrofit2.http.Headers("$SEERR_SESSION_ONLY_HEADER: 1")
     suspend fun getStatus(): SeerrStatusDto
 
     @GET("api/v1/auth/me")
     suspend fun getMe(): SeerrUserDto
+
+    /** `auth/me` answered from the session cookie alone (the API key would answer as the admin). */
+    @GET("api/v1/auth/me")
+    @retrofit2.http.Headers("$SEERR_SESSION_ONLY_HEADER: 1")
+    suspend fun getMeFromSession(): SeerrUserDto
+
+    /** Admin-only (API key): used to find a profile's Seerr account by its Jellyfin user id. */
+    @GET("api/v1/user")
+    @retrofit2.http.Headers("$SEERR_SESSION_ONLY_HEADER: 0")
+    suspend fun listUsers(
+        @Query("take") take: Int = 1000,
+        @Query("skip") skip: Int = 0
+    ): SeerrUserListResponseDto
 
     @POST("api/v1/auth/jellyfin")
     suspend fun loginWithJellyfin(

@@ -64,6 +64,12 @@ fun SetupScreen(
     viewModel: SetupViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+        viewModel.onScreenStopped()
+    }
+    androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) {
+        viewModel.onScreenStarted()
+    }
     SetupContent(
         state = state,
         onJellyfinUrlChange = viewModel::updateJellyfinUrl,
@@ -430,6 +436,12 @@ private fun SetupUrlField(
         // URL keyboard + "Next" so the TV IME's action key advances to the next field instead of
         // doing nothing (the default action for a single-line field).
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Next),
+        // The Seerr API key is an admin credential: don't show it on the TV screen.
+        visualTransformation = if (keyboardType == KeyboardType.Password) {
+            androidx.compose.ui.text.input.PasswordVisualTransformation()
+        } else {
+            androidx.compose.ui.text.input.VisualTransformation.None
+        },
         colors = OutlinedTextFieldDefaults.colors(
             focusedTextColor = colors.white,
             unfocusedTextColor = colors.textPrimary,
