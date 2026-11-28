@@ -1523,6 +1523,79 @@ data class UiStrings(
         internal set
     var errorHttpServer: String = "Server error (HTTP %d) — check that Jellyfin and Seerr are healthy"
         internal set
+    // ---- Personalized discovery (0.9.8) ----
+    var rowTraktRecommended: String = "Recommended for You on Trakt"
+        internal set
+    var settingsTraktTitle: String = "Connect Trakt"
+        internal set
+    var settingsTraktDesc: String = "Adds your personal Trakt recommendations to Home for this profile."
+        internal set
+    var settingsTraktConnected: String = "Connected. Press to disconnect."
+        internal set
+    var settingsTraktCode: String = "On your phone, go to %1\$s and enter %2\$s. Press to cancel."
+        internal set
+    var settingsTraktExpired: String = "The code expired. Press to try again."
+        internal set
+    var settingsTraktDenied: String = "Sign-in was declined."
+        internal set
+    var settingsTraktFailed: String = "Couldn't connect: %s"
+        internal set
+    var rowTopPicksFor: String = "Top Picks for %s"
+        internal set
+    var rowBecauseYouLiked: String = "Because you liked %s"
+        internal set
+    var rowUnwatchedInLibrary: String = "Unwatched in Your Library"
+        internal set
+    var rowHiddenGems: String = "Hidden Gems on Your Server"
+        internal set
+    var rowForgottenInLibrary: String = "Added a While Ago, Never Started"
+        internal set
+    var rowShortTonight: String = "Short on Time? Movies Under 100 Minutes"
+        internal set
+    var rowPopularHousehold: String = "Popular in Your Household"
+        internal set
+    var rowDirectedBy: String = "Directed by %s"
+        internal set
+    var rowStarring: String = "Starring %s"
+        internal set
+    var rateTitle: String = "Rate"
+        internal set
+    var rateNotForMe: String = "Not for me"
+        internal set
+    var rateLike: String = "I like this"
+        internal set
+    var rateLove: String = "Love this!"
+        internal set
+    var rateClear: String = "Remove rating"
+        internal set
+    var actionNotInterested: String = "Not interested"
+        internal set
+    var rateSavedLike: String = "Thanks! You'll see more like %s."
+        internal set
+    var rateSavedLove: String = "Loved! %s will shape your Top Picks."
+        internal set
+    var rateSavedDislike: String = "Got it. You'll see less like %s."
+        internal set
+    var rateCleared: String = "Rating removed"
+        internal set
+    var rateFailed: String = "Couldn't save: %s"
+        internal set
+    var notInterestedFeedback: String = "%s won't be recommended anymore"
+        internal set
+    var settingsRecommendationsSection: String = "Recommendations"
+        internal set
+    var settingsPersonalRowOrderTitle: String = "Order Home rows by what I watch"
+        internal set
+    var settingsPersonalRowOrderDesc: String = "Rows you pick titles from move higher. Off when you set a custom order in Customize Home."
+        internal set
+    var settingsResetTasteTitle: String = "Reset recommendations"
+        internal set
+    var settingsResetTasteDesc: String = "Forget this profile's ratings, \"Not interested\" titles and row history."
+        internal set
+    var settingsResetTasteConfirm: String = "Press again to reset."
+        internal set
+    var settingsResetTasteDone: String = "Recommendations reset."
+        internal set
 }
 
 val SupportedLanguages = listOf(
@@ -2364,6 +2437,43 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         errorHttpNotFound = "El elemento no se encontró en el servidor (HTTP %d)"
         errorHttpAlreadyRequested = "Este título ya se ha solicitado (HTTP %d)"
         errorHttpServer = "Error del servidor (HTTP %d): comprueba que Jellyfin y Seerr funcionan correctamente"
+        // 0.9.8
+        rowTraktRecommended = "Recomendado para ti en Trakt"
+        settingsTraktTitle = "Conectar Trakt"
+        settingsTraktDesc = "Añade tus recomendaciones personales de Trakt a Inicio en este perfil."
+        settingsTraktConnected = "Conectado. Pulsa para desconectar."
+        settingsTraktCode = "En tu móvil, ve a %1\$s e introduce %2\$s. Pulsa para cancelar."
+        settingsTraktExpired = "El código caducó. Pulsa para reintentar."
+        settingsTraktDenied = "Se rechazó el inicio de sesión."
+        settingsTraktFailed = "No se pudo conectar: %s"
+        rowTopPicksFor = "Recomendaciones para %s"
+        rowBecauseYouLiked = "Porque te gustó %s"
+        rowUnwatchedInLibrary = "Sin ver en tu biblioteca"
+        rowHiddenGems = "Joyas ocultas en tu servidor"
+        rowForgottenInLibrary = "Añadido hace tiempo, sin empezar"
+        rowShortTonight = "¿Poco tiempo? Películas de menos de 100 minutos"
+        rowPopularHousehold = "Popular en tu hogar"
+        rowDirectedBy = "Dirigido por %s"
+        rowStarring = "Con %s"
+        rateTitle = "Valorar"
+        rateNotForMe = "No es para mí"
+        rateLike = "Me gusta"
+        rateLove = "¡Me encanta!"
+        rateClear = "Quitar valoración"
+        actionNotInterested = "No me interesa"
+        rateSavedLike = "¡Gracias! Verás más como %s."
+        rateSavedLove = "¡Te encanta! %s guiará tus recomendaciones."
+        rateSavedDislike = "Entendido. Verás menos como %s."
+        rateCleared = "Valoración quitada"
+        rateFailed = "No se pudo guardar: %s"
+        notInterestedFeedback = "%s ya no se recomendará"
+        settingsRecommendationsSection = "Recomendaciones"
+        settingsPersonalRowOrderTitle = "Ordenar filas de Inicio según lo que veo"
+        settingsPersonalRowOrderDesc = "Las filas que más usas suben. Se desactiva si eliges un orden en Personalizar Inicio."
+        settingsResetTasteTitle = "Restablecer recomendaciones"
+        settingsResetTasteDesc = "Olvida las valoraciones, los títulos \"No me interesa\" y el historial de filas de este perfil."
+        settingsResetTasteConfirm = "Pulsa de nuevo para restablecer."
+        settingsResetTasteDone = "Recomendaciones restablecidas."
     }
     "fr" -> UiStrings(
         languageCode = "fr",
@@ -3195,6 +3305,43 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         errorHttpNotFound = "Élément introuvable sur le serveur (HTTP %d)"
         errorHttpAlreadyRequested = "Ce titre a déjà été demandé (HTTP %d)"
         errorHttpServer = "Erreur du serveur (HTTP %d) : vérifiez que Jellyfin et Seerr fonctionnent correctement"
+        // 0.9.8
+        rowTraktRecommended = "Recommandé pour vous sur Trakt"
+        settingsTraktTitle = "Connecter Trakt"
+        settingsTraktDesc = "Ajoute vos recommandations Trakt personnelles à l'accueil de ce profil."
+        settingsTraktConnected = "Connecté. Appuyez pour déconnecter."
+        settingsTraktCode = "Sur votre téléphone, allez sur %1\$s et saisissez %2\$s. Appuyez pour annuler."
+        settingsTraktExpired = "Le code a expiré. Appuyez pour réessayer."
+        settingsTraktDenied = "La connexion a été refusée."
+        settingsTraktFailed = "Connexion impossible : %s"
+        rowTopPicksFor = "Notre sélection pour %s"
+        rowBecauseYouLiked = "Parce que vous avez aimé %s"
+        rowUnwatchedInLibrary = "Pas encore vus dans votre bibliothèque"
+        rowHiddenGems = "Pépites cachées sur votre serveur"
+        rowForgottenInLibrary = "Ajouté il y a un moment, jamais commencé"
+        rowShortTonight = "Peu de temps ? Films de moins de 100 minutes"
+        rowPopularHousehold = "Populaire chez vous"
+        rowDirectedBy = "Réalisé par %s"
+        rowStarring = "Avec %s"
+        rateTitle = "Noter"
+        rateNotForMe = "Pas pour moi"
+        rateLike = "J'aime"
+        rateLove = "J'adore !"
+        rateClear = "Retirer la note"
+        actionNotInterested = "Pas intéressé"
+        rateSavedLike = "Merci ! Vous verrez plus de titres comme %s."
+        rateSavedLove = "Adoré ! %s guidera votre sélection."
+        rateSavedDislike = "Compris. Vous verrez moins de titres comme %s."
+        rateCleared = "Note retirée"
+        rateFailed = "Impossible d'enregistrer : %s"
+        notInterestedFeedback = "%s ne sera plus recommandé"
+        settingsRecommendationsSection = "Recommandations"
+        settingsPersonalRowOrderTitle = "Trier les rangées de l'accueil selon ce que je regarde"
+        settingsPersonalRowOrderDesc = "Les rangées que vous utilisez remontent. Désactivé si vous définissez un ordre dans Personnaliser l'accueil."
+        settingsResetTasteTitle = "Réinitialiser les recommandations"
+        settingsResetTasteDesc = "Oublie les notes, les titres « Pas intéressé » et l'historique des rangées de ce profil."
+        settingsResetTasteConfirm = "Appuyez à nouveau pour réinitialiser."
+        settingsResetTasteDone = "Recommandations réinitialisées."
     }
     "de" -> UiStrings(
         languageCode = "de",
@@ -4026,6 +4173,43 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         errorHttpNotFound = "Titel auf dem Server nicht gefunden (HTTP %d)"
         errorHttpAlreadyRequested = "Dieser Titel wurde bereits angefragt (HTTP %d)"
         errorHttpServer = "Serverfehler (HTTP %d) – prüfe, ob Jellyfin und Seerr laufen"
+        // 0.9.8
+        rowTraktRecommended = "Für dich empfohlen auf Trakt"
+        settingsTraktTitle = "Trakt verbinden"
+        settingsTraktDesc = "Fügt deine persönlichen Trakt-Empfehlungen zur Startseite dieses Profils hinzu."
+        settingsTraktConnected = "Verbunden. Zum Trennen drücken."
+        settingsTraktCode = "Öffne auf dem Handy %1\$s und gib %2\$s ein. Zum Abbrechen drücken."
+        settingsTraktExpired = "Der Code ist abgelaufen. Zum Wiederholen drücken."
+        settingsTraktDenied = "Die Anmeldung wurde abgelehnt."
+        settingsTraktFailed = "Verbindung fehlgeschlagen: %s"
+        rowTopPicksFor = "Top-Tipps für %s"
+        rowBecauseYouLiked = "Weil dir %s gefallen hat"
+        rowUnwatchedInLibrary = "Noch nicht gesehen in deiner Bibliothek"
+        rowHiddenGems = "Verborgene Perlen auf deinem Server"
+        rowForgottenInLibrary = "Vor einer Weile hinzugefügt, nie gestartet"
+        rowShortTonight = "Wenig Zeit? Filme unter 100 Minuten"
+        rowPopularHousehold = "Beliebt in deinem Haushalt"
+        rowDirectedBy = "Regie: %s"
+        rowStarring = "Mit %s"
+        rateTitle = "Bewerten"
+        rateNotForMe = "Nicht meins"
+        rateLike = "Gefällt mir"
+        rateLove = "Liebe ich!"
+        rateClear = "Bewertung entfernen"
+        actionNotInterested = "Kein Interesse"
+        rateSavedLike = "Danke! Du siehst mehr wie %s."
+        rateSavedLove = "Geliebt! %s prägt deine Top-Tipps."
+        rateSavedDislike = "Verstanden. Du siehst weniger wie %s."
+        rateCleared = "Bewertung entfernt"
+        rateFailed = "Konnte nicht speichern: %s"
+        notInterestedFeedback = "%s wird nicht mehr empfohlen"
+        settingsRecommendationsSection = "Empfehlungen"
+        settingsPersonalRowOrderTitle = "Startseiten-Reihen nach meinem Verhalten sortieren"
+        settingsPersonalRowOrderDesc = "Reihen, die du nutzt, rücken nach oben. Aus, wenn du in „Startseite anpassen“ eine eigene Reihenfolge festlegst."
+        settingsResetTasteTitle = "Empfehlungen zurücksetzen"
+        settingsResetTasteDesc = "Vergisst Bewertungen, „Kein Interesse“-Titel und Reihenverlauf dieses Profils."
+        settingsResetTasteConfirm = "Zum Zurücksetzen erneut drücken."
+        settingsResetTasteDone = "Empfehlungen zurückgesetzt."
     }
     "ja" -> UiStrings(
         languageCode = "ja",
@@ -4857,6 +5041,43 @@ fun stringsForLanguage(code: String): UiStrings = when (code.lowercase()) {
         errorHttpNotFound = "サーバー上にアイテムが見つかりません (HTTP %d)"
         errorHttpAlreadyRequested = "このタイトルはすでにリクエスト済みです (HTTP %d)"
         errorHttpServer = "サーバーエラー (HTTP %d)。JellyfinとSeerrが正常に動作しているか確認してください"
+        // 0.9.8
+        rowTraktRecommended = "Traktのおすすめ"
+        settingsTraktTitle = "Traktと連携"
+        settingsTraktDesc = "このプロフィールのホームにTraktのおすすめを追加します。"
+        settingsTraktConnected = "連携済み。押すと解除します。"
+        settingsTraktCode = "スマートフォンで%1\$sを開き、%2\$sを入力してください。押すとキャンセルします。"
+        settingsTraktExpired = "コードの有効期限が切れました。押して再試行してください。"
+        settingsTraktDenied = "サインインが拒否されました。"
+        settingsTraktFailed = "連携できませんでした: %s"
+        rowTopPicksFor = "%sさんへのおすすめ"
+        rowBecauseYouLiked = "「%s」が好きなあなたへ"
+        rowUnwatchedInLibrary = "ライブラリの未視聴作品"
+        rowHiddenGems = "サーバーの隠れた名作"
+        rowForgottenInLibrary = "追加したまま未再生"
+        rowShortTonight = "時間がない夜に：100分以内の映画"
+        rowPopularHousehold = "ご家族に人気"
+        rowDirectedBy = "%s監督作品"
+        rowStarring = "%s出演作品"
+        rateTitle = "評価"
+        rateNotForMe = "好みではない"
+        rateLike = "好き"
+        rateLove = "大好き！"
+        rateClear = "評価を削除"
+        actionNotInterested = "興味なし"
+        rateSavedLike = "ありがとう！「%s」に似た作品を増やします。"
+        rateSavedLove = "大好き！「%s」をおすすめに反映します。"
+        rateSavedDislike = "了解。「%s」に似た作品を減らします。"
+        rateCleared = "評価を削除しました"
+        rateFailed = "保存できませんでした: %s"
+        notInterestedFeedback = "「%s」はおすすめに表示されなくなります"
+        settingsRecommendationsSection = "おすすめ"
+        settingsPersonalRowOrderTitle = "視聴傾向でホームの列を並べ替え"
+        settingsPersonalRowOrderDesc = "よく使う列が上に移動します。「ホームをカスタマイズ」で並び順を設定した場合は無効です。"
+        settingsResetTasteTitle = "おすすめをリセット"
+        settingsResetTasteDesc = "このプロフィールの評価、「興味なし」、列の履歴を消去します。"
+        settingsResetTasteConfirm = "もう一度押すとリセットします。"
+        settingsResetTasteDone = "おすすめをリセットしました。"
     }
     else -> UiStrings()
 }

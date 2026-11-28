@@ -934,6 +934,70 @@ class HomeViewModel @Inject constructor(
         }
     }
 
+    // ---- Ratings & "Not interested" (0.9.8) ----
+
+    fun ratePosterTitle(item: UnifiedMediaItem, rating: com.seerflix.tv.core.data.TasteRating?) {
+        val profile = _uiState.value.profile ?: return
+        _uiState.update { it.copy(posterMenuTarget = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.rateTitle(profile.jellyfinUserId, item, rating)
+                .onSuccess {
+                    if (rating == com.seerflix.tv.core.data.TasteRating.DISLIKE) removeFromDiscoveryRows(item)
+                    val s = strings
+                    val title = item.seriesName ?: item.title
+                    showActionFeedback(
+                        when (rating) {
+                            com.seerflix.tv.core.data.TasteRating.LIKE -> s.rateSavedLike.format(title)
+                            com.seerflix.tv.core.data.TasteRating.LOVE -> s.rateSavedLove.format(title)
+                            com.seerflix.tv.core.data.TasteRating.DISLIKE -> s.rateSavedDislike.format(title)
+                            null -> s.rateCleared
+                        }
+                    )
+                }
+                .onFailure { err ->
+                    if (err is CancellationException) throw err
+                    val s = strings
+                    showActionFeedback(s.rateFailed.format(err.message ?: s.commonError))
+                }
+        }
+    }
+
+    fun markPosterNotInterested(item: UnifiedMediaItem) {
+        val profile = _uiState.value.profile ?: return
+        _uiState.update { it.copy(posterMenuTarget = null) }
+        viewModelScope.launch(Dispatchers.IO) {
+            catalogRepository.setNotInterested(profile.jellyfinUserId, item, true)
+                .onSuccess {
+                    removeFromDiscoveryRows(item)
+                    showActionFeedback(strings.notInterestedFeedback.format(item.seriesName ?: item.title))
+                }
+                .onFailure { err ->
+                    if (err is CancellationException) throw err
+                    val s = strings
+                    showActionFeedback(s.rateFailed.format(err.message ?: s.commonError))
+                }
+        }
+    }
+
+    fun onRowItemOpened(rowId: String) {
+        val profile = _uiState.value.profile ?: return
+        viewModelScope.launch(Dispatchers.IO) { catalogRepository.recordRowOpen(profile.jellyfinUserId, rowId) }
+    }
+
+    /** Takes a title out of every discovery row on screen (personal rows like My List keep it). */
+    private fun removeFromDiscoveryRows(item: UnifiedMediaItem) {
+        val key = com.seerflix.tv.core.data.DiscoveryEngine.identity(item)
+        val keep = setOf("continue_watching", "next_up", "my_list", "my_list_page", "my_list_shows", "my_list_movies", "watch_it_again")
+        _uiState.update { state ->
+            state.copy(
+                rows = state.rows.map { row ->
+                    if (row.id in keep) row
+                    else row.copy(items = row.items.filterNot { com.seerflix.tv.core.data.DiscoveryEngine.identity(it) == key })
+                }.filter { it.items.isNotEmpty() }
+            )
+        }
+    }
+
     fun openContinueWatchingOptions(item: UnifiedMediaItem) {
         _uiState.update { it.copy(continueWatchingMenuTarget = item) }
     }

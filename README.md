@@ -50,6 +50,18 @@ A native **Google TV / Android TV** app built with **Kotlin**, **Jetpack Compose
 > *Note: UI screenshots above are rendered from the real Jetpack Compose TV layouts via CashApp Paparazzi (`./gradlew testDebugUnitTest`) using synthetic poster/backdrop preview artwork.*
 
 ## Key Features
+- **Recommendations Built Around Each Profile (new in 0.9.8)**:
+  - **Top Picks for <profile>**: recommendations now come from everything the profile watched, is watching, favorited or rated, not just the last title. A title that several of your shows and movies point to ranks first, and your favourite genres break ties. Watched titles are never recommended back.
+  - **Up to three "Because you watched / liked <title>" rows**, each from a different title.
+  - **Rate titles**: a thumbs button on Details (Not for me, I like this, Love this!) and the same options in the poster menu (hold OK on a card), plus **Not interested**. Ratings steer Top Picks and the "Because you" rows; "Not for me" and "Not interested" titles disappear from discovery rows. For titles in your library, thumbs up/down are also saved to Jellyfin, so Lumen on another TV sees them.
+  - **New rows from your own library** (work in Jellyfin-only mode too): **Unwatched in Your Library**, **Hidden Gems on Your Server** (well rated, older, never played), **Added a While Ago, Never Started** and **Short on Time? Movies Under 100 Minutes**, each sorted by what the profile likes.
+  - **Directed by / Starring <person>**: the director or actor behind several of your titles.
+  - **Popular in Your Household**: what other people watched lately. Administrators see every user on the server; other profiles see the other profiles on this TV (profiles with a PIN are left out). Rating limits still apply.
+  - **Rows you use move up**: rows you open titles from drift higher on the page. Turn off in Settings → Recommendations; a hand-made order in Customize Home always wins.
+  - **No repeats**: a title shown in one discovery row isn't repeated in the next ones (Top 10 charts and your own rows are left alone).
+  - **Jellyfin-only Home**: your favourite library genres get their own rows.
+  - **Connect Trakt (optional)**: sign in with a code at trakt.tv/activate and your personal Trakt recommendations become a Home row. Needs a Trakt client secret in the build (see below).
+  - Settings → Recommendations also has **Reset recommendations**. Everything is translated in `en`, `es`, `fr`, `de` and `ja`.
 - **Safer & More Correct (new in 0.9.7)**:
   - **Profiles & parental controls**: signing in as a user whose profile is PIN-locked (Add Profile) now asks for that profile's PIN instead of opening it. Restricted profiles no longer see "Ready" titles that were promoted under an adult profile in the launcher's Watch Next row.
   - **Remote control off means off**: with "Allow remote control" turned off, Play, pause/seek and navigation commands from other Jellyfin apps are ignored and the TV no longer offers itself as a "Play on" target. Admin messages still show.
@@ -145,7 +157,9 @@ The easiest option is the APK attached to the latest [GitHub release](../../rele
 ```properties
 trakt.clientId=YOUR_CLIENT_ID
 ```
-For GitHub release builds, add it as the `TRAKT_CLIENT_ID` repository secret. Without a key those two rows fall back to TMDB popularity through Seerr. Either way, titles that aren't released yet never appear in a Top 10 row; they're in the Coming Soon rows instead.
+For GitHub release builds, add it as the `TRAKT_CLIENT_ID` repository secret.
+
+To offer **Connect Trakt** (personal recommendations), also add the app's **Client Secret** as `trakt.clientSecret=...` in `local.properties`, or as the `TRAKT_CLIENT_SECRET` repository secret. Without it the option is hidden. Like any TV app using Trakt's device sign-in, the secret ships inside the APK. Without a key those two rows fall back to TMDB popularity through Seerr. Either way, titles that aren't released yet never appear in a Top 10 row; they're in the Coming Soon rows instead.
 
 ## Tests & Screenshot Verification
 ```bash

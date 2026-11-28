@@ -163,6 +163,8 @@ data class UserProfile(
     val pinnedLibraryIds: List<String> = emptyList(),
     val hiddenHomeRowIds: List<String> = emptyList(),
     val homeRowOrder: List<String> = emptyList(),
+    /** Move Home rows this profile opens titles from higher up (only without a hand-made order). */
+    val personalizedRowOrder: Boolean = true,
     val metadataLanguage: String = "en",
     val uiLanguage: String = "en",
     /**

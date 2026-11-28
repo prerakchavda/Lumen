@@ -289,7 +289,8 @@ class AuthRepository @Inject constructor(
         mergeNextUpIntoContinueWatching: Boolean? = null,
         screensaverTimeoutMinutes: Int? = null,
         cinemaIntrosEnabled: Boolean? = null,
-        themeSongsEnabled: Boolean? = null
+        themeSongsEnabled: Boolean? = null,
+        personalizedRowOrder: Boolean? = null
     ) {
         prefs.updatePlaybackPreferences(
             autoSkipIntro = autoSkipIntro,
@@ -303,7 +304,8 @@ class AuthRepository @Inject constructor(
             mergeNextUpIntoContinueWatching = mergeNextUpIntoContinueWatching,
             screensaverTimeoutMinutes = screensaverTimeoutMinutes,
             cinemaIntrosEnabled = cinemaIntrosEnabled,
-            themeSongsEnabled = themeSongsEnabled
+            themeSongsEnabled = themeSongsEnabled,
+            personalizedRowOrder = personalizedRowOrder
         )
     }
 

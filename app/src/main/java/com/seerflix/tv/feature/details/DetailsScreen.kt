@@ -34,6 +34,12 @@ import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.outlined.ThumbUp as OutlinedThumbUp
+import androidx.compose.material.icons.filled.ThumbDown
+import androidx.compose.material.icons.filled.ThumbUp
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Flag
@@ -131,7 +137,11 @@ data class DetailsExtraActions(
     val onOpenEpisodeMenu: (EpisodeSummary) -> Unit = {},
     val onDismissEpisodeMenu: () -> Unit = {},
     val onToggleEpisodeWatched: (EpisodeSummary) -> Unit = {},
-    val onToggleSeasonWatched: () -> Unit = {}
+    val onToggleSeasonWatched: () -> Unit = {},
+    val onOpenRateMenu: () -> Unit = {},
+    val onDismissRateMenu: () -> Unit = {},
+    val onRate: (com.seerflix.tv.core.data.TasteRating?) -> Unit = {},
+    val onNotInterested: () -> Unit = {}
 )
 
 @Composable
@@ -224,7 +234,11 @@ fun DetailsScreen(
             onOpenEpisodeMenu = viewModel::openEpisodeMenu,
             onDismissEpisodeMenu = viewModel::dismissEpisodeMenu,
             onToggleEpisodeWatched = viewModel::toggleEpisodeWatched,
-            onToggleSeasonWatched = viewModel::toggleCurrentSeasonWatched
+            onToggleSeasonWatched = viewModel::toggleCurrentSeasonWatched,
+            onOpenRateMenu = viewModel::openRateMenu,
+            onDismissRateMenu = viewModel::dismissRateMenu,
+            onRate = viewModel::rateTitle,
+            onNotInterested = viewModel::markNotInterested
         )
     )
 }
@@ -388,7 +402,9 @@ fun DetailsContent(
                                     resolvePlayTarget()?.let { (id, src) -> onPlayItem(id, src) }
                                 }
                             },
-                            onOpenDeleteConfirm = extraActions.onOpenDeleteConfirm
+                            onOpenDeleteConfirm = extraActions.onOpenDeleteConfirm,
+                            tasteRating = state.tasteRating,
+                            onOpenRateMenu = extraActions.onOpenRateMenu
                         )
                     }
 
@@ -658,6 +674,15 @@ fun DetailsContent(
         )
     }
 
+    if (state.showRateMenu && state.item != null) {
+        DetailsRateMenu(
+            title = state.item.seriesName ?: state.item.title,
+            current = state.tasteRating,
+            onRate = extraActions.onRate,
+            onNotInterested = extraActions.onNotInterested,
+            onDismiss = extraActions.onDismissRateMenu
+        )
+    }
     if (state.showPlaylistDialog && state.item != null) {
         AddToPlaylistDialog(
             itemTitle = state.item!!.title,
@@ -1145,7 +1170,9 @@ private fun DetailsHeaderSection(
     onOpenPlaylistDialog: () -> Unit = {},
     onOpenMediaInfo: () -> Unit = {},
     onOpenTrackPicker: () -> Unit = {},
-    onOpenDeleteConfirm: () -> Unit = {}
+    onOpenDeleteConfirm: () -> Unit = {},
+    tasteRating: com.seerflix.tv.core.data.TasteRating? = null,
+    onOpenRateMenu: () -> Unit = {}
 ) {
     val colors = SeerflixTokens.colors
     val spec = SeerflixTokens.spec
@@ -1417,6 +1444,14 @@ private fun DetailsHeaderSection(
                     )
                 }
 
+                if (!isRefining) {
+                    RateCircleButton(
+                        rating = tasteRating,
+                        onClick = onOpenRateMenu,
+                        modifier = Modifier.trackActionFocus("act_rate")
+                    )
+                }
+
                 if (isRefining) {
                     // Request / My List / More take these slots once availability is known.
                     SkeletonPill(if (canPlay) 120.dp else 170.dp)
@@ -1497,6 +1532,60 @@ private fun DetailsHeaderSection(
 }
 
 private class MoreAction(val icon: ImageVector, val label: String, val onClick: () -> Unit)
+
+/** Netflix-style thumbs button: shows the current rating, opens the rating menu. */
+@Composable
+private fun RateCircleButton(
+    rating: com.seerflix.tv.core.data.TasteRating?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = SeerflixTokens.colors
+    val strings = AppStrings.current
+    var focused by remember { mutableStateOf(false) }
+    val icon = when (rating) {
+        com.seerflix.tv.core.data.TasteRating.LOVE -> Icons.Filled.Favorite
+        com.seerflix.tv.core.data.TasteRating.DISLIKE -> Icons.Filled.ThumbDown
+        com.seerflix.tv.core.data.TasteRating.LIKE -> Icons.Filled.ThumbUp
+        null -> Icons.Outlined.OutlinedThumbUp
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(if (focused) colors.secondaryButtonFocusedBg else colors.secondaryButtonBg)
+            .border(if (focused) 2.dp else 1.dp, if (focused) colors.focusBorder else colors.badgeBorder.copy(alpha = 0.65f), CircleShape)
+            .onFocusChanged { focused = it.isFocused || it.hasFocus }
+            .clickable(onClick = onClick)
+    ) {
+        Icon(icon, contentDescription = strings.rateTitle, tint = colors.white, modifier = Modifier.size(20.dp))
+    }
+}
+
+/** The rating choices, in the same focus-trapped menu style as "More". */
+@Composable
+private fun DetailsRateMenu(
+    title: String,
+    current: com.seerflix.tv.core.data.TasteRating?,
+    onRate: (com.seerflix.tv.core.data.TasteRating?) -> Unit,
+    onNotInterested: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val strings = AppStrings.current
+    fun iconFor(r: com.seerflix.tv.core.data.TasteRating, base: ImageVector) = if (current == r) Icons.Filled.Check else base
+    DetailsMoreMenu(
+        title = title,
+        actions = buildList {
+            add(MoreAction(iconFor(com.seerflix.tv.core.data.TasteRating.DISLIKE, Icons.Filled.ThumbDown), strings.rateNotForMe) { onRate(com.seerflix.tv.core.data.TasteRating.DISLIKE) })
+            add(MoreAction(iconFor(com.seerflix.tv.core.data.TasteRating.LIKE, Icons.Filled.ThumbUp), strings.rateLike) { onRate(com.seerflix.tv.core.data.TasteRating.LIKE) })
+            add(MoreAction(iconFor(com.seerflix.tv.core.data.TasteRating.LOVE, Icons.Filled.Favorite), strings.rateLove) { onRate(com.seerflix.tv.core.data.TasteRating.LOVE) })
+            if (current != null) add(MoreAction(Icons.Filled.Close, strings.rateClear) { onRate(null) })
+            add(MoreAction(Icons.Filled.Block, strings.actionNotInterested, onNotInterested))
+        },
+        onDismiss = onDismiss
+    )
+}
 
 /** The Details "More" menu: every secondary action in one focus-trapped list. */
 @Composable

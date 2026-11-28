@@ -43,7 +43,16 @@ data class SettingsUiState(
     /** The extra Jellyfin servers merged into the library, with their state for this profile. */
     val servers: List<ServerStatus> = emptyList(),
     /** Server whose "Remove" was pressed once; a second press removes it. */
-    val pendingRemoveServerId: String? = null
+    val pendingRemoveServerId: String? = null,
+    /** "Reset recommendations" was pressed once; a second press resets. */
+    val tasteResetPending: Boolean = false,
+    val tasteResetDone: Boolean = false,
+    /** The build has a Trakt client id + secret ("Connect Trakt" is offered). */
+    val traktAvailable: Boolean = false,
+    val traktConnected: Boolean = false,
+    /** Sign-in in progress: the code and URL to show. */
+    val traktCode: com.seerflix.tv.core.network.TraktDeviceCodeDto? = null,
+    val traktMessage: String? = null
 )
 
 @HiltViewModel
@@ -53,7 +62,8 @@ class SettingsViewModel @Inject constructor(
     private val capabilityProvider: DeviceCapabilityProvider,
     private val diagnostics: DiagnosticsRepository,
     private val socketClient: JellyfinSocketClient,
-    private val serverAccounts: ServerAccountRepository
+    private val serverAccounts: ServerAccountRepository,
+    private val traktAccount: com.seerflix.tv.core.data.TraktAccount
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -61,7 +71,10 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            authRepository.activeProfileFlow.collect { p -> _uiState.update { it.copy(profile = p) } }
+            authRepository.activeProfileFlow.collect { p ->
+                _uiState.update { it.copy(profile = p) }
+                refreshTraktState()
+            }
         }
         viewModelScope.launch {
             prefs.matchDeviceCapabilitiesFlow.collect { v -> _uiState.update { it.copy(matchDeviceCapabilities = v) } }
@@ -165,6 +178,77 @@ class SettingsViewModel @Inject constructor(
 
     fun setThemeSongsEnabled(enabled: Boolean) = viewModelScope.launch {
         authRepository.updatePlaybackPreferences(themeSongsEnabled = enabled)
+    }
+
+    private val strings: com.seerflix.tv.core.i18n.UiStrings
+        get() = com.seerflix.tv.core.i18n.stringsForLanguage(prefs.cachedUiLanguage)
+
+    private var traktSignInJob: kotlinx.coroutines.Job? = null
+
+    private fun refreshTraktState() {
+        val profile = _uiState.value.profile ?: return
+        viewModelScope.launch {
+            val connected = traktAccount.isConnected(profile.jellyfinUserId)
+            _uiState.update { it.copy(traktAvailable = traktAccount.isAvailable, traktConnected = connected) }
+        }
+    }
+
+    /** Connect (shows a code to enter at trakt.tv/activate), cancel a sign-in, or disconnect. */
+    fun onTraktPressed() {
+        val profile = _uiState.value.profile ?: return
+        val userId = profile.jellyfinUserId
+        val state = _uiState.value
+        when {
+            state.traktCode != null -> {
+                traktSignInJob?.cancel()
+                _uiState.update { it.copy(traktCode = null, traktMessage = null) }
+            }
+            state.traktConnected -> viewModelScope.launch {
+                traktAccount.disconnect(userId)
+                _uiState.update { it.copy(traktConnected = false, traktMessage = null) }
+            }
+            else -> {
+                traktSignInJob?.cancel()
+                traktSignInJob = viewModelScope.launch {
+                    val s = strings
+                    val code = traktAccount.startSignIn().getOrElse { err ->
+                        _uiState.update { it.copy(traktMessage = s.settingsTraktFailed.format(err.message ?: s.commonError)) }
+                        return@launch
+                    }
+                    _uiState.update { it.copy(traktCode = code, traktMessage = null) }
+                    val result = traktAccount.awaitSignIn(userId, code)
+                    _uiState.update {
+                        when (result) {
+                            com.seerflix.tv.core.data.TraktAccount.SignInResult.Connected ->
+                                it.copy(traktCode = null, traktConnected = true, traktMessage = null)
+                            com.seerflix.tv.core.data.TraktAccount.SignInResult.Expired ->
+                                it.copy(traktCode = null, traktMessage = s.settingsTraktExpired)
+                            com.seerflix.tv.core.data.TraktAccount.SignInResult.Denied ->
+                                it.copy(traktCode = null, traktMessage = s.settingsTraktDenied)
+                            is com.seerflix.tv.core.data.TraktAccount.SignInResult.Failed ->
+                                it.copy(traktCode = null, traktMessage = s.settingsTraktFailed.format(result.message))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun setPersonalizedRowOrder(enabled: Boolean) = viewModelScope.launch {
+        authRepository.updatePlaybackPreferences(personalizedRowOrder = enabled)
+    }
+
+    /** First press asks to confirm; the second forgets ratings, "Not interested" and row history. */
+    fun resetRecommendations() {
+        val profile = _uiState.value.profile ?: return
+        if (!_uiState.value.tasteResetPending) {
+            _uiState.update { it.copy(tasteResetPending = true, tasteResetDone = false) }
+            return
+        }
+        viewModelScope.launch {
+            prefs.updateTaste(profile.jellyfinUserId) { com.seerflix.tv.core.data.TasteData() }
+            _uiState.update { it.copy(tasteResetPending = false, tasteResetDone = true) }
+        }
     }
 
     fun setMergeNextUpIntoContinueWatching(enabled: Boolean) = viewModelScope.launch {

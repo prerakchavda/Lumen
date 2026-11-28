@@ -162,15 +162,22 @@ internal class JellyfinAuthInterceptor(
             path.endsWith("/QuickConnect/Connect", ignoreCase = true)
         // Each server only ever sees its own token (the routing interceptor tagged the request).
         val serverId = chain.request().tag(JellyfinServerTag::class.java)?.serverId ?: ServerScopedId.HOME
-        val token = if (isSignInCall) null else prefs.tokenFor(serverId)
+        // "Popular in Your Household" reads another profile on this TV with that profile's own
+        // token; the override never leaves the device as a header of its own.
+        val overrideToken = chain.request().header(JELLYFIN_USER_TOKEN_HEADER)?.takeIf { it.isNotBlank() }
+        val token = if (isSignInCall) null else overrideToken ?: prefs.tokenFor(serverId)
         val authHeader = buildJellyfinAuthHeader(prefs.cachedDeviceId, token)
         val request = chain.request().newBuilder()
+            .removeHeader(JELLYFIN_USER_TOKEN_HEADER)
             .header("Authorization", authHeader)
             .header("Accept", "application/json")
             .build()
         return chain.proceed(request)
     }
 }
+
+/** Per-request token override for [JellyfinAuthInterceptor] (stripped before sending). */
+const val JELLYFIN_USER_TOKEN_HEADER = "X-Lumen-User-Token"
 
 /**
  * Standard Jellyfin client authorization header value
@@ -373,6 +380,7 @@ object NetworkModule {
     private fun loggingInterceptor(): HttpLoggingInterceptor = HttpLoggingInterceptor().apply {
         level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC else HttpLoggingInterceptor.Level.NONE
         redactHeader("Authorization")
+        redactHeader(JELLYFIN_USER_TOKEN_HEADER)
         redactHeader("X-Api-Key")
         redactHeader("Cookie")
         redactHeader("Set-Cookie")

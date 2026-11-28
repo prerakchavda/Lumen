@@ -18,8 +18,8 @@ android {
         applicationId = "com.seerflix.tv"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.9.7"
+        versionCode = 17
+        versionName = "0.9.8"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -32,6 +32,13 @@ android {
             ?: localProps.getProperty("trakt.clientId") ?: "")
             .trim().replace("\"", "")
         buildConfigField("String", "TRAKT_CLIENT_ID", "\"$traktClientId\"")
+        // Trakt client secret for "Connect Trakt" (personal recommendations). Same sources as the id:
+        // `trakt.clientSecret=...` in local.properties or the TRAKT_CLIENT_SECRET env var. Blank =
+        // the Connect Trakt option is hidden; the public charts still work with the id alone.
+        val traktClientSecret = (System.getenv("TRAKT_CLIENT_SECRET")?.takeIf { it.isNotBlank() }
+            ?: localProps.getProperty("trakt.clientSecret") ?: "")
+            .trim().replace("\"", "")
+        buildConfigField("String", "TRAKT_CLIENT_SECRET", "\"$traktClientSecret\"")
     }
 
     signingConfigs {

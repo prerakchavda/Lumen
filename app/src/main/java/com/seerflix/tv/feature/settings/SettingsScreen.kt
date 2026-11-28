@@ -168,6 +168,43 @@ fun SettingsScreen(
                 )
             }
 
+            // ---- Recommendations (0.9.8) ----
+            item { SectionHeader(strings.settingsRecommendationsSection) }
+            item {
+                ToggleRow(
+                    strings.settingsPersonalRowOrderTitle, strings.settingsPersonalRowOrderDesc,
+                    profile.personalizedRowOrder,
+                    { viewModel.setPersonalizedRowOrder(!profile.personalizedRowOrder) },
+                    strings
+                )
+            }
+            item {
+                ActionRow(
+                    strings.settingsResetTasteTitle,
+                    when {
+                        state.tasteResetPending -> strings.settingsResetTasteConfirm
+                        state.tasteResetDone -> strings.settingsResetTasteDone
+                        else -> strings.settingsResetTasteDesc
+                    },
+                    onClick = viewModel::resetRecommendations
+                )
+            }
+            if (state.traktAvailable) {
+                item {
+                    val code = state.traktCode
+                    ActionRow(
+                        strings.settingsTraktTitle,
+                        when {
+                            code != null -> strings.settingsTraktCode.format(code.verificationUrl, code.userCode)
+                            state.traktMessage != null -> state.traktMessage
+                            state.traktConnected -> strings.settingsTraktConnected
+                            else -> strings.settingsTraktDesc
+                        },
+                        onClick = viewModel::onTraktPressed
+                    )
+                }
+            }
+
             // ---- Subtitles ----
             item { SectionHeader(strings.settingsSubtitlesSection) }
             item {

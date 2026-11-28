@@ -419,6 +419,16 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         TraktWatchedShowDto(watcherCount = 1000 - tmdb, show = TraktTitleDto("Trakt $tmdb", 2024, TraktIdsDto(tmdb = tmdb)))
 
     private class FakeTraktApi : TraktApi {
+        override suspend fun deviceCode(body: com.seerflix.tv.core.network.TraktDeviceCodeRequest) =
+            com.seerflix.tv.core.network.TraktDeviceCodeDto()
+        override suspend fun deviceToken(body: com.seerflix.tv.core.network.TraktDeviceTokenRequest):
+            retrofit2.Response<com.seerflix.tv.core.network.TraktTokenDto> = throw UnsupportedOperationException()
+        override suspend fun refreshToken(body: com.seerflix.tv.core.network.TraktRefreshRequest) =
+            com.seerflix.tv.core.network.TraktTokenDto()
+        override suspend fun recommendedMovies(bearer: String, limit: Int, ignoreCollected: Boolean, ignoreWatchlisted: Boolean) =
+            emptyList<TraktTitleDto>()
+        override suspend fun recommendedShows(bearer: String, limit: Int, ignoreCollected: Boolean, ignoreWatchlisted: Boolean) =
+            emptyList<TraktTitleDto>()
         var movies: List<TraktWatchedMovieDto> = emptyList()
         var shows: List<TraktWatchedShowDto> = emptyList()
         var fail = false
@@ -893,6 +903,74 @@ class UnifiedCatalogRepositoryDiscoveryTest {
         assertFalse(comingHome.items.any { it.title == "In Theaters Only" })
     }
 
+    // ---- Personalized discovery (0.9.8) ----
+
+    private fun ownedMovie(id: String, tmdb: Int, genres: List<String>, played: Boolean = false) = JellyfinItemDto(
+        id = id,
+        name = "Owned $tmdb",
+        type = "Movie",
+        genres = genres,
+        communityRating = 7.5,
+        providerIds = mapOf("Tmdb" to tmdb.toString()),
+        userData = com.seerflix.tv.core.network.JellyfinUserDataDto(
+            played = played,
+            lastPlayedDate = if (played) "2026-03-30T20:00:00Z" else null
+        )
+    )
+
+    @Test
+    fun `top picks merge every watched title and ratings reshape Home`() = runTest {
+        val first = ownedMovie("jf1", 1, listOf("Action"), played = true)
+        val second = ownedMovie("jf2", 2, listOf("Action"), played = true)
+        val ownedRec = ownedMovie("jf60", 60, listOf("Action"))
+        jellyfinApi.libraryItems = listOf(first, second, ownedRec)
+        jellyfinApi.playedItems = listOf(first, second)
+        seerrApi.movieRecommendations = mapOf(
+            1 to (listOf(50) + (10..15)).map { movieResult(it, "Rec $it", "2020-01-01") },
+            2 to (listOf(50, 60) + (20..25)).map { movieResult(it, "Rec $it", "2020-01-01") }
+        )
+        val profile = com.seerflix.tv.core.model.UserProfile(id = "p1", name = "Alex", jellyfinUserId = "u1", jellyfinToken = "t")
+
+        val rows = repository.loadHomeRows(userId = "u1", activeProfile = profile, today = fixedToday)
+
+        val picks = rows.first { it.id == "todays_top_picks" }
+        assertEquals("Top Picks for Alex", picks.title)
+        // Recommended by both watched titles: ranked first. Seeds are never recommended back.
+        assertEquals(50, picks.items.first().tmdbId)
+        assertFalse(picks.items.any { it.tmdbId == 1 || it.tmdbId == 2 })
+        val because = rows.filter { it.id.startsWith("because_you_watched") }
+        assertEquals(2, because.size)
+        assertTrue(because.all { it.title.startsWith("Because you watched Owned ") })
+
+        // Thumbs down: gone from every row. Thumbs up on an owned title is mirrored to Jellyfin.
+        repository.rateTitle("u1", picks.items.first(), TasteRating.DISLIKE).getOrThrow()
+        repository.rateTitle("u1", movieResult(60, "Rec 60", "2020-01-01").let {
+            com.seerflix.tv.core.model.UnifiedMediaItem(id = "tmdb_60", tmdbId = 60, mediaType = MediaType.MOVIE, title = "Rec 60")
+        }, TasteRating.LIKE).getOrThrow()
+        assertEquals(true, jellyfinApi.ratedItems["jf60"])
+
+        val after = repository.loadHomeRows(userId = "u1", activeProfile = profile, today = fixedToday)
+        assertFalse(after.flatMap { it.items }.any { it.tmdbId == 50 })
+        assertEquals(TasteRating.LIKE, repository.ratingFor("u1", com.seerflix.tv.core.model.UnifiedMediaItem(id = "jf60", jellyfinId = "jf60", mediaType = MediaType.MOVIE, title = "x")))
+
+        // "Not interested" hides a title too.
+        val target = after.first { it.id == "todays_top_picks" }.items.first()
+        repository.setNotInterested("u1", target, true).getOrThrow()
+        val hidden = repository.loadHomeRows(userId = "u1", activeProfile = profile, today = fixedToday)
+        assertFalse(hidden.filter { it.id != "my_list" }.flatMap { it.items }.any { it.id == target.id })
+    }
+
+    @Test
+    fun `library rows surface unwatched titles from the index`() = runTest {
+        jellyfinApi.libraryItems = (1..8).map { ownedMovie("jf$it", 100 + it, listOf("Drama")) }
+
+        val rows = repository.loadHomeRows(userId = "u1", today = fixedToday)
+
+        val unwatched = rows.first { it.id == "unwatched_in_library" }
+        assertEquals(8, unwatched.items.size)
+        assertTrue(unwatched.items.all { it.jellyfinId != null && !it.isWatched })
+    }
+
     private fun movieDetailsWithReleases(
         id: Int,
         title: String,
@@ -1039,6 +1117,25 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             limit: Int
         ) = JellyfinItemsResponse(playedItems, playedItems.size)
 
+        val ratedItems = mutableMapOf<String, Boolean?>()
+        override suspend fun updateUserItemRating(userId: String, itemId: String, likes: Boolean) { ratedItems[itemId] = likes }
+        override suspend fun deleteUserItemRating(userId: String, itemId: String) { ratedItems[itemId] = null }
+        var serverUsers: List<JellyfinUserDto> = emptyList()
+        override suspend fun getUsers(): List<JellyfinUserDto> = serverUsers
+        var playedByUser: Map<String, List<JellyfinItemDto>> = emptyMap()
+        override suspend fun getRecentlyPlayedForUser(
+            userToken: String?,
+            userId: String,
+            filters: String,
+            recursive: Boolean,
+            includeItemTypes: String,
+            fields: String,
+            sortBy: String,
+            sortOrder: String,
+            limit: Int,
+            enableImages: Boolean,
+            enableTotalRecordCount: Boolean
+        ) = JellyfinItemsResponse(playedByUser[userId].orEmpty(), playedByUser[userId].orEmpty().size)
         override suspend fun addFavorite(userId: String, itemId: String) = Unit
         override suspend fun removeFavorite(userId: String, itemId: String) = Unit
         override suspend fun updateUserData(userId: String, itemId: String, body: JellyfinUpdateUserDataRequest) = Unit
@@ -1243,7 +1340,9 @@ class UnifiedCatalogRepositoryDiscoveryTest {
             seasonDetailsHandler(tvId, seasonNumber)
         override suspend fun getCollectionDetails(collectionId: Int, language: String) =
             collectionDetailsHandler(collectionId)
-        override suspend fun getMovieRecommendations(movieId: Int, page: Int, language: String) = SeerrDiscoverPageDto()
+        var movieRecommendations: Map<Int, List<SeerrMediaResultDto>> = emptyMap()
+        override suspend fun getMovieRecommendations(movieId: Int, page: Int, language: String) =
+            SeerrDiscoverPageDto(results = movieRecommendations[movieId].orEmpty())
         override suspend fun getTvRecommendations(tvId: Int, page: Int, language: String) = SeerrDiscoverPageDto()
         override suspend fun search(query: String, page: Int, language: String) = searchHandler(query)
         override suspend fun getPersonDetails(personId: Int, language: String) =
