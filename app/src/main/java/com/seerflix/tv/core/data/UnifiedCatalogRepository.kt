@@ -1,5 +1,7 @@
 package com.seerflix.tv.core.data
 
+import com.seerflix.tv.core.i18n.UiStrings
+import com.seerflix.tv.core.i18n.stringsForLanguage
 import com.seerflix.tv.core.model.ArrQualityProfile
 import com.seerflix.tv.core.model.ArrServerOption
 import com.seerflix.tv.core.model.AvailabilityFilter
@@ -69,7 +71,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.Instant
@@ -77,6 +81,8 @@ import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -99,6 +105,11 @@ class UnifiedCatalogRepository @Inject constructor(
     /** "Connect Trakt" recommendations; null (unit tests) or not connected = no Trakt row. */
     private val traktAccount: TraktAccount? = null
 ) {
+    init {
+        // formatHttpError() is static; let it follow the active profile's language.
+        uiLanguageSource = { prefs.cachedUiLanguage.ifBlank { "en" } }
+    }
+
     /**
      * Snapshot of one Jellyfin user's owned Movies/Series plus the lookup maps derived from it.
      * Swapped atomically so readers never see a half-built index.
@@ -115,12 +126,18 @@ class UnifiedCatalogRepository @Inject constructor(
         val movies: Map<Int, JellyfinItemDto>
         val series: Map<Int, JellyfinItemDto>
         val seriesTmdbByJellyfinId: Map<String, Int>
+        /** Owned series by Jellyfin id, every server's copy included (episode rating/genre fallback). */
+        val seriesById: Map<String, JellyfinItemDto>
         val byId: Map<String, JellyfinItemDto> by lazy(LazyThreadSafetyMode.PUBLICATION) { items.associateBy { it.id } }
 
         init {
             val m = HashMap<Int, JellyfinItemDto>(items.size)
             val s = HashMap<Int, JellyfinItemDto>(items.size)
+            val byId = HashMap<String, JellyfinItemDto>()
             items.forEach { dto ->
+                if (dto.type.equals("Series", ignoreCase = true)) {
+                    links.copiesOf(dto.id).forEach { copyId -> byId.putIfAbsent(copyId, dto) }
+                }
                 val tmdb = dto.providerIds["Tmdb"]?.toIntOrNull()
                     ?: dto.providerIds["tmdb"]?.toIntOrNull()
                 if (tmdb != null) {
@@ -138,6 +155,7 @@ class UnifiedCatalogRepository @Inject constructor(
             movies = m
             series = s
             seriesTmdbByJellyfinId = bySeriesId
+            seriesById = byId
         }
     }
 
@@ -148,12 +166,20 @@ class UnifiedCatalogRepository @Inject constructor(
     @Volatile
     private var requestedIndexUserId: String? = null
 
+    /**
+     * The index, unless it belongs to another Jellyfin user than the one last asked for (right
+     * after a profile switch, before the new user's copy is in): never match against another
+     * user's library.
+     */
+    private val currentIndex: LibraryIndex?
+        get() = libraryIndex?.takeIf { idx -> requestedIndexUserId.let { it == null || it == idx.userId } }
+
     private val tmdbToJellyfinMovie: Map<Int, JellyfinItemDto>
-        get() = libraryIndex?.movies.orEmpty()
+        get() = currentIndex?.movies.orEmpty()
     private val tmdbToJellyfinSeries: Map<Int, JellyfinItemDto>
-        get() = libraryIndex?.series.orEmpty()
+        get() = currentIndex?.series.orEmpty()
     private val allLibraryItems: List<JellyfinItemDto>
-        get() = libraryIndex?.items.orEmpty()
+        get() = currentIndex?.items.orEmpty()
 
     /** Index fetches outlive the (cancellable) caller that started them: others may be awaiting. */
     private val indexScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -218,10 +244,31 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
+    /**
+     * Whether [profile] may see the owned movie / series [jellyfinId], with the same rating check
+     * as every row (e.g. a launcher "Ready" promotion made while another profile was active).
+     * A restricted profile is not allowed a title the current library index doesn't know.
+     */
+    fun isLibraryTitleAllowed(jellyfinId: String, profile: UserProfile?): Boolean {
+        if (profile == null || !profile.isRestricted) return true
+        val dto = currentIndex?.items?.firstOrNull { it.id == jellyfinId } ?: return false
+        return ContentRatingHelper.isAllowed(dto.officialRating, dto.genres, profile)
+    }
+
+    /**
+     * The indexed parent series of an episode whose own rating or genres are missing: Jellyfin keeps
+     * them on the series, and an unrated episode would be hidden from every restricted profile.
+     */
+    private fun seriesForRatingFallback(dto: JellyfinItemDto): JellyfinItemDto? {
+        if (!dto.officialRating.isNullOrBlank() && dto.genres.isNotEmpty()) return null
+        val seriesId = dto.seriesId?.takeIf { it.isNotBlank() } ?: return null
+        return currentIndex?.seriesById?.get(seriesId)
+    }
+
     /** TMDB id of an owned series given its Jellyfin item id (episodes only carry their own TMDB id). */
     private fun seriesTmdbIdFor(seriesId: String?): Int? {
         if (seriesId.isNullOrBlank()) return null
-        return libraryIndex?.seriesTmdbByJellyfinId?.get(seriesId)
+        return currentIndex?.seriesTmdbByJellyfinId?.get(seriesId)
     }
 
     /**
@@ -274,9 +321,11 @@ class UnifiedCatalogRepository @Inject constructor(
             return
         }
         if (serverWithoutIndex && syncIndexWithServers(userId)) {
-            // A server was just added (or signed in to) and nothing of it is cached yet.
-            startIndexFetch(userId).await()
-            return
+            // A server was just added (or signed in to) and nothing of it is cached yet: fetch
+            // only the missing shares (not the whole home library again), and at most once per
+            // cooldown per server, so a server whose library query keeps failing can't make every
+            // screen load wait on it.
+            fetchMissingExtraParts(userId)
         }
         if (System.currentTimeMillis() - current.fetchedAtMs < LIBRARY_INDEX_TTL_MS) return
         if (policy == IndexPolicy.BLOCK_IF_STALE) {
@@ -498,6 +547,28 @@ class UnifiedCatalogRepository @Inject constructor(
         return true
     }
 
+    /** Last attempt to fetch an extra server's missing share, by server id. */
+    private val extraPartAttemptAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    private suspend fun fetchMissingExtraParts(userId: String) {
+        val now = System.currentTimeMillis()
+        val missing = servers?.availableExtras().orEmpty().filter { session ->
+            extraIndexParts[session.id]?.ownerKey != extraPartKey(userId, session) &&
+                now - (extraPartAttemptAtMs[session.id] ?: 0L) > EXTRA_PART_RETRY_COOLDOWN_MS
+        }
+        if (missing.isEmpty()) return
+        missing.forEach { extraPartAttemptAtMs[it.id] = now }
+        val fetches = missing.map { session -> indexScope.async { fetchExtraIndexPart(userId, session) } }
+        // Same wait as a full fetch; a slower share is merged in when it arrives.
+        val results = withTimeoutOrNull(EXTRA_INDEX_WAIT_MS) { fetches.awaitAll() }
+        if (results?.any { it } == true || (results == null && fetches.any { it.isCompleted })) {
+            remergeIndex(userId)
+        }
+        fetches.filterNot { it.isCompleted }.forEach { pending ->
+            indexScope.launch { if (pending.await()) remergeIndex(userId) }
+        }
+    }
+
     /** Rebuilds the current index from the cached shares (a late share arrived). */
     private fun remergeIndex(userId: String) {
         synchronized(indexLock) {
@@ -544,6 +615,18 @@ class UnifiedCatalogRepository @Inject constructor(
         else servers?.callExtra(session, timeoutMs, block)
 
     /**
+     * [onServer] for a secondary part of a screen (a row, extra credits): an extra server that is
+     * offline or backing off is skipped right away, any other is time-boxed like the merged rows.
+     */
+    private suspend fun <T : Any> onServerForRow(
+        session: ServerSession,
+        block: suspend (ServerSession) -> T
+    ): T? {
+        if (!session.isHome && servers?.isAvailable(session.id) == false) return null
+        return onServer(session, ROW_EXTRA_TIMEOUT_MS, block)
+    }
+
+    /**
      * A list every server contributes to. With no extra server this is exactly [home] (result or
      * failure). Otherwise the extra servers are asked in parallel within [timeoutMs]; whatever came
      * back in time is merged with the home list (one entry per title, most recent watch state),
@@ -573,7 +656,9 @@ class UnifiedCatalogRepository @Inject constructor(
     ).take(limit)
 
     private suspend fun nextUpDtos(userId: String, limit: Int): List<JellyfinItemDto> = mergedItems(
-        order = CrossServerMerge.Order.LAST_PLAYED,
+        // Next Up episodes are unplayed (no play date), so LAST_PLAYED kept the home list first and
+        // take(limit) cut every other server's entries.
+        order = CrossServerMerge.Order.INTERLEAVE,
         extra = { s -> s.api.getNextUp(userId = s.userId, limit = limit).items },
         home = { jellyfinApi.getNextUp(userId = userId, limit = limit).items }
     ).take(limit)
@@ -674,12 +759,14 @@ class UnifiedCatalogRepository @Inject constructor(
                 // the series are asked for the season by its number.
                 val ownSeasonId = seasonId?.takeIf { session.owns(it) }
                 onServer(session) { s ->
-                    if (ownSeasonId != null || seriesCopies.size == 1) {
+                    // Without a season id, ask by number even on a single server: an unfiltered
+                    // getEpisodes fetched every episode of the series just to keep one season.
+                    if (ownSeasonId != null) {
                         s.api.getEpisodes(
                             seriesId = s.raw(copyId),
                             userId = s.userId,
-                            seasonId = ownSeasonId?.let { s.raw(it) }
-                        ).items.filter { it.parentIndexNumber == seasonNumber || ownSeasonId != null }
+                            seasonId = s.raw(ownSeasonId)
+                        ).items
                     } else {
                         s.api.getEpisodesBySeasonNumber(
                             seriesId = s.raw(copyId),
@@ -761,6 +848,14 @@ class UnifiedCatalogRepository @Inject constructor(
         return dtos.map { dto -> overviews[dto.id]?.let { dto.copy(overview = it) } ?: dto }
     }
 
+    /**
+     * Rating gate on a raw index item, applied before a row built from the index is capped: the
+     * parental filter on the finished row would otherwise leave a restricted profile with the few
+     * allowed titles that happened to fall inside the cap.
+     */
+    private fun JellyfinItemDto.allowedFor(profile: UserProfile?): Boolean =
+        ContentRatingHelper.isAllowed(officialRating, genres, profile)
+
     private fun matchesGenreLabel(dto: JellyfinItemDto, genre: GenreFilterOption): Boolean {
         val needle = genre.label.substringBefore(" ")
         return dto.genres.any { g -> g.contains(needle, ignoreCase = true) }
@@ -802,12 +897,39 @@ class UnifiedCatalogRepository @Inject constructor(
             episodeIds.all { ServerScopedId.serverOf(it) == seasonServer }
         if (seasonCoversAll) {
             markWatched(userId, jellyfinSeasonId!!, watched).getOrThrow()
+            // The shown state is the most recently played copy's, so the same season still played
+            // on another server would bring every tick back: clear it there too.
+            if (!watched) markSeasonUnplayedOnOtherServers(userId, jellyfinSeasonId)
         } else {
             coroutineScope {
                 episodeIds.distinct()
                     .map { epId -> async { markWatched(userId, epId, watched).getOrThrow() } }
                     .awaitAll()
             }
+        }
+    }
+
+    /** Best effort: marks the season numbered like [seasonId] unplayed on every other copy of its series. */
+    private suspend fun markSeasonUnplayedOnOtherServers(userId: String, seasonId: String) {
+        if (links.isEmpty) return // a single server: nothing to keep in step
+        val season = fetchItem(userId, seasonId) ?: return
+        val seriesId = season.seriesId ?: return
+        val number = season.indexNumber ?: return
+        val seasonServer = ServerScopedId.serverOf(seasonId)
+        val others = links.copiesOf(seriesId).filter { ServerScopedId.serverOf(it) != seasonServer }
+        if (others.isEmpty()) return
+        coroutineScope {
+            others.map { copyId ->
+                async {
+                    val session = sessionFor(copyId, userId) ?: return@async
+                    onServerForRow(session) { s ->
+                        val match = s.api.getSeasons(s.raw(copyId), s.userId).items
+                            .firstOrNull { it.indexNumber == number } ?: return@onServerForRow Unit
+                        s.api.markUnplayed(s.userId, match.id)
+                        Unit
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -887,12 +1009,13 @@ class UnifiedCatalogRepository @Inject constructor(
         activeProfile: UserProfile? = null
     ): List<UnifiedMediaItem> {
         val session = requireSession(playlistId, userId)
-        val items = runCatchingCancellable {
-            session.api.getPlaylistItems(
-                playlistId = session.raw(playlistId),
-                userId = session.userId
-            ).items.scopedTo(session.id).map { mapJellyfinItem(it) }
-        }.getOrDefault(emptyList())
+        // Time-boxed on another server: a slow or offline one mustn't hang the screen.
+        val items = onServer(session) { s ->
+            s.api.getPlaylistItems(
+                playlistId = s.raw(playlistId),
+                userId = s.userId
+            ).items
+        }.orEmpty().scopedTo(session.id).map { mapJellyfinItem(it) }
         return ContentRatingHelper.filterForProfile(items, activeProfile)
     }
 
@@ -1013,6 +1136,7 @@ class UnifiedCatalogRepository @Inject constructor(
         ensureLibraryIndex(userId)
         val localEntries = prefs.getLocalMyList(userId)
         val remainingLocal = mutableListOf<UnifiedMediaItem>()
+        val promoted = mutableListOf<UnifiedMediaItem>()
 
         for (entry in localEntries) {
             val matchedJf = if (entry.mediaType == MediaType.MOVIE) {
@@ -1021,15 +1145,25 @@ class UnifiedCatalogRepository @Inject constructor(
                 tmdbToJellyfinSeries[entry.tmdbId]
             }
             if (matchedJf != null) {
-                // Auto-promote local My List item to Jellyfin Favorites now that it's in the library
-                runCatchingCancellable { setFavorite(userId, matchedJf.id, true) }
-                prefs.removeFromLocalMyList(userId, entry.tmdbId, entry.mediaType)
+                // Auto-promote local My List item to Jellyfin Favorites now that it's in the library.
+                // Only drop the local entry once the server accepted it, or a transient failure
+                // would silently lose the title from My List.
+                val promotedOk = runCatchingCancellable { setFavorite(userId, matchedJf.id, true) }.isSuccess
+                if (promotedOk) {
+                    prefs.removeFromLocalMyList(userId, entry.tmdbId, entry.mediaType)
+                    // The favourites fetch may have started before this promotion landed.
+                    promoted += mapJellyfinItem(matchedJf).copy(isInMyList = true)
+                } else {
+                    remainingLocal += entry.toUnifiedMediaItem()
+                }
             } else {
                 remainingLocal += entry.toUnifiedMediaItem()
             }
         }
 
-        val jfFavs = jfFavsDeferred.await().map { mapJellyfinItem(it).copy(isInMyList = true) }
+        val fetchedFavs = jfFavsDeferred.await().map { mapJellyfinItem(it).copy(isInMyList = true) }
+        val fetchedIds = fetchedFavs.mapTo(HashSet()) { it.id }
+        val jfFavs = fetchedFavs + promoted.filter { it.id !in fetchedIds }
         val seenTmdb = jfFavs.mapNotNull { it.tmdbId?.let { id -> "${it.mediaType}_$id" } }.toSet()
         val dedupedLocal = remainingLocal.filterNot {
             it.tmdbId != null && "${it.mediaType}_${it.tmdbId}" in seenTmdb
@@ -1055,6 +1189,8 @@ class UnifiedCatalogRepository @Inject constructor(
         val nextUpDeferred = async {
             runCatchingCancellable { nextUpDtos(userId, limit = 15) }.getOrDefault(emptyList())
         }
+        // Episodes are rated through their series in the index (see seriesForRatingFallback).
+        ensureLibraryIndex(userId)
         val rawResume = resumeDeferred.await()
         val rawNextUp = CrossServerMerge.dedupeNextUpAgainstResume(
             resumeItems = rawResume,
@@ -1147,15 +1283,16 @@ class UnifiedCatalogRepository @Inject constructor(
                         val view = views[libId]
                         val session = sessionFor(libId, userId) ?: return@async null
                         val includeTypes = includeTypesForCollectionType(view?.collectionType, folderMode = false)
-                        val libItems = runCatchingCancellable {
-                            session.api.getLibraryItems(
-                                userId = session.userId,
-                                parentId = session.raw(libId),
+                        // A library on another server must not hold up Home (or wait on a dead server).
+                        val libItems = onServerForRow(session) { s ->
+                            s.api.getLibraryItems(
+                                userId = s.userId,
+                                parentId = s.raw(libId),
                                 includeItemTypes = includeTypes,
                                 limit = 30,
                                 maxOfficialRating = maxRating
-                            ).items.scopedTo(session.id).map { mapJellyfinItem(it) }
-                        }.getOrDefault(emptyList())
+                            ).items
+                        }.orEmpty().scopedTo(session.id).map { mapJellyfinItem(it) }
                             .filter { (filterType == null || it.mediaType == filterType) && availabilityFilter.matches(it) }
                         if (libItems.isEmpty()) null
                         else CatalogRow(
@@ -1265,7 +1402,7 @@ class UnifiedCatalogRepository @Inject constructor(
             else if (seerrActive) fetchGemsForYou(today, availabilityFilter)
             else if (availabilityFilter != AvailabilityFilter.REQUESTABLE) {
                 val topRated = allLibraryItems
-                    .filter { (it.communityRating ?: 0.0) >= 7.4 }
+                    .filter { (it.communityRating ?: 0.0) >= 7.4 && it.allowedFor(activeProfile) }
                     .sortedByDescending { it.communityRating ?: 0.0 }
                     .take(20)
                 withOverviews(userId, topRated).map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
@@ -1388,7 +1525,8 @@ class UnifiedCatalogRepository @Inject constructor(
             } else if (availabilityFilter != AvailabilityFilter.REQUESTABLE) {
                 val quickShows = allLibraryItems.filter { dto ->
                     dto.type.equals("Series", ignoreCase = true) &&
-                        (dto.runTimeTicks ?: 0L) in 1L..(35L * 600_000_000L)
+                        (dto.runTimeTicks ?: 0L) in 1L..(35L * 600_000_000L) &&
+                        dto.allowedFor(activeProfile)
                 }.take(20)
                 withOverviews(userId, quickShows).map { mapJellyfinItem(it) }.filter(availabilityFilter::matches)
             } else emptyList()
@@ -1443,10 +1581,10 @@ class UnifiedCatalogRepository @Inject constructor(
             val wantSeries = filterType == null || filterType == MediaType.SERIES
             val index = allLibraryItems
             val movieDtos = if (wantMovies) {
-                index.asSequence().filter { it.type.equals("Movie", ignoreCase = true) }.take(25).toList()
+                index.asSequence().filter { it.type.equals("Movie", ignoreCase = true) && it.allowedFor(activeProfile) }.take(25).toList()
             } else emptyList()
             val seriesDtos = if (wantSeries) {
-                index.asSequence().filter { it.type.equals("Series", ignoreCase = true) }.take(25).toList()
+                index.asSequence().filter { it.type.equals("Series", ignoreCase = true) && it.allowedFor(activeProfile) }.take(25).toList()
             } else emptyList()
             val genreRows = runCatchingCancellable {
                 libraryGenreRows(userId, filterType, discoveryDeferred.await()?.affinity.orEmpty())
@@ -1847,9 +1985,12 @@ class UnifiedCatalogRepository @Inject constructor(
             if (availabilityFilter == AvailabilityFilter.REQUESTABLE) return@async emptyList()
             // Match on the raw index first: mapping every library item just to test its genre was
             // the expensive part on a large library.
-            val matchingDtos = allLibraryItems.filter { dto ->
-                (filterType == null || jellyfinMediaType(dto) == filterType) && matchesGenreLabel(dto, genre)
-            }
+            // Capped: a broad genre ("Drama") on a big library matched thousands of titles, all
+            // mapped into one horizontal row (and only the first 60 got overviews anyway).
+            val matchingDtos = allLibraryItems.asSequence().filter { dto ->
+                (filterType == null || jellyfinMediaType(dto) == filterType) && matchesGenreLabel(dto, genre) &&
+                    dto.allowedFor(activeProfile)
+            }.take(OVERVIEW_BACKFILL_LIMIT).toList()
             withOverviews(userId, matchingDtos)
                 .map { mapJellyfinItem(it) }
                 .filter(availabilityFilter::matches)
@@ -2156,7 +2297,7 @@ class UnifiedCatalogRepository @Inject constructor(
             }
         }.getOrDefault(emptyList())
         if (fetched.isNotEmpty()) {
-            streamingProviderCache[cacheKey] = StreamingChartCacheEntry(now, fetched)
+            putBounded(streamingProviderCache, cacheKey, StreamingChartCacheEntry(now, fetched)) { it.atMs }
         }
         return fetched
     }
@@ -2380,59 +2521,101 @@ class UnifiedCatalogRepository @Inject constructor(
     /** Short-lived: charts are re-resolved on every Home load, but availability can change. */
     private val chartCardCache = java.util.concurrent.ConcurrentHashMap<String, ChartCardCacheEntry>()
 
-    private suspend fun movieReleaseDetails(tmdbId: Int): SeerrMovieDetailsDto? {
-        val key = "${MediaType.MOVIE.name}_${tmdbId}_$metaLang"
+    /**
+     * In-flight detail lookups by cache key. On a cold Home load the trending filter, the Top 10
+     * rows and the release-date rows ask for the same popular titles at the same time; they now
+     * share one request instead of each fetching `/movie/{id}`.
+     */
+    private val chartCardInFlight =
+        java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<ChartCardLookup>>()
+
+    /** [abandoned]: the caller that was fetching it was cancelled; a waiter fetches it itself. */
+    private class ChartCardLookup(val entry: ChartCardCacheEntry?, val abandoned: Boolean = false)
+
+    private suspend fun chartCardEntry(tmdbId: Int, type: MediaType): ChartCardCacheEntry? {
+        val key = "${type.name}_${tmdbId}_$metaLang"
         val now = System.currentTimeMillis()
-        chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }?.movieDetails?.let { return it }
-        val details = runCatchingCancellable { seerrApi.getMovieDetails(tmdbId, language = metaLang) }.getOrNull()
-            ?: return null
-        chartCardCache[key] = ChartCardCacheEntry(
-            atMs = now,
-            result = SeerrMediaResultDto(
-                id = details.id, mediaType = "movie", title = details.title, overview = details.overview,
-                releaseDate = details.releaseDate, posterPath = details.posterPath, backdropPath = details.backdropPath,
-                voteAverage = details.voteAverage, adult = details.adult, mediaInfo = details.mediaInfo
-            ),
-            rating = details.certification(watchRegion),
-            movieDetails = details
-        )
-        return details
+        chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }?.let { return it }
+        val mine = kotlinx.coroutines.CompletableDeferred<ChartCardLookup>()
+        val existing = chartCardInFlight.putIfAbsent(key, mine)
+        if (existing != null) {
+            val shared = existing.await()
+            if (!shared.abandoned) return shared.entry
+            return runCatchingCancellable { fetchChartCardEntry(tmdbId, type, metaLang) }.getOrNull()
+                ?.also { putBounded(chartCardCache, key, it) { e -> e.atMs } }
+        }
+        // This caller fetches; concurrent callers for the same title wait for its result.
+        var lookup = ChartCardLookup(null, abandoned = true)
+        try {
+            val entry = runCatchingCancellable { fetchChartCardEntry(tmdbId, type, metaLang) }.getOrNull()
+                ?.also { putBounded(chartCardCache, key, it) { e -> e.atMs } }
+            lookup = ChartCardLookup(entry)
+            return entry
+        } finally {
+            chartCardInFlight.remove(key, mine)
+            mine.complete(lookup)
+        }
     }
+
+    private suspend fun fetchChartCardEntry(tmdbId: Int, type: MediaType, lang: String): ChartCardCacheEntry {
+        val now = System.currentTimeMillis()
+        return if (type == MediaType.MOVIE) {
+            val d = seerrApi.getMovieDetails(tmdbId, language = lang)
+            ChartCardCacheEntry(
+                now,
+                SeerrMediaResultDto(
+                    id = d.id, mediaType = "movie", title = d.title, overview = d.overview,
+                    releaseDate = d.releaseDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
+                    voteAverage = d.voteAverage, adult = d.adult, mediaInfo = d.mediaInfo
+                ),
+                d.certification(watchRegion),
+                d
+            )
+        } else {
+            val d = seerrApi.getTvDetails(tmdbId, language = lang)
+            ChartCardCacheEntry(
+                now,
+                SeerrMediaResultDto(
+                    id = d.id, mediaType = "tv", name = d.name, overview = d.overview,
+                    firstAirDate = d.firstAirDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
+                    voteAverage = d.voteAverage, mediaInfo = d.mediaInfo
+                ),
+                d.certification(watchRegion)
+            )
+        }
+    }
+
+    /**
+     * The TTL is only checked on read, so these caches would otherwise grow for the life of the
+     * process (curated keys include the date). Past [SEERR_CACHE_MAX_ENTRIES], expired entries
+     * are dropped, then the oldest ones.
+     */
+    private fun <V> putBounded(
+        cache: java.util.concurrent.ConcurrentHashMap<String, V>,
+        key: String,
+        value: V,
+        atMs: (V) -> Long
+    ) {
+        cache[key] = value
+        if (cache.size <= SEERR_CACHE_MAX_ENTRIES) return
+        val now = System.currentTimeMillis()
+        cache.entries.removeIf { now - atMs(it.value) !in 0 until CHART_CARD_TTL_MS }
+        if (cache.size > SEERR_CACHE_MAX_ENTRIES) {
+            cache.entries.sortedBy { atMs(it.value) }
+                .take(cache.size - SEERR_CACHE_MAX_ENTRIES)
+                .forEach { cache.remove(it.key, it.value) }
+        }
+    }
+
+    private suspend fun movieReleaseDetails(tmdbId: Int): SeerrMovieDetailsDto? =
+        chartCardEntry(tmdbId, MediaType.MOVIE)?.movieDetails
 
     private suspend fun chartCardWithDetails(
         tmdbId: Int,
         type: MediaType,
         today: LocalDate
     ): Pair<UnifiedMediaItem, SeerrMovieDetailsDto?>? {
-        val key = "${type.name}_${tmdbId}_$metaLang"
-        val now = System.currentTimeMillis()
-        val cached = chartCardCache[key]?.takeIf { now - it.atMs in 0 until CHART_CARD_TTL_MS }
-        val entry = cached ?: runCatchingCancellable {
-            if (type == MediaType.MOVIE) {
-                val d = seerrApi.getMovieDetails(tmdbId, language = metaLang)
-                ChartCardCacheEntry(
-                    now,
-                    SeerrMediaResultDto(
-                        id = d.id, mediaType = "movie", title = d.title, overview = d.overview,
-                        releaseDate = d.releaseDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
-                        voteAverage = d.voteAverage, adult = d.adult, mediaInfo = d.mediaInfo
-                    ),
-                    d.certification(watchRegion),
-                    d
-                )
-            } else {
-                val d = seerrApi.getTvDetails(tmdbId, language = metaLang)
-                ChartCardCacheEntry(
-                    now,
-                    SeerrMediaResultDto(
-                        id = d.id, mediaType = "tv", name = d.name, overview = d.overview,
-                        firstAirDate = d.firstAirDate, posterPath = d.posterPath, backdropPath = d.backdropPath,
-                        voteAverage = d.voteAverage, mediaInfo = d.mediaInfo
-                    ),
-                    d.certification(watchRegion)
-                )
-            }
-        }.getOrNull()?.also { chartCardCache[key] = it } ?: return null
+        val entry = chartCardEntry(tmdbId, type) ?: return null
         val card = mapSeerrResult(entry.result, type, today)
         // Certification lets Kids / rating-limited profiles filter chart titles they don't own.
         val ratedCard = if (card.maturityRating == null && entry.rating != null) card.copy(maturityRating = entry.rating) else card
@@ -2489,7 +2672,7 @@ class UnifiedCatalogRepository @Inject constructor(
                     withRuntimeLte = withRuntimeLte
                 ).results
             }.getOrDefault(emptyList()).also {
-                if (it.isNotEmpty()) curatedDiscoverCache[key] = CuratedDiscoverCacheEntry(now, it)
+                if (it.isNotEmpty()) putBounded(curatedDiscoverCache, key, CuratedDiscoverCacheEntry(now, it)) { e -> e.atMs }
             }
         raw.filter { isReleasedOnOrBefore(it.releaseDate, today) }
             .map { mapSeerrResult(it, MediaType.MOVIE, today) }
@@ -2520,7 +2703,7 @@ class UnifiedCatalogRepository @Inject constructor(
                     withRuntimeLte = withRuntimeLte
                 ).results
             }.getOrDefault(emptyList()).also {
-                if (it.isNotEmpty()) curatedDiscoverCache[key] = CuratedDiscoverCacheEntry(now, it)
+                if (it.isNotEmpty()) putBounded(curatedDiscoverCache, key, CuratedDiscoverCacheEntry(now, it)) { e -> e.atMs }
             }
         raw.filter { isReleasedOnOrBefore(it.firstAirDate, today) }
             .map { mapSeerrResult(it, MediaType.SERIES, today) }
@@ -2815,7 +2998,10 @@ class UnifiedCatalogRepository @Inject constructor(
         ensureLibraryIndex(userId)
         if (!isSeerrEnabled) {
             return@coroutineScope ContentRatingHelper.filterForProfile(
-                withOverviews(userId, allLibraryItems.take(20)).map { mapJellyfinItem(it) },
+                withOverviews(
+                    userId,
+                    allLibraryItems.asSequence().filter { it.allowedFor(activeProfile) }.take(20).toList()
+                ).map { mapJellyfinItem(it) },
                 activeProfile
             )
         }
@@ -2870,6 +3056,9 @@ class UnifiedCatalogRepository @Inject constructor(
         if (!forceRefresh) getCachedDetails(cacheKey)?.let { return@runCatchingCancellable it }
 
         coroutineScope {
+            // A cold deep link / voice search can land here before anything loaded the index, and an
+            // owned title would then look requestable. Overlaps the Jellyfin/Seerr requests below.
+            val indexReady = async { runCatchingCancellable { ensureLibraryIndex(userId) } }
             val resolvedType = if (mediaType == MediaType.EPISODE) MediaType.SERIES else mediaType
             // When the TMDB id is already known, start the Seerr lookup now instead of after the
             // Jellyfin round trip(s) below; they're independent.
@@ -2899,6 +3088,8 @@ class UnifiedCatalogRepository @Inject constructor(
                 ?: jfItem?.providerIds?.get("tmdb")?.toIntOrNull()
                 ?: tmdbId
 
+            // (links.canonical above may still see no index: it then simply opens the requested copy.)
+            indexReady.await()
             if (jfItem == null && resolvedTmdbId != null) {
                 jfItem = if (resolvedType == MediaType.MOVIE) {
                     tmdbToJellyfinMovie[resolvedTmdbId]
@@ -3151,9 +3342,22 @@ class UnifiedCatalogRepository @Inject constructor(
         val jfByEpNum = jfEpisodes.associateBy { it.indexNumber ?: -1 }
         val seerrEps = seerrSeasonDeferred.await()?.episodes.orEmpty()
         val jfBase = jfBaseUrl
+        fun fromJellyfin(jf: JellyfinItemDto) = EpisodeSummary(
+            id = jf.id,
+            name = jf.name,
+            overview = jf.overview.orEmpty(),
+            seasonNumber = jf.parentIndexNumber ?: seasonNumber,
+            episodeNumber = jf.indexNumber ?: 0,
+            runtimeTicks = jf.runTimeTicks ?: 0L,
+            resumePositionTicks = jf.userData?.playbackPositionTicks ?: 0L,
+            stillUrl = primaryImage(jfBase, jf.id, 480),
+            isAvailableInJellyfin = true,
+            isWatched = jf.userData?.played == true
+        )
 
         if (seerrEps.isNotEmpty()) {
-            seerrEps.map { ep ->
+            val seerrNumbers = seerrEps.mapTo(HashSet()) { it.episodeNumber }
+            val fromSeerr = seerrEps.map { ep ->
                 val jf = jfByEpNum[ep.episodeNumber]
                 EpisodeSummary(
                     id = jf?.id ?: "tmdb_${tmdbId}_s${seasonNumber}_e${ep.episodeNumber}",
@@ -3169,21 +3373,13 @@ class UnifiedCatalogRepository @Inject constructor(
                     isWatched = jf?.userData?.played == true
                 )
             }
+            // Episodes TMDB doesn't list (extras, specials numbered differently) are still on the
+            // server and playable: keep them instead of hiding them behind Seerr's list.
+            val jellyfinOnly = jfEpisodes.filter { it.indexNumber == null || it.indexNumber !in seerrNumbers }
+            if (jellyfinOnly.isEmpty()) fromSeerr
+            else (fromSeerr + jellyfinOnly.map(::fromJellyfin)).sortedBy { it.episodeNumber }
         } else {
-            jfEpisodes.map { jf ->
-                EpisodeSummary(
-                    id = jf.id,
-                    name = jf.name,
-                    overview = jf.overview.orEmpty(),
-                    seasonNumber = jf.parentIndexNumber ?: seasonNumber,
-                    episodeNumber = jf.indexNumber ?: 0,
-                    runtimeTicks = jf.runTimeTicks ?: 0L,
-                    resumePositionTicks = jf.userData?.playbackPositionTicks ?: 0L,
-                    stillUrl = primaryImage(jfBase, jf.id, 480),
-                    isAvailableInJellyfin = true,
-                    isWatched = jf.userData?.played == true
-                )
-            }
+            jfEpisodes.map(::fromJellyfin)
         }
     }
 
@@ -3193,7 +3389,9 @@ class UnifiedCatalogRepository @Inject constructor(
         jellyfinId: String?,
         mediaType: MediaType,
         activeProfile: UserProfile? = null
-    ): List<UnifiedMediaItem> {
+    ): List<UnifiedMediaItem> = coroutineScope {
+        // Seerr results are matched to owned titles through the index (see loadFullDetails).
+        val indexReady = async { runCatchingCancellable { ensureLibraryIndex(userId) } }
         if (isSeerrEnabled && tmdbId != null) {
             val results = runCatchingCancellable {
                 if (mediaType == MediaType.MOVIE) {
@@ -3203,20 +3401,22 @@ class UnifiedCatalogRepository @Inject constructor(
                 }
             }.getOrDefault(emptyList())
             if (results.isNotEmpty()) {
-                return ContentRatingHelper.filterForProfile(
+                indexReady.await()
+                return@coroutineScope ContentRatingHelper.filterForProfile(
                     results.take(15).map { mapSeerrResult(it, mediaType) },
                     activeProfile
                 )
             }
         }
         if (jellyfinId != null) {
-            val similar = sessionFor(jellyfinId, userId)?.let { session ->
+            val similarDtos = sessionFor(jellyfinId, userId)?.let { session ->
                 onServer(session) { s -> s.api.getSimilarItems(s.raw(jellyfinId), s.userId).items }
                     ?.scopedTo(session.id)
-            }.orEmpty().map { mapJellyfinItem(it) }
-            return ContentRatingHelper.filterForProfile(similar, activeProfile)
+            }.orEmpty()
+            indexReady.await()
+            return@coroutineScope ContentRatingHelper.filterForProfile(similarDtos.map { mapJellyfinItem(it) }, activeProfile)
         }
-        return emptyList()
+        emptyList()
     }
 
     suspend fun searchUnified(
@@ -3232,6 +3432,8 @@ class UnifiedCatalogRepository @Inject constructor(
         activeProfile: UserProfile? = null
     ): Pair<List<UnifiedMediaItem>, List<PersonSearchResult>> = coroutineScope {
         if (query.isBlank()) return@coroutineScope emptyList<UnifiedMediaItem>() to emptyList()
+        // Seerr results are matched to owned titles through the index (see loadFullDetails).
+        val indexReady = async { runCatchingCancellable { ensureLibraryIndex(userId) } }
         val seerrDeferred = async {
             if (isSeerrEnabled) runCatchingCancellable { seerrApi.search(query, language = metaLang).results }.getOrDefault(emptyList())
             else emptyList()
@@ -3289,6 +3491,7 @@ class UnifiedCatalogRepository @Inject constructor(
                 }
         }
 
+        indexReady.await()
         val seerrItems = rawSeerr.mapNotNull { res ->
             val type = when (res.mediaType) {
                 "movie" -> MediaType.MOVIE
@@ -3297,10 +3500,11 @@ class UnifiedCatalogRepository @Inject constructor(
             } ?: return@mapNotNull null
             mapSeerrResult(res, type)
         }
-        val seenTmdb = seerrItems.mapNotNull { it.tmdbId }.toSet()
+        // TMDB ids are per media type: a movie and a show (or an episode) can share a number.
+        val seenTmdb = seerrItems.mapNotNull { item -> item.tmdbId?.let { "${item.mediaType}_$it" } }.toSet()
         val jfExtras = jfDeferred.await()
             .map { mapJellyfinItem(it) }
-            .filter { it.tmdbId == null || it.tmdbId !in seenTmdb }
+            .filter { it.tmdbId == null || "${it.mediaType}_${it.tmdbId}" !in seenTmdb }
 
         ContentRatingHelper.filterForProfile(seerrItems + jfExtras, activeProfile) to people
     }
@@ -3347,12 +3551,9 @@ class UnifiedCatalogRepository @Inject constructor(
 
         val owningSession = sessionFor(resolvedJfPersonId, userId) ?: homeSession(userId)
         val owningItemsDeferred = async {
-            runCatchingCancellable {
-                owningSession.api.getItemsByPerson(
-                    userId = owningSession.userId,
-                    personIds = owningSession.raw(resolvedJfPersonId)
-                ).items.scopedTo(owningSession.id)
-            }.getOrDefault(emptyList())
+            onServer(owningSession, ROW_EXTRA_TIMEOUT_MS) { s ->
+                s.api.getItemsByPerson(userId = s.userId, personIds = s.raw(resolvedJfPersonId)).items
+            }.orEmpty().scopedTo(owningSession.id)
         }
         // If multiple servers are connected and we know the person's name, also pull matching credits from other servers.
         val otherServerItemsDeferred = async {
@@ -3363,15 +3564,15 @@ class UnifiedCatalogRepository @Inject constructor(
                 if (!owningSession.isHome) add(homeSession(userId))
                 extras.filter { it.id != owningSession.id }.forEach(::add)
             }
-            otherSessions.map { s ->
+            otherSessions.map { session ->
                 async {
-                    val pid = runCatchingCancellable {
-                        s.api.getPersons(searchTerm = name, limit = 5).items
+                    // Extra credits only: a slow / offline server is time-boxed or skipped.
+                    onServerForRow(session) { s ->
+                        val pid = s.api.getPersons(searchTerm = name, limit = 5).items
                             .firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
-                    }.getOrNull() ?: return@async emptyList()
-                    runCatchingCancellable {
-                        s.api.getItemsByPerson(userId = s.userId, personIds = pid).items.scopedTo(s.id)
-                    }.getOrDefault(emptyList())
+                            ?: return@onServerForRow emptyList()
+                        s.api.getItemsByPerson(userId = s.userId, personIds = pid).items
+                    }.orEmpty().scopedTo(session.id)
                 }
             }.awaitAll()
         }
@@ -3450,12 +3651,11 @@ class UnifiedCatalogRepository @Inject constructor(
         check(isSeerrEnabled) { "Seerr is not configured (Jellyfin-Only Mode)" }
         invalidateDetailsCache()
         val resolvedSeasons = if (mediaType == MediaType.SERIES) {
-            seasons?.takeIf { it.isNotEmpty() } ?: runCatchingCancellable {
-                seerrApi.getTvDetails(tmdbId, language = metaLang).seasons
-                    .map { it.seasonNumber }
-                    .filter { it > 0 }
-                    .takeIf { it.isNotEmpty() }
-            }.getOrNull() ?: listOf(1)
+            // A failed lookup fails the request: silently asking for season 1 only looked like success.
+            seasons?.takeIf { it.isNotEmpty() } ?: seerrApi.getTvDetails(tmdbId, language = metaLang).seasons
+                .map { it.seasonNumber }
+                .filter { it > 0 }
+                .ifEmpty { listOf(1) }
         } else null
 
         seerrApi.createRequest(
@@ -3532,11 +3732,31 @@ class UnifiedCatalogRepository @Inject constructor(
         }
     }
 
-    suspend fun loadRequestsHub(): Result<List<MediaRequestSummary>> = runCatchingCancellable {
+    /** A request's media status only, from the single requests page (no per-title lookups). */
+    data class RequestStatus(val requestId: Int, val mediaStatus: AvailabilityTier)
+
+    /**
+     * The status of the latest requests with one Seerr call. The background "request is ready"
+     * check uses this first and only loads titles / posters (and the library index) for the few
+     * requests that actually became available.
+     */
+    suspend fun loadRequestStatuses(): Result<List<RequestStatus>> = runCatchingCancellable {
+        if (!isSeerrEnabled) return@runCatchingCancellable emptyList()
+        seerrApi.getRequests(take = 50, skip = 0, filter = "all", sort = "added").results.map { req ->
+            RequestStatus(
+                requestId = req.id,
+                mediaStatus = AvailabilityTier.fromSeerrCode(if (req.is4k) req.media?.status4k else req.media?.status)
+            )
+        }
+    }
+
+    /** [onlyRequestIds]: look up titles / posters for just these requests (null = all). */
+    suspend fun loadRequestsHub(onlyRequestIds: Set<Int>? = null): Result<List<MediaRequestSummary>> = runCatchingCancellable {
         if (!isSeerrEnabled) return@runCatchingCancellable emptyList()
         val page = seerrApi.getRequests(take = 50, skip = 0, filter = "all", sort = "added")
+        val wanted = if (onlyRequestIds == null) page.results else page.results.filter { it.id in onlyRequestIds }
         coroutineScope {
-            page.results.map { req ->
+            wanted.map { req ->
                 async {
                     val tmdbId = req.media?.tmdbId ?: 0
                     val isMovie = when (req.media?.mediaType?.lowercase()) {
@@ -3614,36 +3834,60 @@ class UnifiedCatalogRepository @Inject constructor(
                 jellyfinApi.getLiveTvChannels(userId = userId, enableFavoriteSorting = true).items
             }.getOrDefault(emptyList())
         }
-        val programsDeferred = async {
-            // One request is sorted by start time across *all* channels, so a single page of a
-            // few hundred programmes only covers the first few hours on a large lineup. Page
-            // through the whole 36-hour window (bounded, so a huge IPTV guide can't run forever).
-            val collected = mutableListOf<JellyfinItemDto>()
-            var startIndex = 0
-            while (startIndex < LIVE_TV_PROGRAM_MAX) {
-                val page = runCatchingCancellable {
-                    jellyfinApi.getLiveTvPrograms(
-                        userId = userId,
-                        hasAired = false,
-                        limit = LIVE_TV_PROGRAM_PAGE,
-                        startIndex = startIndex.takeIf { it > 0 },
-                        minEndDate = minEndIso,
-                        maxStartDate = maxStartIso,
-                        sortBy = "StartDate",
-                        enableTotalRecordCount = false
-                    ).items
-                }.getOrNull() ?: break
-                collected += page
-                if (page.size < LIVE_TV_PROGRAM_PAGE) break
-                startIndex += page.size
+        // One request is sorted by start time across *all* channels, so a single page of a
+        // few hundred programmes only covers the first few hours on a large lineup. Page
+        // through the whole 36-hour window. The cap grows with the lineup (a fixed cap left
+        // the later hours empty on every channel of a big guide) but stays bounded, so a huge
+        // IPTV guide can't run forever or exhaust memory.
+        suspend fun page(startIndex: Int, withTotal: Boolean) = runCatchingCancellable {
+            jellyfinApi.getLiveTvPrograms(
+                userId = userId,
+                hasAired = false,
+                limit = LIVE_TV_PROGRAM_PAGE,
+                startIndex = startIndex.takeIf { it > 0 },
+                minEndDate = minEndIso,
+                maxStartDate = maxStartIso,
+                sortBy = "StartDate",
+                enableTotalRecordCount = withTotal
+            )
+        }.getOrNull()
+        // The first page (it brings the total) goes out alongside the channel list.
+        val firstPageDeferred = async { page(0, withTotal = true) }
+        val channels = channelsDeferred.await()
+        val programs = run {
+            val first = firstPageDeferred.await() ?: return@run emptyList<JellyfinItemDto>()
+            val collected = first.items.toMutableList()
+            if (first.items.size >= LIVE_TV_PROGRAM_PAGE) {
+                val cap = liveTvProgramCap(channels.size)
+                val end = minOf(first.totalRecordCount, cap)
+                if (end > first.items.size) {
+                    // The rest in parallel, a few requests at a time.
+                    val gate = Semaphore(LIVE_TV_PROGRAM_PARALLEL_PAGES)
+                    (first.items.size until end step LIVE_TV_PROGRAM_PAGE)
+                        .map { start -> async { gate.withPermit { page(start, withTotal = false)?.items.orEmpty() } } }
+                        .awaitAll()
+                        .forEach { collected += it }
+                } else {
+                    // No usable total: page on one by one, as before.
+                    var startIndex = first.items.size
+                    while (startIndex < cap) {
+                        val items = page(startIndex, withTotal = false)?.items ?: break
+                        collected += items
+                        if (items.size < LIVE_TV_PROGRAM_PAGE) break
+                        startIndex += items.size
+                    }
+                }
             }
             collected.distinctBy { it.id }
         }
-        val channels = channelsDeferred.await()
-        val programsByChannel = programsDeferred.await().groupBy { it.channelId }
+        val programsByChannel = programs.groupBy { it.channelId }
         val base = jfBaseUrl
         val nowMs = nowInstant.toEpochMilli()
-        val timeFmt = DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault())
+        // Fallback label only: the guide formats start/end itself with the TV's 12/24-hour
+        // setting (this layer has no Context). Localized short time, never a fixed "HH:mm".
+        val timeFmt = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+            .withLocale(Locale.forLanguageTag(prefs.cachedUiLanguage.ifBlank { "en" }))
+            .withZone(ZoneId.systemDefault())
 
         channels.map { ch ->
             val progList = programsByChannel[ch.id].orEmpty().map { p ->
@@ -3728,7 +3972,11 @@ class UnifiedCatalogRepository @Inject constructor(
         val seriesDeferred = async {
             runCatchingCancellable { jellyfinApi.getLiveTvSeriesTimers().items }.getOrDefault(emptyList())
         }
-        val fmt = DateTimeFormatter.ofPattern("EEE d MMM, HH:mm").withZone(ZoneId.systemDefault())
+        // Fallback label only: the guide formats [ScheduledRecording.startMs] itself with the TV's
+        // 12/24-hour setting and the app language.
+        val fmt = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
+            .withLocale(Locale.forLanguageTag(prefs.cachedUiLanguage.ifBlank { "en" }))
+            .withZone(ZoneId.systemDefault())
         val single = timersDeferred.await().map { t ->
             val start = parseIsoMillis(t.startDate)
             ScheduledRecording(
@@ -3870,13 +4118,14 @@ class UnifiedCatalogRepository @Inject constructor(
     suspend fun loadGenres(userId: String, parentId: String?, includeItemTypes: String): List<String> = coroutineScope {
         if (parentId != null) {
             val session = sessionFor(parentId, userId) ?: return@coroutineScope emptyList()
-            return@coroutineScope runCatchingCancellable {
-                session.api.getGenres(
-                    userId = session.userId,
-                    parentId = session.raw(parentId),
+            // Time-boxed on another server, like the merged lookup below.
+            return@coroutineScope onServer(session, ROW_EXTRA_TIMEOUT_MS) { s ->
+                s.api.getGenres(
+                    userId = s.userId,
+                    parentId = s.raw(parentId),
                     includeItemTypes = includeItemTypes
                 ).items.map { it.name }.filter { it.isNotBlank() }
-            }.getOrDefault(emptyList())
+            }.orEmpty()
         }
         val extraDeferred = async {
             servers?.fromExtras(ROW_EXTRA_TIMEOUT_MS) { s ->
@@ -4092,6 +4341,7 @@ class UnifiedCatalogRepository @Inject constructor(
             backdropUrl = backdropUrl
         )
         val itemServerId = ServerScopedId.serverOf(dto.id)
+        val parentSeries = seriesForRatingFallback(dto)
 
         return UnifiedMediaItem(
             id = "jf_${dto.id}",
@@ -4107,9 +4357,9 @@ class UnifiedCatalogRepository @Inject constructor(
             tagline = dto.taglines.firstOrNull(),
             releaseYear = dto.productionYear?.toString(),
             runtimeMinutes = dto.runTimeTicks?.let { (it / 600_000_000L).toInt() },
-            maturityRating = dto.officialRating,
+            maturityRating = dto.officialRating?.takeIf { it.isNotBlank() } ?: parentSeries?.officialRating,
             voteAverage = dto.communityRating,
-            genres = dto.genres,
+            genres = dto.genres.ifEmpty { parentSeries?.genres.orEmpty() },
             posterUrl = posterUrl,
             backdropUrl = backdropUrl,
             clearLogoUrl = clearLogoUrl,
@@ -4121,6 +4371,7 @@ class UnifiedCatalogRepository @Inject constructor(
             mediaBadges = badges,
             episodeLabel = epLabel,
             seriesName = dto.seriesName,
+            seriesId = dto.seriesId,
             releaseDate = dto.premiereDate,
             youtubeTrailerKey = ytKey,
             relatedVideos = related,
@@ -4184,12 +4435,16 @@ class UnifiedCatalogRepository @Inject constructor(
             // These are Episode DTOs: their ProviderIds["Tmdb"] is the episode id, not the show's,
             // and this card is presented (and opened) as the SERIES. Resolve via the series instead.
             val tmdbId = seriesTmdbIdFor(dto.seriesId)
+            // Rated like the series it opens: without a rating every card was hidden from restricted profiles.
+            val series = seriesForRatingFallback(dto)
             UnifiedMediaItem(
                 id = "jf_upcoming_${dto.id}",
                 tmdbId = tmdbId,
                 jellyfinId = dto.seriesId,
                 mediaType = MediaType.SERIES,
                 title = dto.seriesName ?: dto.name,
+                maturityRating = dto.officialRating?.takeIf { it.isNotBlank() } ?: series?.officialRating,
+                genres = dto.genres.ifEmpty { series?.genres.orEmpty() },
                 overview = buildString {
                     if (!dto.seriesName.isNullOrBlank() && dto.name.isNotBlank()) {
                         append(dto.name)
@@ -4489,6 +4744,23 @@ class UnifiedCatalogRepository @Inject constructor(
                     jellyfinSeasonId = jfS?.id
                 )
             }
+            .let { fromSeerr ->
+                // Seasons only the server has (Specials, extra seasons TMDB doesn't list) stay visible.
+                val listed = fromSeerr.mapTo(HashSet()) { it.seasonNumber }
+                val jellyfinOnly = jfSeasons.filter { it.indexNumber != null && it.indexNumber !in listed }
+                if (jellyfinOnly.isEmpty()) fromSeerr
+                else (fromSeerr + jellyfinOnly.map { s ->
+                    SeasonSummary(
+                        seasonNumber = s.indexNumber!!,
+                        name = s.name,
+                        episodeCount = s.childCount ?: 0,
+                        overview = s.overview,
+                        posterUrl = primaryImage(jfBase, s.id),
+                        hdStatus = AvailabilityTier.AVAILABLE,
+                        jellyfinSeasonId = s.id
+                    )
+                }).sortedBy { it.seasonNumber }
+            }
         val backdropUrl = MediaImageUrls.tmdbBackdrop(seerr.backdropPath)
             ?: jf?.let { jellyfinBackdropUrl(jfBase, it) }
 
@@ -4588,7 +4860,7 @@ class UnifiedCatalogRepository @Inject constructor(
         YouTubeUrlParser.extractVideoKey(url)
 
     // ---------------------------------------------------------------------------------------
-    // Personalized discovery (0.9.5): ratings, multi-title picks, library rows, people and
+    // Personalized discovery (0.9.8): ratings, multi-title picks, library rows, people and
     // household rows. Scoring lives in DiscoveryEngine; this is the I/O around it.
     // ---------------------------------------------------------------------------------------
 
@@ -4995,12 +5267,30 @@ class UnifiedCatalogRepository @Inject constructor(
         internal const val STARRING_PREFIX = "Starring "
         /** Live TV guide: programmes per request, and the most fetched for the 36-hour window. */
         private const val LIVE_TV_PROGRAM_PAGE = 1000
-        private const val LIVE_TV_PROGRAM_MAX = 12_000
+        /** At least this many programmes, whatever the lineup (the old fixed cap). */
+        private const val LIVE_TV_PROGRAM_MIN = 12_000
+        /**
+         * Budget per channel for 36 hours: 72 half-hour slots, doubled for lineups with short
+         * programmes (news bulletins, kids' shorts).
+         */
+        private const val LIVE_TV_PROGRAMS_PER_CHANNEL = 150
+        /** Hard ceiling, so a huge IPTV guide stays within memory. */
+        private const val LIVE_TV_PROGRAM_MAX = 50_000
+        /** Guide pages fetched at once. */
+        private const val LIVE_TV_PROGRAM_PARALLEL_PAGES = 4
+
+        /** How many guide programmes to fetch for a lineup of [channelCount] channels. */
+        internal fun liveTvProgramCap(channelCount: Int): Int =
+            (channelCount.coerceAtLeast(0).toLong() * LIVE_TV_PROGRAMS_PER_CHANNEL)
+                .coerceIn(LIVE_TV_PROGRAM_MIN.toLong(), LIVE_TV_PROGRAM_MAX.toLong())
+                .toInt()
 
         // Several servers
         private val HOME_SERVER = JellyfinServer(id = ServerScopedId.HOME, isHome = true)
         /** How long a row / grid / search waits for an extra server before going on without it. */
         private const val ROW_EXTRA_TIMEOUT_MS = 3_500L
+        private const val EXTRA_PART_RETRY_COOLDOWN_MS = 10 * 60_000L
+        private const val SEERR_CACHE_MAX_ENTRIES = 400
         private const val DETAILS_EXTRA_TIMEOUT_MS = 5_000L
         /** How long a blocking index load waits for the extra servers' shares. */
         private const val EXTRA_INDEX_WAIT_MS = 6_000L
@@ -5153,15 +5443,27 @@ class UnifiedCatalogRepository @Inject constructor(
             return JsonObject(map)
         }
 
-        fun formatHttpError(err: Throwable, fallback: String = "Operation failed"): String {
+        /**
+         * The active profile's UI language for [formatHttpError], which callers use statically.
+         * Set by the (singleton) repository from [SessionPreferences.cachedUiLanguage]; English
+         * until then.
+         */
+        @Volatile
+        internal var uiLanguageSource: () -> String = { "en" }
+
+        fun formatHttpError(
+            err: Throwable,
+            fallback: String = "Operation failed",
+            strings: UiStrings = stringsForLanguage(uiLanguageSource())
+        ): String {
             val raw = err.message?.trim().orEmpty()
             val codeMatch = Regex("""HTTP\s+(\d{3})""", RegexOption.IGNORE_CASE).find(raw)
             val code = codeMatch?.groupValues?.getOrNull(1)?.toIntOrNull()
             return when (code) {
-                401, 403 -> "Authentication required (HTTP $code) — re-sign in to your profile or add a Seerr API Key in Server Settings"
-                404 -> "Media item not found on server (HTTP 404)"
-                409 -> "This item has already been requested (HTTP 409)"
-                500, 502, 503, 504 -> "Server error (HTTP $code) — check that Jellyfin and Seerr are healthy"
+                401, 403 -> strings.errorHttpAuthRequired.format(code)
+                404 -> strings.errorHttpNotFound.format(404)
+                409 -> strings.errorHttpAlreadyRequested.format(409)
+                500, 502, 503, 504 -> strings.errorHttpServer.format(code)
                 else -> if (raw.isNotBlank()) raw else fallback
             }
         }

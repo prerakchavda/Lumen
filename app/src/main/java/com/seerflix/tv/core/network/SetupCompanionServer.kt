@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
@@ -30,6 +31,7 @@ class SetupCompanionServer {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
+    private var idleJob: Job? = null
 
     var companionUrl: String? = null
         private set
@@ -37,10 +39,13 @@ class SetupCompanionServer {
     /**
      * @param jellyfinOnly the form only asks for a Jellyfin address (adding another server),
      *   not the Seerr fields of first-time setup.
+     * @param onExpired called when the server shuts itself down after [IDLE_TIMEOUT_MS] without a
+     *   request (so the form isn't left listening on the LAN while the app sits in the background).
      */
     fun start(
         currentValues: CompanionFormResult = CompanionFormResult(),
         jellyfinOnly: Boolean = false,
+        onExpired: () -> Unit = {},
         onSubmitted: (CompanionFormResult) -> Unit
     ): String? {
         stop()
@@ -52,17 +57,29 @@ class SetupCompanionServer {
         }.getOrNull() ?: return null
         serverSocket = socket
         // Unguessable path segment shown only in the on-screen QR/URL: other devices on the LAN
-        // can neither read the pre-filled form (which may contain the Seerr API key) nor push
+        // can neither read the pre-filled form (server URLs; the Seerr API key is never sent) nor push
         // server URLs to the TV.
         val token = generateAccessToken()
         val url = "http://$lanIp:${socket.localPort}/$token/"
         companionUrl = url
+        val restartIdleTimer = {
+            idleJob?.cancel()
+            idleJob = scope.launch {
+                delay(IDLE_TIMEOUT_MS)
+                if (serverSocket === socket) {
+                    stop()
+                    onExpired()
+                }
+            }
+        }
+        restartIdleTimer()
 
         acceptJob = scope.launch {
             while (isActive && !socket.isClosed) {
                 val client = runCatching { socket.accept() }.getOrNull() ?: break
                 launch {
                     // Never let one bad connection crash the app (uncaught exception in scope).
+                    restartIdleTimer()
                     runCatching { handleClient(client, token, currentValues, jellyfinOnly, onSubmitted) }
                     runCatching { client.close() }
                 }
@@ -72,6 +89,8 @@ class SetupCompanionServer {
     }
 
     fun stop() {
+        idleJob?.cancel()
+        idleJob = null
         acceptJob?.cancel()
         acceptJob = null
         runCatching { serverSocket?.close() }
@@ -182,7 +201,7 @@ class SetupCompanionServer {
             <label>Seerr Local LAN URL (Optional)</label>
             <input type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" name="seerrLocalUrl" placeholder="http://192.168.1.50:5055" value="${escapeHtml(defaults.seerrLocalUrl)}"/>
             <label>Seerr API Key (Optional)</label>
-            <input type="text" name="seerrApiKey" placeholder="Optional X-Api-Key from Seerr Settings" value="${escapeHtml(defaults.seerrApiKey)}"/>
+            <input type="password" autocomplete="off" name="seerrApiKey" placeholder="${if (defaults.seerrApiKey.isNotBlank()) "Saved on the TV — leave blank to keep it" else "Optional X-Api-Key from Seerr Settings"}" value=""/>
     """
 
     private fun buildFormHtml(defaults: CompanionFormResult, token: String, jellyfinOnly: Boolean = false): String = """
@@ -196,7 +215,7 @@ class SetupCompanionServer {
             h1{color:#e50914;font-size:24px;margin-bottom:8px;}
             p{color:#aaa;font-size:14px;margin-bottom:20px;}
             label{display:block;font-size:13px;font-weight:600;margin-top:14px;margin-bottom:6px;color:#ddd;}
-            input[type=text],input[type=url]{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #333;background:#1e1e1e;color:#fff;font-size:15px;}
+            input[type=text],input[type=url],input[type=password]{width:100%;box-sizing:border-box;padding:12px;border-radius:8px;border:1px solid #333;background:#1e1e1e;color:#fff;font-size:15px;}
             .check{display:flex;align-items:center;gap:10px;margin-top:16px;}
             button{margin-top:22px;width:100%;padding:14px;border:none;border-radius:8px;background:#e50914;color:#fff;font-weight:700;font-size:16px;cursor:pointer;}
           </style>
@@ -246,6 +265,9 @@ class SetupCompanionServer {
 
     companion object {
         private val secureRandom = SecureRandom()
+
+        /** The form stops listening after this long without a request from the phone. */
+        const val IDLE_TIMEOUT_MS = 10 * 60_000L
 
         internal fun generateAccessToken(): String {
             val bytes = ByteArray(12)

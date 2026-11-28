@@ -145,6 +145,24 @@ class PlaybackQueueManager @Inject constructor() {
         }
     }
 
+    /**
+     * The current entry is now played from another item (the same title's copy on another server,
+     * picked in Versions): rename it so the next [syncToItem] keeps the queue instead of clearing it.
+     * With [expectedCurrentId], nothing changes unless that is what the current entry plays.
+     */
+    @Synchronized
+    fun replaceCurrentItemId(newId: String, expectedCurrentId: String? = null) {
+        val cur = _state.value
+        val entry = cur.current ?: return
+        if (entry.itemId == newId) return
+        if (expectedCurrentId != null && entry.itemId != expectedCurrentId) return
+        val updated = cur.items.toMutableList().apply {
+            // The old media source id belongs to the other copy's server.
+            this[cur.currentIndex] = entry.copy(itemId = newId, mediaSourceId = null)
+        }
+        _state.value = cur.copy(items = updated)
+    }
+
     @Synchronized
     fun clear() {
         _state.value = PlaybackQueueState()

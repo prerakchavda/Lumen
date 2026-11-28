@@ -18,14 +18,13 @@ import com.seerflix.tv.core.model.ContentRatingHelper
 import com.seerflix.tv.core.model.ContentRatingLimit
 import com.seerflix.tv.core.model.EpisodeSummary
 import com.seerflix.tv.core.model.MediaType
+import com.seerflix.tv.core.model.SeasonSummary
 import com.seerflix.tv.core.model.SeerrIssueType
 import com.seerflix.tv.core.model.UnifiedMediaItem
 import com.seerflix.tv.core.model.UserProfile
 import com.seerflix.tv.core.network.SessionPreferences
 import com.seerflix.tv.core.player.ExternalPlayerHelper
 import com.seerflix.tv.core.player.JellyfinPlaybackManager
-import com.seerflix.tv.core.player.ResolvedPreviewStream
-import com.seerflix.tv.core.player.YouTubeTrailerResolver
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -48,9 +47,13 @@ data class DetailsUiState(
     val recommendations: List<UnifiedMediaItem> = emptyList(),
     val collectionSaga: CollectionSummary? = null,
     val selectedSeasonNumber: Int = 1,
+    /**
+     * Which season is selected ([seasonSelectionKey]). Season numbers aren't unique: Jellyfin-only
+     * seasons without an index number (e.g. "Specials") all map to season 1.
+     */
+    val selectedSeasonKey: String? = null,
     val episodes: List<EpisodeSummary> = emptyList(),
     val episodesLoading: Boolean = false,
-    val previewStream: ResolvedPreviewStream? = null,
     val has4kServer: Boolean = true,
     val selectedMediaSourceId: String? = null,
     val arrServers: List<ArrServerOption> = emptyList(),
@@ -87,12 +90,20 @@ data class DetailsUiState(
     val showRateMenu: Boolean = false
 )
 
+/** Identifies a season uniquely (season numbers can repeat, see [DetailsUiState.selectedSeasonKey]). */
+fun seasonSelectionKey(season: SeasonSummary): String =
+    season.jellyfinSeasonId ?: "n${season.seasonNumber}"
+
+/** The selected season among [seasons]: by key, falling back to the season number. */
+fun DetailsUiState.selectedSeasonIn(seasons: List<SeasonSummary>): SeasonSummary? =
+    selectedSeasonKey?.let { k -> seasons.firstOrNull { seasonSelectionKey(it) == k } }
+        ?: seasons.firstOrNull { it.seasonNumber == selectedSeasonNumber }
+
 @HiltViewModel
 class DetailsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val authRepository: AuthRepository,
     private val catalogRepository: UnifiedCatalogRepository,
-    private val trailerResolver: YouTubeTrailerResolver,
     private val playbackManager: JellyfinPlaybackManager,
     private val sessionPreferences: SessionPreferences,
     @com.seerflix.tv.core.network.MediaClient val mediaHttpClient: okhttp3.OkHttpClient
@@ -112,6 +123,8 @@ class DetailsViewModel @Inject constructor(
         get() = stringsForLanguage(sessionPreferences.cachedUiLanguage)
 
     private var pollingJob: Job? = null
+    /** The status refresh started on return from the player; cancelled when hidden again. */
+    private var visibleRefreshJob: Job? = null
     private var seasonJob: Job? = null
     private var loadJob: Job? = null
     private var activeUserId: String = ""
@@ -132,7 +145,10 @@ class DetailsViewModel @Inject constructor(
         if (hasBeenHidden) {
             hasBeenHidden = false
             // Returning from the player: pick up new resume position / watched state.
-            viewModelScope.launch(Dispatchers.IO) { refreshStatusSilently() }
+            // Tracked: hidden/visible twice in a row must not run two refreshes that each start
+            // a polling loop (one would be orphaned and poll under the player).
+            visibleRefreshJob?.cancel()
+            visibleRefreshJob = viewModelScope.launch(Dispatchers.IO) { refreshStatusSilently() }
         } else {
             startLivePollingIfNeeded(item)
         }
@@ -142,9 +158,11 @@ class DetailsViewModel @Inject constructor(
      * Called when the screen is covered (player, another Details page) or the app is backgrounded:
      * stop the 15s Seerr/Jellyfin polling instead of letting it run under the player.
      */
+    @Synchronized
     fun onScreenHidden() {
         isScreenVisible = false
         hasBeenHidden = true
+        visibleRefreshJob?.cancel()
         pollingJob?.cancel()
         pollingJob = null
     }
@@ -239,6 +257,7 @@ class DetailsViewModel @Inject constructor(
                     it.copy(
                         item = item,
                         selectedSeasonNumber = defaultSeason,
+                        selectedSeasonKey = item.seasons.firstOrNull()?.let(::seasonSelectionKey),
                         selectedMediaSourceId = it.selectedMediaSourceId ?: item.mediaVersions.firstOrNull()?.id,
                         isSeerrConfigured = seerrConfigured,
                         canSubmitRequests = profile.canSubmitRequests,
@@ -276,15 +295,6 @@ class DetailsViewModel @Inject constructor(
                         _uiState.update {
                             it.copy(collectionSaga = saga?.let { s -> s.copy(items = s.items.distinctBy { p -> p.id }) })
                         }
-                    }
-                }
-                if (profile.autoplayPreviews) {
-                    launch(Dispatchers.IO) {
-                        val preview = trailerResolver.resolvePreview(
-                            localTrailerId = item.localTrailerItemId,
-                            youtubeKey = item.youtubeTrailerKey
-                        )
-                        _uiState.update { it.copy(previewStream = preview) }
                     }
                 }
                 if (profile.themeSongsEnabled && !item.jellyfinId.isNullOrBlank()) {
@@ -377,14 +387,18 @@ class DetailsViewModel @Inject constructor(
         _uiState.update { it.copy(selectedMediaSourceId = mediaSourceId) }
     }
 
-    fun selectSeason(seasonNumber: Int) {
+    fun selectSeason(season: SeasonSummary) = selectSeason(season.seasonNumber, seasonSelectionKey(season))
+
+    fun selectSeason(seasonNumber: Int, seasonKey: String? = null) {
         val item = _uiState.value.item ?: return
-        val season = item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
+        val season = seasonKey?.let { k -> item.seasons.firstOrNull { seasonSelectionKey(it) == k } }
+            ?: item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
+        val key = season?.let(::seasonSelectionKey)
         // Flipping quickly through seasons used to race: a slow earlier season could land last
         // and show Season 1's episodes under the Season 3 tab. Cancel the previous load and
         // only accept results that still match the selected season.
         seasonJob?.cancel()
-        _uiState.update { it.copy(selectedSeasonNumber = seasonNumber, episodesLoading = true) }
+        _uiState.update { it.copy(selectedSeasonNumber = seasonNumber, selectedSeasonKey = key, episodesLoading = true) }
         seasonJob = viewModelScope.launch(Dispatchers.IO) {
             val eps = catalogRepository.loadSeasonEpisodes(
                 userId = activeUserId,
@@ -395,7 +409,7 @@ class DetailsViewModel @Inject constructor(
             )
             ensureActive()
             _uiState.update {
-                if (it.selectedSeasonNumber != seasonNumber) it
+                if (it.selectedSeasonNumber != seasonNumber || it.selectedSeasonKey != key) it
                 else it.copy(episodes = eps.distinctBy { e -> e.id }, episodesLoading = false)
             }
         }
@@ -974,7 +988,8 @@ class DetailsViewModel @Inject constructor(
         if (playableEps.isEmpty()) return
         val nextWatched = !playableEps.all { it.isWatched }
         val seasonNumber = state.selectedSeasonNumber
-        val season = item.seasons.firstOrNull { it.seasonNumber == seasonNumber }
+        val seasonKey = state.selectedSeasonKey
+        val season = state.selectedSeasonIn(item.seasons)
         val episodeIds = playableEps.map { it.id }
         val episodeIdSet = episodeIds.toSet()
         viewModelScope.launch(Dispatchers.IO) {
@@ -986,7 +1001,7 @@ class DetailsViewModel @Inject constructor(
             ).onSuccess {
                 _uiState.update { cur ->
                     // The user may have switched seasons meanwhile: only touch the episodes marked.
-                    if (cur.selectedSeasonNumber != seasonNumber) return@update cur
+                    if (cur.selectedSeasonNumber != seasonNumber || cur.selectedSeasonKey != seasonKey) return@update cur
                     cur.copy(
                         episodes = cur.episodes.map { ep ->
                             if (ep.id in episodeIdSet) {
@@ -1012,6 +1027,8 @@ class DetailsViewModel @Inject constructor(
             item.hdDownload != null ||
             item.uhdDownload != null
 
+    // Called from Main and from IO (after a refresh): one polling loop at a time.
+    @Synchronized
     private fun startLivePollingIfNeeded(initial: UnifiedMediaItem) {
         pollingJob?.cancel()
         // Only poll while something is actually requested/downloading. Previously any title not in
@@ -1065,7 +1082,8 @@ class DetailsViewModel @Inject constructor(
         }
         if (refreshed.mediaType == MediaType.SERIES) {
             val seasonNum = _uiState.value.selectedSeasonNumber
-            val season = refreshed.seasons.firstOrNull { it.seasonNumber == seasonNum }
+            val seasonKey = _uiState.value.selectedSeasonKey
+            val season = _uiState.value.selectedSeasonIn(refreshed.seasons)
             val eps = catalogRepository.loadSeasonEpisodes(
                 userId = activeUserId,
                 tmdbId = refreshed.tmdbId,
@@ -1075,7 +1093,7 @@ class DetailsViewModel @Inject constructor(
             )
             // The user may have switched seasons while this was loading.
             _uiState.update {
-                if (it.selectedSeasonNumber != seasonNum || it.episodesLoading) it
+                if (it.selectedSeasonNumber != seasonNum || it.selectedSeasonKey != seasonKey || it.episodesLoading) it
                 else {
                     val fresh = eps.distinctBy { e -> e.id }
                     // Unchanged list -> keep the old instance so the episode rows skip recomposition.

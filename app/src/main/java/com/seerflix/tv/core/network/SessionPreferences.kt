@@ -20,6 +20,7 @@ import com.seerflix.tv.core.model.UserProfile
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -62,6 +63,14 @@ data class LocalMyListEntry(
     )
 }
 
+/** Wrong-PIN state of one profile; [lockedUntilMs] is wall-clock time. */
+@Serializable
+data class PinThrottleEntry(
+    val failures: Int = 0,
+    val strikes: Int = 0,
+    val lockedUntilMs: Long = 0L
+)
+
 @Singleton
 class SessionPreferences private constructor(
     private val dataStore: DataStore<Preferences>,
@@ -99,6 +108,7 @@ class SessionPreferences private constructor(
         /** Every Jellyfin server (home first). The home entry's URLs live in the keys above. */
         val JELLYFIN_SERVERS_JSON = stringPreferencesKey("jellyfin_servers_json")
         val SCHEMA_VERSION = stringPreferencesKey("schema_version")
+        val PIN_THROTTLE_JSON = stringPreferencesKey("pin_throttle_json")
 
         fun localMyList(profileId: String) = stringPreferencesKey("local_my_list_$profileId")
         fun reminders(profileId: String) = stringPreferencesKey("reminders_$profileId")
@@ -405,6 +415,16 @@ class SessionPreferences private constructor(
         (prefs[Keys.ALLOW_REMOTE_CONTROL] != "false").also { cachedAllowRemoteControl = it }
     }
 
+    /** Wrong-PIN counters per profile id, kept on disk so killing the app does not reset a lockout. */
+    suspend fun pinThrottleState(): Map<String, PinThrottleEntry> {
+        val raw = dataStore.data.first()[Keys.PIN_THROTTLE_JSON] ?: return emptyMap()
+        return runCatching { json.decodeFromString<Map<String, PinThrottleEntry>>(raw) }.getOrDefault(emptyMap())
+    }
+
+    suspend fun savePinThrottleState(state: Map<String, PinThrottleEntry>) {
+        dataStore.edit { it[Keys.PIN_THROTTLE_JSON] = json.encodeToString(state) }
+    }
+
     suspend fun setAllowRemoteControl(enabled: Boolean) {
         cachedAllowRemoteControl = enabled
         dataStore.edit { it[Keys.ALLOW_REMOTE_CONTROL] = enabled.toString() }
@@ -426,6 +446,11 @@ class SessionPreferences private constructor(
 
     @Volatile
     var cachedUiLanguage: String = "en"
+        private set
+
+    /** Active profile's audio passthrough setting, so the player is built for it up front. */
+    @Volatile
+    var cachedAudioPassthroughEnabled: Boolean = true
         private set
 
     val isSeerrConfigured: Boolean
@@ -474,25 +499,34 @@ class SessionPreferences private constructor(
         config
     }
 
-    val profilesFlow: Flow<List<UserProfile>> = dataStore.data.map { prefs ->
-        val raw = prefs[Keys.PROFILES_JSON] ?: return@map emptyList()
-        runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
-    }
-
-    val activeProfileFlow: Flow<UserProfile?> = dataStore.data.map { prefs ->
-        val activeId = prefs[Keys.ACTIVE_PROFILE_ID] ?: return@map null
-        val raw = prefs[Keys.PROFILES_JSON] ?: return@map null
-        val list = runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
-        val found = list.firstOrNull { it.id == activeId }
-        cachedToken = found?.jellyfinToken
-        installActiveProfile(found)
-        if (!found?.seerrCookie.isNullOrBlank()) {
-            cachedSeerrCookie = found?.seerrCookie
+    // Only re-decode the profiles JSON when it (or the active id) actually changed: every other
+    // DataStore write (reminders, My List, tracked requests...) re-emits dataStore.data.
+    val profilesFlow: Flow<List<UserProfile>> = dataStore.data
+        .map { it[Keys.PROFILES_JSON] }
+        .distinctUntilChanged()
+        .map { raw ->
+            if (raw == null) return@map emptyList()
+            runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
         }
-        cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
-        cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
-        found
-    }
+
+    val activeProfileFlow: Flow<UserProfile?> = dataStore.data
+        .map { it[Keys.ACTIVE_PROFILE_ID] to it[Keys.PROFILES_JSON] }
+        .distinctUntilChanged()
+        .map { (activeIdOrNull, rawOrNull) ->
+            val activeId = activeIdOrNull ?: return@map null
+            val raw = rawOrNull ?: return@map null
+            val list = runCatching { json.decodeFromString<List<UserProfile>>(raw) }.getOrDefault(emptyList())
+            val found = list.firstOrNull { it.id == activeId }
+            cachedToken = found?.jellyfinToken
+            installActiveProfile(found)
+            if (!found?.seerrCookie.isNullOrBlank()) {
+                cachedSeerrCookie = found?.seerrCookie
+            }
+            cachedMetadataLanguage = found?.metadataLanguage?.ifBlank { "en" } ?: "en"
+            cachedUiLanguage = found?.uiLanguage?.ifBlank { "en" } ?: "en"
+            cachedAudioPassthroughEnabled = found?.audioPassthroughEnabled ?: true
+            found
+        }
 
     val readyAlertsFlow: Flow<List<com.seerflix.tv.core.model.ReadyRequestAlert>> = dataStore.data.map { prefs ->
         val raw = prefs[Keys.READY_ALERTS_JSON] ?: return@map emptyList()
@@ -551,8 +585,15 @@ class SessionPreferences private constructor(
         }
     }
 
-    suspend fun upsertAndActivateProfile(profile: UserProfile) {
+    /**
+     * Stores [profile] (merged over any saved copy) and makes it active, unless the saved copy is
+     * PIN-locked: signing in again as that user (Add Profile with the parent's Jellyfin account)
+     * must not skip the PIN. Then only the fresh token is saved and the caller has to run the PIN
+     * challenge before switching. Returns the stored profile (its [UserProfile.hasPin] tells which).
+     */
+    suspend fun upsertAndActivateProfile(profile: UserProfile): UserProfile {
         var resolvedProfile = profile
+        var activate = true
         dataStore.edit { prefs ->
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
@@ -605,15 +646,39 @@ class SessionPreferences private constructor(
                 profile.copy(seerrCookie = effectiveCookie)
             }
             resolvedProfile = merged
+            activate = existing?.pinHash == null || prefs[Keys.ACTIVE_PROFILE_ID] == profile.id
             val updated = current.filterNot { it.id == profile.id } + merged
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
-            prefs[Keys.ACTIVE_PROFILE_ID] = profile.id
+            if (activate) prefs[Keys.ACTIVE_PROFILE_ID] = profile.id
         }
+        if (!activate) return resolvedProfile
         cachedToken = resolvedProfile.jellyfinToken
         installActiveProfile(resolvedProfile)
         cachedSeerrCookie = resolvedProfile.seerrCookie
         cachedMetadataLanguage = resolvedProfile.metadataLanguage.ifBlank { "en" }
         cachedUiLanguage = resolvedProfile.uiLanguage.ifBlank { "en" }
+        return resolvedProfile
+    }
+
+    /**
+     * Changes [profileId] in one atomic edit, starting from the STORED profile: only the fields
+     * [transform] touches change, so a concurrent write (a playback toggle, a refreshed cookie,
+     * server track defaults) is never rolled back by a stale snapshot.
+     */
+    suspend fun updateProfile(profileId: String, transform: (UserProfile) -> UserProfile) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.PROFILES_JSON]?.let {
+                runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
+            } ?: return@edit
+            var changed: UserProfile? = null
+            val updated = current.map { if (it.id == profileId) transform(it).also { p -> changed = p } else it }
+            val result = changed ?: return@edit
+            prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
+            if (prefs[Keys.ACTIVE_PROFILE_ID] == profileId) {
+                cachedMetadataLanguage = result.metadataLanguage.ifBlank { "en" }
+                cachedUiLanguage = result.uiLanguage.ifBlank { "en" }
+            }
+        }
     }
 
     suspend fun updateProfilePreferences(updatedProfile: UserProfile) {
@@ -621,8 +686,18 @@ class SessionPreferences private constructor(
             val current = prefs[Keys.PROFILES_JSON]?.let {
                 runCatching { json.decodeFromString<List<UserProfile>>(it) }.getOrDefault(emptyList())
             } ?: emptyList()
-            val updated = current.map {
-                if (it.id == updatedProfile.id) updatedProfile else it
+            // Callers edit preferences on a snapshot of the profile. Keep the sign-in state from
+            // the stored copy, so a token / Seerr cookie / server account written since that
+            // snapshot was taken isn't rolled back by a settings change.
+            val updated = current.map { stored ->
+                if (stored.id == updatedProfile.id) {
+                    updatedProfile.copy(
+                        jellyfinUserId = stored.jellyfinUserId,
+                        jellyfinToken = stored.jellyfinToken,
+                        seerrCookie = stored.seerrCookie,
+                        serverCredentials = stored.serverCredentials
+                    )
+                } else stored
             }
             prefs[Keys.PROFILES_JSON] = json.encodeToString(updated)
             if (prefs[Keys.ACTIVE_PROFILE_ID] == updatedProfile.id) {
@@ -850,7 +925,7 @@ class SessionPreferences private constructor(
         }
     }
 
-    // ---- Taste (0.9.5): ratings, "Not interested" and row engagement, per Jellyfin user ----
+    // ---- Taste (0.9.8): ratings, "Not interested" and row engagement, per Jellyfin user ----
 
     /** In-memory copy so Home can read taste on every load without touching disk. */
     private val tasteCache = java.util.concurrent.ConcurrentHashMap<String, com.seerflix.tv.core.data.TasteData>()

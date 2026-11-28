@@ -68,5 +68,8 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           name: Lumen TV ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') || contains(github.event.inputs.tag, 'beta') }}
+          # Tag the commit that was built. Without this a manually run release tags the default
+          # branch, which may not contain the code in the APK.
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: release-assets/lumen-tv-*.apk

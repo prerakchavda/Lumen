@@ -168,7 +168,7 @@ fun SettingsScreen(
                 )
             }
 
-            // ---- Recommendations (0.9.5) ----
+            // ---- Recommendations (0.9.8) ----
             item { SectionHeader(strings.settingsRecommendationsSection) }
             item {
                 ToggleRow(

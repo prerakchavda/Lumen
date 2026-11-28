@@ -104,7 +104,8 @@ class AddServerViewModel @Inject constructor(
     private fun startCompanion() {
         val url = companionServer.start(
             currentValues = CompanionFormResult(),
-            jellyfinOnly = true
+            jellyfinOnly = true,
+            onExpired = { _uiState.update { it.copy(companionUrl = null) } }
         ) { submitted ->
             _uiState.update {
                 it.copy(

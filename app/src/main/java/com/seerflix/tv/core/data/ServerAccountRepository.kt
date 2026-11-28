@@ -10,8 +10,10 @@ import com.seerflix.tv.core.network.JellyfinQuickConnectAuthRequest
 import com.seerflix.tv.core.network.JellyfinQuickConnectState
 import com.seerflix.tv.core.network.JellyfinServers
 import com.seerflix.tv.core.network.SessionPreferences
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 import javax.inject.Inject
@@ -129,13 +131,19 @@ class ServerAccountRepository @Inject constructor(
      */
     suspend fun removeServer(serverId: String) {
         if (serverId == ServerScopedId.HOME) return
-        if (prefs.tokenFor(serverId) != null) {
-            withTimeoutOrNull(LOGOUT_TIMEOUT_MS) {
-                runCatchingCancellable { servers.api(serverId).logout() }
+        try {
+            if (prefs.tokenFor(serverId) != null) {
+                withTimeoutOrNull(LOGOUT_TIMEOUT_MS) {
+                    runCatchingCancellable { servers.api(serverId).logout() }
+                }
+            }
+        } finally {
+            // Leaving Settings during the (up to 4 s) logout must not cancel the removal itself.
+            withContext(NonCancellable) {
+                prefs.removeServer(serverId)
+                servers.resetHealth(serverId)
             }
         }
-        prefs.removeServer(serverId)
-        servers.resetHealth(serverId)
         syncLibrary()
     }
 

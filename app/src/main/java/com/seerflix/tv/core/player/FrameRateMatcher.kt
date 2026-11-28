@@ -15,6 +15,7 @@ data class DisplayModeCandidate(
 )
 
 object FrameRateMatcher {
+    private const val MULTIPLE_TOLERANCE_HZ = 0.25f
 
     /**
      * Picks the best display mode matching [videoFrameRate] at the same physical resolution
@@ -35,6 +36,10 @@ object FrameRateMatcher {
         }
         if (sameResolution.isEmpty()) return null
 
+        // Already showing a clean multiple (24fps at 48/120Hz, 30fps at 60Hz): judder-free, so a
+        // switch would only cost an HDMI resync blackout.
+        if ((2..5).any { abs(currentMode.refreshRate - videoFrameRate * it) <= MULTIPLE_TOLERANCE_HZ }) return null
+
         // Check exact/near-exact 1x match first (e.g. 23.976 -> 23.976 or 24.000)
         val exactMatch = sameResolution
             .filter { abs(it.refreshRate - videoFrameRate) <= 0.12f }
@@ -47,7 +52,7 @@ object FrameRateMatcher {
         val multipleMatch = (2..5).firstNotNullOfOrNull { multiplier ->
             val targetHz = videoFrameRate * multiplier
             sameResolution
-                .filter { abs(it.refreshRate - targetHz) <= 0.25f }
+                .filter { abs(it.refreshRate - targetHz) <= MULTIPLE_TOLERANCE_HZ }
                 .minByOrNull { abs(it.refreshRate - targetHz) }
         }
         return multipleMatch?.takeIf { it.modeId != currentMode.modeId }

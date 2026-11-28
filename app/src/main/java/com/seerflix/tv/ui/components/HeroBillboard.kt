@@ -1,15 +1,12 @@
 package com.seerflix.tv.ui.components
 
 import androidx.annotation.OptIn
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,6 +35,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -128,6 +126,27 @@ fun HeroBillboard(
         // Requested at display size (capped at 1280 px server-side) and keeps showing the previous
         // backdrop until the next one is decoded, so a featured-item change is a single swap with
         // no background flash and no crossfade layer.
+        //
+        // Trailer preview: the video surface sits UNDER the backdrop and the backdrop fades out on
+        // the first rendered frame. (ExoPlayer only reports a first frame once a surface is
+        // attached, so the surface must be composed before the video can be "ready".) The player
+        // is kept once created and only switches streams, instead of being built and released
+        // (a blocking call) on every featured-item change.
+        var keepPreviewPlayer by remember { mutableStateOf(false) }
+        if (previewStream != null || keepPreviewPlayer) {
+            SideEffect { keepPreviewPlayer = true }
+            HeroPreviewVideoLayer(
+                previewStream = previewStream,
+                previewHttpClient = previewHttpClient,
+                isMuted = isMuted,
+                onFirstFrame = { isVideoReady = true }
+            )
+        }
+        val backdropAlpha by animateFloatAsState(
+            targetValue = if (previewStream != null && isVideoReady) 0f else 1f,
+            animationSpec = tween(if (isVideoReady) 500 else 0),
+            label = "heroBackdropAlpha"
+        )
         SizedAsyncImage(
             url = item.backdropUrl ?: item.posterUrl,
             contentDescription = item.title,
@@ -135,18 +154,10 @@ fun HeroBillboard(
             height = spec.heroHeightDp.dp,
             maxRequestWidthPx = 1280,
             keepPreviousWhileLoading = true,
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer { alpha = backdropAlpha }
         )
-
-        if (previewStream != null) {
-            HeroPreviewVideoLayer(
-                previewStream = previewStream,
-                previewHttpClient = previewHttpClient,
-                isMuted = isMuted,
-                isVideoReady = isVideoReady,
-                onFirstFrame = { isVideoReady = true }
-            )
-        }
 
         // Preset-aware horizontal & vertical cinematic gradients, drawn by ONE node with cached
         // shaders. The vertical scrim is transparent between 32% and 60% of the height, so only its
@@ -477,10 +488,9 @@ fun HeroPillButton(
 @OptIn(UnstableApi::class)
 @Composable
 private fun HeroPreviewVideoLayer(
-    previewStream: ResolvedPreviewStream,
+    previewStream: ResolvedPreviewStream?,
     previewHttpClient: OkHttpClient?,
     isMuted: Boolean,
-    isVideoReady: Boolean,
     onFirstFrame: () -> Unit
 ) {
     val context = LocalContext.current
@@ -535,7 +545,13 @@ private fun HeroPreviewVideoLayer(
         previewPlayer.volume = if (isMuted) 0f else 0.7f
     }
 
-    LaunchedEffect(previewPlayer, previewStream.videoUrl) {
+    LaunchedEffect(previewPlayer, previewStream?.videoUrl) {
+        if (previewStream == null) {
+            // Between featured items: drop the old stream but keep the player for the next one.
+            previewPlayer.stop()
+            previewPlayer.clearMediaItems()
+            return@LaunchedEffect
+        }
         val dsFactory = httpDataSourceFactory
         if (previewStream.audioUrl != null) {
             val vSrc = ProgressiveMediaSource.Factory(dsFactory)
@@ -550,25 +566,19 @@ private fun HeroPreviewVideoLayer(
         previewPlayer.prepare()
     }
 
-    AnimatedVisibility(
-        visible = isVideoReady,
-        enter = fadeIn(tween(500)),
-        exit = fadeOut(tween(300))
-    ) {
-        AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                    player = previewPlayer
-                }
-            },
-            update = { view ->
-                if (view.player !== previewPlayer) {
-                    view.player = previewPlayer
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
-    }
+    AndroidView(
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                useController = false
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                player = previewPlayer
+            }
+        },
+        update = { view ->
+            if (view.player !== previewPlayer) {
+                view.player = previewPlayer
+            }
+        },
+        modifier = Modifier.fillMaxSize()
+    )
 }

@@ -12,8 +12,10 @@ import com.seerflix.tv.core.network.SeerrApi
 import com.seerflix.tv.core.network.SeerrJellyfinLoginRequest
 import com.seerflix.tv.core.network.SeerrQuickConnectAuthRequest
 import com.seerflix.tv.core.network.SessionPreferences
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,20 +43,27 @@ class AuthRepository @Inject constructor(
         // tested. If the test fails, put back the previous working config so backing out of
         // Settings doesn't leave the app pointed at a broken server.
         val previous = prefs.serverConfigFlow.first()
-        val result = testAndSaveServersInternal(
-            jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
-        )
-        if (result.isFailure && previous.isConfigured) {
-            prefs.saveServerUrls(
-                jellyfinUrl = previous.jellyfinUrl,
-                seerrUrl = previous.seerrUrl,
-                jellyfinLocalUrl = previous.jellyfinLocalUrl,
-                seerrLocalUrl = previous.seerrLocalUrl,
-                trustSelfSignedCerts = previous.trustSelfSignedCerts,
-                seerrApiKey = previous.seerrApiKey
+        var result: Result<Pair<String, String>>? = null
+        try {
+            result = testAndSaveServersInternal(
+                jellyfinUrl, seerrUrl, jellyfinLocalUrl, seerrLocalUrl, trustSelfSignedCerts, seerrApiKey
             )
+            return result
+        } finally {
+            // Also restore when cancelled mid-test (user pressed Back): result is still null then.
+            if (result?.isSuccess != true && previous.isConfigured) {
+                withContext(NonCancellable) {
+                    prefs.saveServerUrls(
+                        jellyfinUrl = previous.jellyfinUrl,
+                        seerrUrl = previous.seerrUrl,
+                        jellyfinLocalUrl = previous.jellyfinLocalUrl,
+                        seerrLocalUrl = previous.seerrLocalUrl,
+                        trustSelfSignedCerts = previous.trustSelfSignedCerts,
+                        seerrApiKey = previous.seerrApiKey
+                    )
+                }
+            }
         }
-        return result
     }
 
     private suspend fun testAndSaveServersInternal(
@@ -94,6 +103,7 @@ class AuthRepository @Inject constructor(
         val previousSeerrCookie = prefs.cachedSeerrCookie
         return signInWithPasswordInternal(username, password)
             .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+            .onSuccess { if (it.hasPin) prefs.setImmediateSeerrCookie(previousSeerrCookie) }
     }
 
     private suspend fun signInWithPasswordInternal(username: String, password: String): Result<UserProfile> = runCatchingCancellable {
@@ -141,8 +151,8 @@ class AuthRepository @Inject constructor(
             subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(serverCfg?.subtitleMode),
             playDefaultAudioTrack = serverCfg?.playDefaultAudioTrack ?: true
         )
+        // The stored copy: PIN-locked profiles come back with hasPin and are not active yet.
         prefs.upsertAndActivateProfile(profile)
-        profile
     }
 
     suspend fun initiateQuickConnect(): Result<JellyfinQuickConnectState> = runCatchingCancellable {
@@ -164,6 +174,9 @@ class AuthRepository @Inject constructor(
         val previousSeerrCookie = prefs.cachedSeerrCookie
         return pollAndCompleteQuickConnectInternal(secret)
             .onFailure { prefs.setImmediateSeerrCookie(previousSeerrCookie) }
+            // A PIN-locked profile isn't activated yet (see upsertAndActivateProfile): the
+            // still-active profile keeps its own Seerr session until the PIN is entered.
+            .onSuccess { if (it?.hasPin == true) prefs.setImmediateSeerrCookie(previousSeerrCookie) }
     }
 
     private suspend fun pollAndCompleteQuickConnectInternal(secret: String): Result<UserProfile?> = runCatchingCancellable {
@@ -204,8 +217,8 @@ class AuthRepository @Inject constructor(
             subtitleSelectionMode = com.seerflix.tv.core.player.SubtitleTrackSelector.fromJellyfinSubtitleMode(serverCfg?.subtitleMode),
             playDefaultAudioTrack = serverCfg?.playDefaultAudioTrack ?: true
         )
+        // The stored copy: PIN-locked profiles come back with hasPin and are not active yet.
         prefs.upsertAndActivateProfile(profile)
-        profile
     }
 
     /**
@@ -229,8 +242,10 @@ class AuthRepository @Inject constructor(
     }
 
     suspend fun switchProfile(profileId: String) {
+        // No server sync here: MainActivity's LaunchedEffect(activeProfile?.jellyfinToken) runs
+        // syncUserConfigurationFromServer() in the background, so a dead server can't hold up
+        // navigation for the full network timeout.
         prefs.setActiveProfile(profileId)
-        runCatchingCancellable { syncUserConfigurationFromServer() }
     }
 
     suspend fun clearActiveProfile() {
@@ -243,6 +258,11 @@ class AuthRepository @Inject constructor(
 
     suspend fun updateProfilePreferences(profile: UserProfile) {
         prefs.updateProfilePreferences(profile)
+    }
+
+    /** Atomic change of a few fields of [profileId] (see [SessionPreferences.updateProfile]). */
+    suspend fun updateProfile(profileId: String, transform: (UserProfile) -> UserProfile) {
+        prefs.updateProfile(profileId, transform)
     }
 
     suspend fun updateSubtitleAppearance(fontScale: Float, backgroundAlpha: Float) {

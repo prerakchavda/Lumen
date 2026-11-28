@@ -19,12 +19,18 @@ import javax.inject.Singleton
 class TvChannelSyncManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    /**
+     * [keepReadyPromotion] says whether a "Ready to watch" promotion (by Jellyfin id) may stay on
+     * the launcher's Watch Next row, which every profile shares: one promoted while an adult
+     * profile was active must not linger for a Kids / rating-limited one.
+     */
     suspend fun syncHomeChannels(
         continueWatching: List<UnifiedMediaItem>,
-        featuredRows: List<UnifiedMediaItem>
+        featuredRows: List<UnifiedMediaItem>,
+        keepReadyPromotion: (jellyfinId: String) -> Boolean = { true }
     ) = withContext(Dispatchers.IO) {
         runCatching {
-            syncWatchNext(continueWatching)
+            syncWatchNext(continueWatching, keepReadyPromotion)
         }
         runCatching {
             syncSeerflixChannel(featuredRows)
@@ -68,6 +74,41 @@ class TvChannelSyncManager @Inject constructor(
             }
         }
 
+    /**
+     * Removes the "Ready to watch" promotions [keep] rejects (e.g. on a switch to a Kids /
+     * rating-limited profile), leaving Continue Watching entries alone.
+     */
+    suspend fun removeReadyPromotions(keep: (jellyfinId: String) -> Boolean) = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolver = context.contentResolver
+            val doomed = mutableListOf<Long>()
+            resolver.query(
+                TvContractCompat.WatchNextPrograms.CONTENT_URI,
+                arrayOf(
+                    TvContractCompat.WatchNextPrograms._ID,
+                    TvContractCompat.WatchNextPrograms.COLUMN_INTERNAL_PROVIDER_ID
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val idIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms._ID)
+                val provIdx = cursor.getColumnIndex(TvContractCompat.WatchNextPrograms.COLUMN_INTERNAL_PROVIDER_ID)
+                if (idIdx >= 0 && provIdx >= 0) {
+                    while (cursor.moveToNext()) {
+                        val provId = cursor.getString(provIdx) ?: continue
+                        if (provId.startsWith(READY_PREFIX) && !keep(provId.removePrefix(READY_PREFIX))) {
+                            doomed += cursor.getLong(idIdx)
+                        }
+                    }
+                }
+            }
+            doomed.forEach { rowId ->
+                resolver.delete(TvContractCompat.buildWatchNextProgramUri(rowId), null, null)
+            }
+        }
+    }
+
     private fun findWatchNextRowId(internalProviderId: String): Long? {
         context.contentResolver.query(
             TvContractCompat.WatchNextPrograms.CONTENT_URI,
@@ -89,7 +130,10 @@ class TvChannelSyncManager @Inject constructor(
         return null
     }
 
-    private fun syncWatchNext(items: List<UnifiedMediaItem>) {
+    private fun syncWatchNext(
+        items: List<UnifiedMediaItem>,
+        keepReadyPromotion: (jellyfinId: String) -> Boolean
+    ) {
         val resolver = context.contentResolver
         val existingIds = mutableMapOf<String, Long>()
         val engagementByRowId = mutableMapOf<Long, Long>()
@@ -123,11 +167,13 @@ class TvChannelSyncManager @Inject constructor(
         }
 
         val currentProviderIds = mutableSetOf<String>()
+        val syncedAt = System.currentTimeMillis()
         // Watch Next mirrors the home server only (titles from the extra servers are left out).
-        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEach { item ->
-            val jfId = item.jellyfinId ?: return@forEach
+        items.filter { com.seerflix.tv.core.model.ServerScopedId.isHome(it.jellyfinId) }.take(10).forEachIndexed { index, item ->
+            val jfId = item.jellyfinId ?: return@forEachIndexed
             currentProviderIds += jfId
-            val program = buildWatchNextProgram(item) ?: return@forEach
+            // The launcher sorts by last engagement: step back 1 ms per row to keep our order.
+            val program = buildWatchNextProgram(item, lastEngagementMs = syncedAt - index) ?: return@forEachIndexed
             val existingRowId = existingIds[jfId]
             if (existingRowId != null) {
                 resolver.update(
@@ -146,14 +192,17 @@ class TvChannelSyncManager @Inject constructor(
 
         // Remove stale entries no longer in Continue Watching. "Ready to watch" promotions
         // (inserted by promoteNewReleaseToWatchNext) are not Continue Watching rows, so they must
-        // survive this sync; drop them once the title shows up in Continue Watching or they expire.
+        // survive this sync; drop them once the title shows up in Continue Watching, they expire,
+        // or the active profile may not see them (the row is shared by every profile).
         val now = System.currentTimeMillis()
         existingIds.forEach { (provId, rowId) ->
             val isReadyPromotion = provId.startsWith(READY_PREFIX)
             val stale = if (isReadyPromotion) {
                 val promotedAt = engagementByRowId[rowId] ?: now
-                provId.removePrefix(READY_PREFIX) in currentProviderIds ||
-                    now - promotedAt > READY_PROMOTION_TTL_MS
+                val promotedId = provId.removePrefix(READY_PREFIX)
+                promotedId in currentProviderIds ||
+                    now - promotedAt > READY_PROMOTION_TTL_MS ||
+                    !keepReadyPromotion(promotedId)
             } else {
                 provId !in currentProviderIds
             }
@@ -163,10 +212,17 @@ class TvChannelSyncManager @Inject constructor(
         }
     }
 
+    /** Channel id + item ids last written, so an unchanged Home load doesn't rewrite the launcher row. */
+    @Volatile
+    private var lastChannelSignature: String? = null
+
     private fun syncSeerflixChannel(items: List<UnifiedMediaItem>) {
         if (items.isEmpty()) return
         val resolver = context.contentResolver
         val channelId = getOrCreateSeerflixChannelId() ?: return
+        val shown = items.take(15)
+        val signature = "$channelId:" + shown.joinToString(",") { it.id }
+        if (signature == lastChannelSignature) return
 
         // Replace channel preview programs cleanly
         resolver.delete(
@@ -175,13 +231,12 @@ class TvChannelSyncManager @Inject constructor(
             null
         )
 
-        items.take(15).forEachIndexed { index, item ->
-            val program = buildPreviewProgram(channelId, item, items.size - index)
-            resolver.insert(
-                TvContractCompat.PreviewPrograms.CONTENT_URI,
-                program.toContentValues()
-            )
-        }
+        val values = shown.mapIndexed { index, item ->
+            buildPreviewProgram(channelId, item, items.size - index).toContentValues()
+        }.toTypedArray()
+        // One provider transaction instead of one insert (and launcher refresh) per program.
+        resolver.bulkInsert(TvContractCompat.PreviewPrograms.CONTENT_URI, values)
+        lastChannelSignature = signature
     }
 
     private fun getOrCreateSeerflixChannelId(): Long? {
@@ -232,7 +287,10 @@ class TvChannelSyncManager @Inject constructor(
             return Uri.parse("seerflix://details/$tmdb/$jf/${item.mediaType.name}")
         }
 
-        fun buildWatchNextProgram(item: UnifiedMediaItem): WatchNextProgram? {
+        fun buildWatchNextProgram(
+            item: UnifiedMediaItem,
+            lastEngagementMs: Long = System.currentTimeMillis()
+        ): WatchNextProgram? {
             val jfId = item.jellyfinId ?: return null
             val type = when (item.mediaType) {
                 MediaType.MOVIE -> TvContractCompat.WatchNextPrograms.TYPE_MOVIE
@@ -246,7 +304,7 @@ class TvChannelSyncManager @Inject constructor(
                     if (item.isNextUp && item.resumePositionTicks <= 0L) TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_NEXT
                     else TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE
                 )
-                .setLastEngagementTimeUtcMillis(System.currentTimeMillis())
+                .setLastEngagementTimeUtcMillis(lastEngagementMs)
                 .setTitle(item.title)
                 .setDescription(item.overview.take(200))
                 .setIntentUri(buildPlayerDeepLink(jfId))

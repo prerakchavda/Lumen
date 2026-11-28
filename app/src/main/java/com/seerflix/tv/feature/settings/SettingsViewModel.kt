@@ -157,7 +157,7 @@ class SettingsViewModel @Inject constructor(
 
     fun setAutoplayNext(enabled: Boolean) = viewModelScope.launch {
         val profile = _uiState.value.profile ?: return@launch
-        authRepository.updateProfilePreferences(profile.copy(autoplayNextEpisode = enabled))
+        authRepository.updateProfile(profile.id) { it.copy(autoplayNextEpisode = enabled) }
     }
 
     fun setSubtitleSelectionMode(mode: com.seerflix.tv.core.model.SubtitleSelectionMode) = viewModelScope.launch {
@@ -255,14 +255,16 @@ class SettingsViewModel @Inject constructor(
         authRepository.updatePlaybackPreferences(mergeNextUpIntoContinueWatching = enabled)
     }
 
+    // Atomic per-field updates: the cached profile snapshot may lag a just-made change to the
+    // other field, which would otherwise be written back over it.
     fun setSubtitleSize(scale: Float) = viewModelScope.launch {
         val profile = _uiState.value.profile ?: return@launch
-        authRepository.updateSubtitleAppearance(scale, profile.subtitleBackgroundAlpha)
+        authRepository.updateProfile(profile.id) { it.copy(subtitleFontScale = scale) }
     }
 
     fun setSubtitleBackground(alpha: Float) = viewModelScope.launch {
         val profile = _uiState.value.profile ?: return@launch
-        authRepository.updateSubtitleAppearance(profile.subtitleFontScale, alpha)
+        authRepository.updateProfile(profile.id) { it.copy(subtitleBackgroundAlpha = alpha) }
     }
 
     fun setSubtitleColor(color: SubtitleTextColor) = viewModelScope.launch {
@@ -282,10 +284,12 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(logUploadInProgress = true, logUploadMessage = null) }
         viewModelScope.launch {
             val result = diagnostics.upload()
+            // File read: off the main thread, and not inside update's (re-runnable) lambda.
+            val hasPendingCrash = withContext(Dispatchers.IO) { diagnostics.pendingCrash() != null }
             _uiState.update {
                 it.copy(
                     logUploadInProgress = false,
-                    hasPendingCrash = diagnostics.pendingCrash() != null,
+                    hasPendingCrash = hasPendingCrash,
                     logUploadMessage = when (result) {
                         is LogUploadResult.Uploaded -> "uploaded:${result.fileName}"
                         LogUploadResult.DisabledOnServer -> "disabled"

@@ -31,7 +31,7 @@ interface TraktApi {
         @Query("status") status: String? = null
     ): List<TraktWatchedShowDto>
 
-    // ---- Connect Trakt (0.9.5): device sign-in and the member's own recommendations ----
+    // ---- Connect Trakt (0.9.8): device sign-in and the member's own recommendations ----
 
     /** Starts TV sign-in: the user enters [TraktDeviceCodeDto.userCode] at the verification URL. */
     @POST("oauth/device/code")
