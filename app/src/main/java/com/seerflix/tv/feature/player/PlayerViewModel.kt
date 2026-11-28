@@ -223,6 +223,35 @@ class PlayerViewModel @Inject constructor(
     private var feedbackJob: Job? = null
     /** Play session already reported as stopped: no further progress / stop reports for it. */
     private var stoppedPlaySessionId: String? = null
+
+    /**
+     * Where playback was when the player screen left composition while this ViewModel stayed in
+     * the back stack (a remote "show details" command or a deep link pushed a screen on top).
+     */
+    private var releasedAtPositionMs: Long? = null
+
+    fun onPlayerReleased(positionMs: Long) {
+        releasedAtPositionMs = positionMs
+    }
+
+    /**
+     * Called when the player screen sets up a session. If the screen is coming back after its
+     * player was released, the old play session has already been reported stopped and replaying
+     * it would seek to its original start and never report progress again. Start a fresh play
+     * session at the position we left instead; returns true when that reload was started.
+     */
+    fun reloadAfterScreenReturn(): Boolean {
+        val positionMs = releasedAtPositionMs ?: return false
+        releasedAtPositionMs = null
+        val session = _uiState.value.session ?: return false
+        if (session.isTrailer) return false
+        loadItem(
+            session.itemId,
+            resumeOverrideMs = if (session.isLiveTv) null else positionMs,
+            isCinemaIntroClip = session.isCinemaIntro
+        )
+        return true
+    }
     /** Play session handed to an external player (reporting restarts if playback resumes here). */
     private var externalHandoffPlaySessionId: String? = null
     /** Whether the last loadItem() asked to skip Cinema Intros / was an intro clip (for Retry). */
@@ -243,7 +272,10 @@ class PlayerViewModel @Inject constructor(
                 _uiState.update { it.copy(syncPlayGroup = group) }
             }
         }
-        viewModelScope.launch {
+        // A trailer player has nothing to do with the app-wide play queue (an earlier Play All /
+        // Shuffle may still be in it): no queue Next / Previous on trailers.
+        val isTrailerPlayer = !trailerYoutubeKey.isNullOrBlank() || !localTrailerId.isNullOrBlank()
+        if (!isTrailerPlayer) viewModelScope.launch {
             playbackQueueManager.state.collect { q ->
                 _uiState.update {
                     it.copy(
@@ -350,6 +382,11 @@ class PlayerViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = false, errorMessage = strings.playerInvalidItem) }
             return
         }
+        // A quality / audio / subtitle change while a cinema intro plays reloads the same clip:
+        // it must stay an intro (not reported, skippable, and followed by the main feature).
+        @Suppress("NAME_SHADOWING")
+        val isCinemaIntroClip = isCinemaIntroClip ||
+            _uiState.value.session?.let { it.itemId == itemId && it.isCinemaIntro } == true
         if (!isCinemaIntroClip && !skipCinemaIntros && _uiState.value.session?.itemId != itemId) {
             cinemaIntroQueue.clear()
         }
@@ -756,6 +793,10 @@ class PlayerViewModel @Inject constructor(
             // queue and report / mark the clip as played).
             if (requestedIsCinemaIntroClip && executeCinemaIntroStep(cinemaIntroQueue.advance())) return
             val retryId = requestedItemId ?: currentSession?.itemId ?: initialItemId
+            // The failed session was reported as started once playback got going; stop it so its
+            // server transcode doesn't keep running next to the retry's. (Not at 0: that would
+            // wipe the resume point of a session that never really played.)
+            if (currentPosMs > 0L && currentSession?.itemId == retryId) reportStopped(currentPosMs)
             loadItem(
                 itemId = retryId,
                 qualityOverride = _uiState.value.selectedQuality,

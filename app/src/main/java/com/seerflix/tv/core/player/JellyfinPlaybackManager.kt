@@ -375,7 +375,13 @@ class JellyfinPlaybackManager @Inject constructor(
                     stereoDownmixEnabled = stereoDownmixEnabled,
                     burnInSubtitleIndex = burnInSubtitleIndex,
                     audioStreamIndex = audioStreamIndex,
-                    forceHls = forceHls
+                    forceHls = forceHls,
+                    hlsCodecs = hlsTranscodeCodecs(
+                        caps = capabilities,
+                        audioPassthroughEnabled = audioPassthroughEnabled,
+                        stereoDownmixEnabled = stereoDownmixEnabled,
+                        softwareAudioDecodingEnabled = softwareAudioDecodingEnabled
+                    )
                 )
                 PreparedPlayback(prepared, frameRate, segmentsDeferred, nextEpisodeDeferred)
             } catch (t: Throwable) {
@@ -526,7 +532,8 @@ class JellyfinPlaybackManager @Inject constructor(
         stereoDownmixEnabled: Boolean,
         burnInSubtitleIndex: Int?,
         audioStreamIndex: Int?,
-        forceHls: Boolean = false
+        forceHls: Boolean = false,
+        hlsCodecs: HlsCodecs = HlsCodecs.DEFAULT
     ): Pair<PlaybackSessionData, Float?> {
         val labels = strings
         val availableSources = playback?.mediaSources?.takeIf { it.isNotEmpty() }
@@ -578,7 +585,8 @@ class JellyfinPlaybackManager @Inject constructor(
             stereoDownmix = stereoDownmixEnabled,
             burnInSubtitleIndex = burnInSubtitleIndex,
             audioStreamIndex = audioStreamIndex,
-            forceHls = forceHls
+            forceHls = forceHls,
+            hlsCodecs = hlsCodecs
         )
 
         val audioTracks = source.mediaStreams
@@ -955,6 +963,40 @@ class JellyfinPlaybackManager @Inject constructor(
          * Built from what the device reports ([capabilities]) so the server converts anything the
          * box, screen or receiver can't handle instead of the stream failing or looking wrong.
          */
+        private fun transcodeAudioCodecs(stereoDownmixEnabled: Boolean, surroundAudio: List<String>): String =
+            if (stereoDownmixEnabled) {
+                "aac,mp3"
+            } else {
+                (listOf("aac") + surroundAudio.filter { it == "ac3" || it == "eac3" } + "mp3").joinToString(",")
+            }
+
+        /**
+         * Codecs for the HLS URLs the app builds itself (burn-in, quality cap, downmix, the error
+         * fallback). They used to hard-code h264,hevc + ac3/eac3, so the server could stream-copy
+         * a 10-bit HEVC or AC3 track the box can't decode — often the very stream that had just
+         * failed. Same rules as the device profile's transcoding target.
+         */
+        fun hlsTranscodeCodecs(
+            caps: DeviceMediaCapabilities,
+            audioPassthroughEnabled: Boolean,
+            stereoDownmixEnabled: Boolean,
+            softwareAudioDecodingEnabled: Boolean
+        ): HlsCodecs {
+            val swAudioActive = softwareAudioDecodingEnabled &&
+                (caps.softwareAudioDecoderAvailable || FfmpegAudioSupport.isAvailable())
+            fun audioOk(passthrough: Boolean, decoder: Boolean) =
+                (audioPassthroughEnabled && passthrough) || decoder || swAudioActive
+            val surround = buildList {
+                if (audioOk(caps.passthroughAc3, caps.ac3Decoder)) add("ac3")
+                if (audioOk(caps.passthroughEac3, caps.eac3Decoder)) add("eac3")
+            }
+            return HlsCodecs(
+                video = if (caps.hevc) "h264,hevc" else "h264",
+                audio = transcodeAudioCodecs(stereoDownmixEnabled, surround),
+                hevcMaxBitDepth = if (caps.hevc && !caps.hevcMain10) 8 else null
+            )
+        }
+
         fun buildDeviceProfile(
             maxBitrateBps: Long? = null,
             audioPassthroughEnabled: Boolean = true,
@@ -983,11 +1025,7 @@ class JellyfinPlaybackManager @Inject constructor(
             } else {
                 (baseAudio + surroundAudio).joinToString(",")
             }
-            val transcodeAudioCodecs = if (stereoDownmixEnabled) {
-                "aac,mp3"
-            } else {
-                (listOf("aac") + surroundAudio.filter { it == "ac3" || it == "eac3" } + "mp3").joinToString(",")
-            }
+            val transcodeAudioCodecs = transcodeAudioCodecs(stereoDownmixEnabled, surroundAudio)
 
             val directVideo = buildList {
                 add("h264")
@@ -1201,19 +1239,21 @@ class JellyfinPlaybackManager @Inject constructor(
             stereoDownmix: Boolean = false,
             burnInSubtitleIndex: Int? = null,
             audioStreamIndex: Int? = null,
-            forceHls: Boolean = false
+            forceHls: Boolean = false,
+            hlsCodecs: HlsCodecs = HlsCodecs.DEFAULT
         ): Pair<String, Boolean> {
             val cleanBase = base.trim().trimEnd('/')
+            val codecParams = hlsCodecs.queryParams
             val audioParam = if (stereoDownmix) "&MaxAudioChannels=2" else ""
             val audioIdxParam = audioStreamIndex?.let { "&AudioStreamIndex=$it" }.orEmpty()
             val bitrateParam = maxBitrateBps?.let { "&MaxStreamingBitrate=$it" }.orEmpty()
             if (burnInSubtitleIndex != null) {
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$bitrateParam$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId$audioIdxParam&SubtitleStreamIndex=$burnInSubtitleIndex&SubtitleMethod=Encode$bitrateParam$audioParam$codecParams&api_key=$token"
                 return url to true
             }
             if (maxBitrateBps != null || stereoDownmix || forceHls) {
                 val br = maxBitrateBps ?: 120_000_000L
-                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioIdxParam$audioParam&VideoCodec=h264,hevc&AudioCodec=aac,ac3,eac3,mp3&api_key=$token"
+                val url = "$cleanBase/Videos/$itemId/master.m3u8?MediaSourceId=${source.id}&PlaySessionId=$playSessionId&MaxStreamingBitrate=$br$audioIdxParam$audioParam$codecParams&api_key=$token"
                 return url to true
             }
             // DirectStream-only sources need the server's remux/transcode URL: serving the raw file
@@ -1305,5 +1345,20 @@ class JellyfinPlaybackManager @Inject constructor(
                 baseUrlTemplate = template
             )
         }
+    }
+}
+
+/** VideoCodec / AudioCodec (and HEVC bit-depth limit) for app-built HLS stream URLs. */
+data class HlsCodecs(
+    val video: String,
+    val audio: String,
+    val hevcMaxBitDepth: Int? = null
+) {
+    val queryParams: String
+        get() = "&VideoCodec=$video&AudioCodec=$audio" +
+            (hevcMaxBitDepth?.let { "&hevc-videobitdepth=$it" } ?: "")
+
+    companion object {
+        val DEFAULT = HlsCodecs(video = "h264,hevc", audio = "aac,ac3,eac3,mp3")
     }
 }

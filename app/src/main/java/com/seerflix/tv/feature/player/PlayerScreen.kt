@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -525,7 +526,9 @@ fun PlayerScreen(
                     win.attributes = params
                 }
             }
-            viewModel.reportStopped(player.currentPosition.coerceAtLeast(0L), buildLiveReportState())
+            val releasePositionMs = player.currentPosition.coerceAtLeast(0L)
+            viewModel.reportStopped(releasePositionMs, buildLiveReportState())
+            viewModel.onPlayerReleased(releasePositionMs)
             player.release()
         }
     }
@@ -733,6 +736,8 @@ fun PlayerScreen(
     // a player left in the error state stays black).
     LaunchedEffect(state.session?.itemId, state.session?.playSessionId, state.session?.streamUrl) {
         val session = state.session ?: return@LaunchedEffect
+        // Back on screen after the player was released: a new play session is being loaded.
+        if (viewModel.reloadAfterScreenReturn()) return@LaunchedEffect
         detectedVideoFrameRate = 0f
         activeVideoDecoderName = null
         activeAudioDecoderName = null
@@ -1033,6 +1038,13 @@ fun PlayerScreen(
             viewModel.advanceCinemaIntro()
             return@LaunchedEffect
         }
+        // A trailer ends by leaving: the (app-wide) play queue may still hold an earlier
+        // Play All / Shuffle, and its next item has nothing to do with this trailer.
+        if (s.isTrailer) {
+            delay(800L)
+            if (playbackEnded) exitPlayer()
+            return@LaunchedEffect
+        }
         if (state.sleepTimerOption == SleepTimerOption.END_OF_VIDEO) {
             currentPlayer.pause()
             osdVisible = true
@@ -1203,6 +1215,42 @@ fun PlayerScreen(
         }
     }
 
+    // OK with the controls hidden goes to the floating button on screen (Skip Intro / Recap /
+    // pre-roll, Up Next "Play now", auto-skip Undo). Those buttons never hold focus while the
+    // controls are hidden, and reaching them through the OSD usually lost to their countdowns.
+    val hiddenOsdOkAction: (() -> Unit)? = when {
+        session == null -> null
+        session.isCinemaIntro -> { { viewModel.skipCinemaIntros() } }
+        showSkipIntro && session.introEndTicks != null -> {
+            {
+                val target = session.introEndTicks / 10_000L
+                seekExact(target)
+                viewModel.notifySyncPlaySeek(target)
+            }
+        }
+        showSkipRecap && session.recapEndTicks != null -> {
+            {
+                val target = session.recapEndTicks / 10_000L
+                seekExact(target)
+                viewModel.notifySyncPlaySeek(target)
+            }
+        }
+        showNextEpisode && !showEpisodesDrawer && activeSheet == null && !state.showStillWatchingPrompt -> {
+            { viewModel.playNextInQueueOrEpisode(currentPosMs, buildLiveReportState()) }
+        }
+        autoSkipUndoPrompt != null -> {
+            {
+                autoSkipUndoPrompt?.let { (_, seekBackMs) ->
+                    seekExact(seekBackMs)
+                    viewModel.notifySyncPlaySeek(seekBackMs)
+                    currentPosMs = seekBackMs
+                }
+                autoSkipUndoPrompt = null
+            }
+        }
+        else -> null
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1211,6 +1259,15 @@ fun PlayerScreen(
                 if (keyEvent.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     // Any remote interaction restarts the OSD auto-hide timer.
                     lastInteractionTick.longValue += 1
+                    // Paused screensaver: the first key only wakes it (it never takes focus, so the
+                    // key would otherwise click, seek or toggle hidden controls underneath).
+                    if (showPausedScreensaver) {
+                        showPausedScreensaver = false
+                        val code = keyEvent.nativeKeyEvent.keyCode
+                        if (code != KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE && code != KeyEvent.KEYCODE_MEDIA_PLAY) {
+                            return@onPreviewKeyEvent true
+                        }
+                    }
                     // Loading spinner / error screen: let the Retry/Back buttons get normal key handling.
                     if (!playerSurfaceActive) return@onPreviewKeyEvent false
                     // "Still watching?" prompt: its buttons get OK / D-pad, and the paused video
@@ -1243,7 +1300,10 @@ fun PlayerScreen(
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER -> {
                             if (activeSheet != null || showEpisodesDrawer) false
-                            else if (!osdVisible) {
+                            else if (!osdVisible && hiddenOsdOkAction != null) {
+                                hiddenOsdOkAction()
+                                true
+                            } else if (!osdVisible) {
                                 osdVisible = true
                                 true
                             } else false
@@ -2545,13 +2605,19 @@ fun EpisodesDrawerOverlay(
                 val targetFocusEpisodeId = remember(episodes, currentEpisodeId) {
                     episodes.firstOrNull { it.id == currentEpisodeId }?.id ?: episodes.firstOrNull()?.id
                 }
+                val episodeListState = rememberLazyListState()
                 LaunchedEffect(targetFocusEpisodeId) {
                     if (targetFocusEpisodeId != null) {
+                        // Bring the row into composition first: episode 15 of 24 isn't laid out
+                        // yet, and focusing an unattached requester silently does nothing.
+                        val idx = episodes.indexOfFirst { it.id == targetFocusEpisodeId }
+                        if (idx >= 0) runCatching { episodeListState.scrollToItem(idx) }
                         delay(60L)
                         runCatching { activeEpisodeFocusRequester.requestFocus() }
                     }
                 }
                 LazyColumn(
+                    state = episodeListState,
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
@@ -2647,7 +2713,9 @@ private fun ChannelsSideSheet(
     val activeFocusRequester = remember { FocusRequester() }
     val closeFocusRequester = remember { FocusRequester() }
 
+    val channelListState = rememberLazyListState()
     LaunchedEffect(channels.size, activeIdx) {
+        if (channels.isNotEmpty()) runCatching { channelListState.scrollToItem(activeIdx) }
         delay(60L)
         if (channels.isNotEmpty()) {
             runCatching { activeFocusRequester.requestFocus() }
@@ -2668,6 +2736,7 @@ private fun ChannelsSideSheet(
             Text(strings.liveNoChannels, color = colors.textSecondary, fontSize = 14.sp)
         } else {
             LazyColumn(
+                state = channelListState,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
@@ -3429,8 +3498,13 @@ private fun ChaptersSideSheet(
     }
     val activeChapterFocusRequester = remember { FocusRequester() }
     val closeFocusRequester = remember { FocusRequester() }
+    // Focus lands on the chapter playing when the sheet opened; it must not be pulled back each
+    // time playback crosses a chapter boundary while the user is browsing.
+    val initialFocusIdx = remember(chapters) { activeIdx }
+    val chapterListState = rememberLazyListState()
 
-    LaunchedEffect(chapters.size, activeIdx) {
+    LaunchedEffect(chapters.size) {
+        if (chapters.isNotEmpty()) runCatching { chapterListState.scrollToItem(initialFocusIdx) }
         delay(60L)
         if (chapters.isNotEmpty()) {
             runCatching { activeChapterFocusRequester.requestFocus() }
@@ -3448,6 +3522,7 @@ private fun ChaptersSideSheet(
         scrollable = false
     ) {
         LazyColumn(
+            state = chapterListState,
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(bottom = 16.dp)
         ) {
@@ -3458,7 +3533,7 @@ private fun ChaptersSideSheet(
                     label = "${formatMs(chapter.startPositionMs)}  •  ${chapter.name}",
                     selected = isCurrent,
                     onClick = { onJumpToChapter(chapter) },
-                    modifier = if (isCurrent) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
+                    modifier = if (idx == initialFocusIdx) Modifier.focusRequester(activeChapterFocusRequester) else Modifier
                 )
             }
         }
